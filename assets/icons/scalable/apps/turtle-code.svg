@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Turtle Code</title>
+  <desc>A turquoise turtle with a shell outlined by curly braces.</desc>
+  <g stroke="#062344" stroke-width="16" stroke-linejoin="round">
+    <path fill="#00c6b8" d="M181 181C147 154 123 137 101 149L69 176Q57 189 73 202L148 240ZM331 181C365 154 389 137 411 149L443 176Q455 189 439 202L364 240ZM172 348L107 394Q90 407 107 422L126 438Q139 449 154 434L204 383ZM340 348L405 394Q422 407 405 422L386 438Q373 449 358 434L308 383ZM229 405L244 461Q256 485 268 461L283 405Z"/>
+    <path fill="#a4f4ce" d="M203 146V112a53 53 0 0 1 106 0v34Z"/>
+    <path fill="#00c6b8" stroke="none" d="M243 141H269V171H243Z"/>
+    <path fill="#00c6b8" d="M240 158H219C191 158 179 174 179 204V230C179 252 168 266 146 272C168 278 179 292 179 314V340C179 370 191 386 219 386H293C321 386 333 370 333 340V314C333 292 344 278 366 272C344 266 333 252 333 230V204C333 174 321 158 293 158H272"/>
+    <path fill="none" stroke="#00c6b8" stroke-width="13" d="M256 148V172M256 373V399"/>
+  </g>
+  <g fill="#062344">
+    <circle cx="234" cy="108" r="8"/>
+    <circle cx="278" cy="108" r="8"/>
+  </g>
+</svg>

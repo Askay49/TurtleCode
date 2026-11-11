@@ -1,0 +1,5 @@
+{
+  "nvim-treesitter/nvim-treesitter": "cf12346a3414fa1b06af75c79faebe7f76df080a",
+  "folke/tokyonight.nvim": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+  "tokyo-night/tokyo-night-vscode-theme": "7c0f11eaef322f293621ca7befe462214b7ea468"
+}

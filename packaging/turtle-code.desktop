@@ -1,0 +1,17 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Turtle Code
+GenericName=Code Editor
+GenericName[ru]=Редактор кода
+Comment=Edit source code and work with projects
+Comment[ru]=Редактирование кода и работа с проектами
+Exec=turtle-code -- %F
+Icon=turtle-code
+Terminal=false
+Categories=Development;
+MimeType=text/plain;text/x-csrc;text/x-chdr;text/x-c++src;text/x-c++hdr;text/x-python;application/json;application/x-shellscript;
+StartupNotify=true
+StartupWMClass=turtle-code
+Keywords=code;editor;development;programming;
+Keywords[ru]=код;редактор;разработка;программирование;

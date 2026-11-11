@@ -1,0 +1,86 @@
+{
+  "repository": "https://github.com/microsoft/vscode",
+  "revision": "ae15303824771284a26e84c78d5769a03051f50d",
+  "upstream": "https://github.com/jesseweed/seti-ui",
+  "files": {
+    "seti.woff": {
+      "url": "https://raw.githubusercontent.com/microsoft/vscode/ae15303824771284a26e84c78d5769a03051f50d/extensions/theme-seti/icons/seti.woff",
+      "sha256": "b127762058f89b37b08d76185e3b0558f5c28859e39a3840a27cb28b9739d6e2"
+    },
+    "vs-seti-icon-theme.json": {
+      "url": "https://raw.githubusercontent.com/microsoft/vscode/ae15303824771284a26e84c78d5769a03051f50d/extensions/theme-seti/icons/vs-seti-icon-theme.json",
+      "sha256": "2088843e6f00a81870ed2890132fb658cf33406177a5dd58c9c7001e5184ca2a"
+    },
+    "ThirdPartyNotices.txt": {
+      "url": "https://raw.githubusercontent.com/microsoft/vscode/ae15303824771284a26e84c78d5769a03051f50d/extensions/theme-seti/ThirdPartyNotices.txt",
+      "sha256": "c67ddfeba3a0aaffe9e9f7165c155c06de5c8db609a92b3a1a29ee6ab316a0bb"
+    },
+    "seti.ttf": {
+      "derivedFrom": "seti.woff",
+      "method": "extract_ttf.py: WOFF1 decompression, unchanged font tables/glyph outlines, regenerated sfnt offsets and head checksum adjustment",
+      "sha256": "1be28e5c4eafd67ca402d30de30bb75cd41bc4acf916704615b57eb98fec4bb1"
+    },
+    "LICENSE": {
+      "url": "https://raw.githubusercontent.com/jesseweed/seti-ui/2d6c5e68b4ded73c92dac291845ee44e1182d511/LICENSE.md",
+      "sha256": "d4d2d888c6a0a220a7b0e2d6013cf37539b0e05ef937002b3b33bdb364575b88"
+    },
+    "LICENSE-VSCODE": {
+      "url": "https://raw.githubusercontent.com/microsoft/vscode/ae15303824771284a26e84c78d5769a03051f50d/LICENSE.txt",
+      "sha256": "9480271317925265e806a9a196aaa33410a962fa9d4d1e248a4a5187bc8c9df9"
+    }
+  },
+  "languageAssociationSources": {
+    "revision": "ae15303824771284a26e84c78d5769a03051f50d",
+    "manifestsSha256": {
+      "extensions/bat/package.json": "f0a18380487a4eaddcaf83b6a1a7ad1db1129582bf08ec4988b453a82a35291d",
+      "extensions/clojure/package.json": "894e041c31e4368ac14a2346d570c30e3ccf7def8f695726fb090fd9cd140a8b",
+      "extensions/coffeescript/package.json": "3bd2162e9b263a55b0728884bc3233ef8f7b05bc1f6b503cccae066a1b9d59f3",
+      "extensions/configuration-editing/package.json": "065c1f7f324e108325e487c86b842b3f15a918856539513494f8a1b00884bd52",
+      "extensions/copilot/package.json": "9ecba422f7c6df5ed9a0aea985f2740e6366f6c000653d010d0ccb32cf64329f",
+      "extensions/cpp/package.json": "e304e8239d901e528b9c9e2d7cbadc9886b497b61366a9f605a5ee3b445dc057",
+      "extensions/csharp/package.json": "5adb5d51b26dca1e610a33196f158a58e9971d683999aefd34ce738765c51a25",
+      "extensions/css/package.json": "48eca0908396084da632f480598c3df899614f126e9b71a3a2a37d5b09439a49",
+      "extensions/dart/package.json": "f4c481f2a6411d6f6b3ad2a01ea55932c925ba60abaf88e661c17cc1b85fda10",
+      "extensions/docker/package.json": "ed4dcee703b02cd4f956deb5a38af8527c010e7f19d6785e8a62feb1296c364e",
+      "extensions/dotenv/package.json": "43784e055cef3834f17eea971e3c4742e0d75180deeb33d6a353bf7294e27d39",
+      "extensions/extension-editing/package.json": "2553d710fdb9c558588f0a178589421c0efff5a4bbe79b1f060c0e01d9c8039b",
+      "extensions/fsharp/package.json": "3f339225319696d402c7e9fef03dad6561ec25476a29360b420da6c81dbe9a81",
+      "extensions/git-base/package.json": "f15cdb1188eaa04c16486f7a062ad092f3e2fc7eccf725016624c8e020d287e8",
+      "extensions/go/package.json": "ad5e80e7f99826ed3bc272ecf334b0fa0a35487b226de69963e03567ef26073b",
+      "extensions/groovy/package.json": "656a7a5629e09642d9496b23f2fc378a6854be145c46b70f4669bbe9734c10fb",
+      "extensions/handlebars/package.json": "d9d4064f50ae21b7253dd7dd29533b05e1d8ce79a087109fc3a98df3918b3768",
+      "extensions/html/package.json": "541ae4bdde92138ba7470afbb50e55dfea3041cfd65cd961b343fd1b38099987",
+      "extensions/ini/package.json": "4cdd6202fd43462c8c95ec18cc1270956ed5c8e48bf8007269459b57539bcd3c",
+      "extensions/java/package.json": "929a5f2c1cf021ed9f94eafc8f26957a660912af4c9514d89cb2035a2fbb496e",
+      "extensions/javascript/package.json": "f766a0b352dd281f7e2918291a447600301f7cbcebf7430c81b2829f69ca5784",
+      "extensions/json/package.json": "cb542bfdd2b7f6bf32677a4689878045cf27cd76af77e711f10c8dfb986ac200",
+      "extensions/julia/package.json": "d8da465316dd90248b0afd66d56a36ac3c81494ee8b00ac565b26697f92bc782",
+      "extensions/latex/package.json": "d7641af832605e28eb42d108a7338471ed7dc1440996e5eeae67a79dd160ab01",
+      "extensions/less/package.json": "e59851aedefef373bf84d5ade6189b17fcd6648d189b9ada2d522aab8bebe4b0",
+      "extensions/lua/package.json": "8abf4a06c63c601dc44f365847e6cbf97c8c71b8d10efd70d8c6bfe898bae864",
+      "extensions/make/package.json": "590ec0f9f23cb0fd0745935d6fa217709c8ba665a73dd2dbc3ee26883d4f4a12",
+      "extensions/markdown-basics/package.json": "5ef4cfe2f5321f3e226f0620a92ec5b9fbbe64fbaed83853e8b387f974d69eff",
+      "extensions/npm/package.json": "476c6edb39493e3850fa35163605777a5635a07057207cfcb4ea036e569880ac",
+      "extensions/objective-c/package.json": "57506acb9b83c70fdce3569023e0cbd74a8f097849c6dbfe952cdb8abac1b483",
+      "extensions/perl/package.json": "31dd23ab31df04b4a31b7138bad7024739739f341a0bd7093187f8a72457bcc8",
+      "extensions/php/package.json": "bb3a97d6e94685698d3ee4ce1bbabb23c5d664383dd03d5ffd605eca10c07578",
+      "extensions/powershell/package.json": "ceb7e4d9502afb4625395b200dedfd9657c0deb66655f44201695732dc3d5148",
+      "extensions/prompt-basics/package.json": "ae4a53133ecdfea481392d16c75e3e7c6befda97c805ad42ab43f55d01f44dbf",
+      "extensions/pug/package.json": "34226df7bf5e73734c46f4ef70ff0e0df0c2f98c10f3460f12cbf9651d6bcef4",
+      "extensions/python/package.json": "d83be2f4a172a9090d78c5710a1bfda79d2735b9a1f237a0faf55ac8a5f17939",
+      "extensions/r/package.json": "613576657714f3893412822df8bd6702fed179e4f2defd56aec4628f2028cbad",
+      "extensions/razor/package.json": "df72801b9c3afb9bffe42b76be3325fcc31cb7c488a236bbbd5e111d8b3c1dda",
+      "extensions/ruby/package.json": "309fa40867bc640b7222b1af6f95fedf42c63bd0755ee742138bc2ea6f29382e",
+      "extensions/rust/package.json": "8e7a5e537d1de76053b532e4ad691fa4bcde93723095e0f638f1f3ecbfd12500",
+      "extensions/scss/package.json": "64abc0634b3e4b58c7c926a6a2fe7ec9b2b4205b5f9e24a18d7e5ebfbff85f31",
+      "extensions/search-result/package.json": "49fd2d52d20c5e7a828a6fa80d38755687d742b8db55f7d41c83819e4f640d58",
+      "extensions/shellscript/package.json": "93fb56a9f0226eb21958bfa7f94215881efb0da44fefcda770d4b3343fe8da75",
+      "extensions/sql/package.json": "85deb4a387dbf681cd36b0fc6dbb81f92f5bd78a48ecabc3c20b1e5818564a49",
+      "extensions/swift/package.json": "838c9c673e4550f2aa721be7ae370fd926a4313f7ac715bf4c83877aba7180f9",
+      "extensions/typescript-basics/package.json": "afbeb5a630e3058e1166c2cb4f087d5a4f872e897adb0979ec49ec27059d25b2",
+      "extensions/xml/package.json": "f0587c0eee9d210e45af85843e32277f21b41a586fe8a40242fb4045cb9a9f0b",
+      "extensions/yaml/package.json": "f3771aaf23fab8d36505260d0e7b62ce32cdaaed7f6ff09b1fae5536dd2d6765"
+    },
+    "note": "Derived from contributes.languages: extensions and filenames of VS Code bundled language extensions, limited to language IDs supported by Seti. Names/extensions are lowercased for icon matching."
+  }
+}

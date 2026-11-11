@@ -1,0 +1,13 @@
+/build/
+/.cache/
+compile_commands.json
+*.user
+*.swp
+/TURTLE_CODE_PROJECT_CONTEXT.md
+/.aws/
+/.codex/
+/.agents/
+/dist/
+CMakeUserPresets.json
+__pycache__/
+*.pyc
