@@ -2019,6 +2019,20 @@ void EditorWidget::redo() {
 void EditorWidget::selectNextOccurrence() {
     if (busy_) return;
 
+        // Identifier boundaries include Unicode letters, digits and combining
+        // marks. Treat both UTF-16 halves of a supplementary letter as a word.
+        const auto isWord = [](const QString& text, qsizetype index) {
+            if (index < 0 || index >= text.size()) return false;
+            char32_t code = text[index].unicode();
+            if (text[index].isLowSurrogate() && index > 0 && text[index-1].isHighSurrogate())
+                code = QChar::surrogateToUcs4(text[index-1],text[index]);
+            else if (text[index].isHighSurrogate() && index+1 < text.size() && text[index+1].isLowSurrogate())
+                code = QChar::surrogateToUcs4(text[index],text[index+1]);
+            const auto category = QChar::category(code);
+            return QChar::isLetterOrNumber(code) || code == U'_' ||
+                category == QChar::Mark_NonSpacing || category == QChar::Mark_SpacingCombining ||
+                category == QChar::Mark_Enclosing;
+        };
         std::size_t queryBegin = 0;
         std::size_t queryEnd = 0;
         if (hasSelection()) {
@@ -2026,20 +2040,16 @@ void EditorWidget::selectNextOccurrence() {
         } else {
             const auto line = currentLine();
             const auto lineStart = buffer_.lineStart(line);
-            const auto text = buffer_.line(line);
-            std::size_t local = cursorPosition_ - lineStart;
+            const auto text = cachedLine(line);
+            qsizetype local = buffer_.utf16Before(cursorPosition_) - buffer_.utf16Before(lineStart);
             if (local == text.size() && local > 0) --local;
-            const auto isWord = [&text](std::size_t index) {
-                const unsigned char c = static_cast<unsigned char>(text[index]);
-                return std::isalnum(c) || c == '_';
-            };
-            if (text.empty() || local >= text.size() || !isWord(local)) return;
-            std::size_t begin = local;
-            std::size_t end = local + 1;
-            while (begin > 0 && isWord(begin - 1)) --begin;
-            while (end < text.size() && isWord(end)) ++end;
-            queryBegin = lineStart + begin;
-            queryEnd = lineStart + end;
+            if (text.isEmpty() || !isWord(text,local)) return;
+            qsizetype begin = local;
+            qsizetype end = local + 1;
+            while (isWord(text,begin - 1)) --begin;
+            while (isWord(text,end)) ++end;
+            queryBegin = lineStart + static_cast<std::size_t>(text.left(begin).toUtf8().size());
+            queryEnd = lineStart + static_cast<std::size_t>(text.left(end).toUtf8().size());
             anchor_ = queryBegin;
             cursorPosition_ = queryEnd;
             cursors_[0] = cursorPosition_;
@@ -2048,6 +2058,13 @@ void EditorWidget::selectNextOccurrence() {
         const QString query = QString::fromUtf8(buffer_.slice(queryBegin, queryEnd - queryBegin).data(),
                                                 static_cast<qsizetype>(queryEnd - queryBegin));
         if (query.isEmpty()) return;
+        const auto queryLine = buffer_.lineIndexAt(queryBegin);
+        const auto source = cachedLine(queryLine);
+        const auto sourceBegin = static_cast<qsizetype>(buffer_.utf16Before(queryBegin) -
+                                                       buffer_.utf16Before(buffer_.lineStart(queryLine)));
+        const auto sourceEnd = sourceBegin + query.size();
+        bool wholeWord = sourceEnd <= source.size() && !isWord(source,sourceBegin-1) && !isWord(source,sourceEnd);
+        for (qsizetype i=0;wholeWord && i<query.size();++i) wholeWord = isWord(query,i);
         // Continue after the furthest selected occurrence.  Searching from the
         // first occurrence again makes repeated Ctrl+D add the same cursor.
         std::size_t searchStart = queryEnd;
@@ -2080,7 +2097,8 @@ void EditorWidget::selectNextOccurrence() {
             while (match >= 0) {
                 const auto matchBegin = lineStart + static_cast<std::size_t>(text.left(match).toUtf8().size());
                 const auto matchEnd = matchBegin + queryEnd - queryBegin;
-                if (!isSelected(matchBegin, matchEnd)) {
+                if ((!wholeWord || (!isWord(text,match-1) && !isWord(text,match+query.size()))) &&
+                    !isSelected(matchBegin, matchEnd)) {
                     cursors_.push_back(matchEnd);
                     cursorAnchors_.push_back(matchBegin);
                     history_.breakCoalescing();

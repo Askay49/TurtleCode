@@ -405,6 +405,43 @@ int main(int argc, char** argv) {
     }
     {
         EditorWidget editor;
+        const char* original="adc adc_state my_adc adc2 ADC\nadc (adc) adc\n";
+        load(editor,original);
+        // Starting at a caret selects whole identifiers, and repeated Ctrl+D
+        // must retain that rule after the initial word becomes a selection.
+        for(int i=0;i<8;++i)QTest::keyClick(&editor,Qt::Key_D,Qt::ControlModifier);
+        Q_ASSERT(editor.cursorCount()==4);
+        QTest::keyClick(&editor,Qt::Key_X);
+        Q_ASSERT(editor.document()->buffer().text()=="x adc_state my_adc adc2 ADC\nx (x) x\n");
+        editor.documentUndo();Q_ASSERT(editor.document()->buffer().text()==original);
+        // Explicit selection of a complete identifier follows the same rule.
+        editor.revealMatch(1,1,3);
+        editor.selectNextOccurrence();Q_ASSERT(editor.cursorCount()==2);
+        QTest::keyClick(&editor,Qt::Key_X);
+        Q_ASSERT(editor.document()->buffer().text()=="x adc_state my_adc adc2 ADC\nx (adc) adc\n");
+    }
+    {
+        EditorWidget editor;load(editor,"adc_state adc_other adc\n");
+        // Deliberately selecting a fragment still supports substring editing.
+        editor.revealMatch(1,1,3);
+        editor.selectNextOccurrence();Q_ASSERT(editor.cursorCount()==2);
+        QTest::keyClick(&editor,Qt::Key_X);
+        Q_ASSERT(editor.document()->buffer().text()=="x_state x_other adc\n");
+    }
+    {
+        EditorWidget editor;load(editor,"adc жadc adcж adc\u0301 𐐀adc adc𐐀 (adc)\n");
+        for(int i=0;i<8;++i)editor.selectNextOccurrence();
+        Q_ASSERT(editor.cursorCount()==2);
+        QTest::keyClick(&editor,Qt::Key_X);
+        Q_ASSERT(editor.document()->buffer().text()=="x жadc adcж adc\u0301 𐐀adc adc𐐀 (x)\n");
+        // The initial word expansion also handles multibyte identifiers.
+        load(editor,"датчик датчик_state датчик\n");
+        editor.selectNextOccurrence();Q_ASSERT(editor.cursorCount()==2);
+        QTest::keyClick(&editor,Qt::Key_X);
+        Q_ASSERT(editor.document()->buffer().text()=="x датчик_state x\n");
+    }
+    {
+        EditorWidget editor;
         load(editor, "abc\ndef\nghi\n");
         QTest::keyClick(&editor, Qt::Key_Down, Qt::ControlModifier | Qt::ShiftModifier);
         QTest::keyClick(&editor, Qt::Key_Down, Qt::ControlModifier | Qt::ShiftModifier);

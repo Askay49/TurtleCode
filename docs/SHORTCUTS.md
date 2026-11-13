@@ -25,6 +25,12 @@ The editor header shows only the current document, without a close button. The r
 
 **Ctrl+Tab** opens a list of open files above the center of the window in most-recently-used order. Keep Ctrl held and press Tab again to advance, or Shift+Tab to go backwards. Release Ctrl, press Enter, or click a row to open the selection; Escape or a click outside cancels. Arrow keys also select a row. The compact list displays filenames only, without a heading, paths or keyboard hints. The next/previous recent-tab shortcuts remain configurable.
 
+**Ctrl+D** adds the next occurrence to the selection. A complete identifier
+(selected explicitly or expanded from the caret) matches whole identifiers:
+`adc` skips `adc_state`, `my_adc` and `adc2`. Letters, digits, underscores and
+Unicode combining marks belong to identifiers. An explicitly selected fragment
+inside an identifier keeps substring matching. Matching is case-sensitive.
+
 Line operations are available in **Code / Код**:
 
 | Command | Default shortcut |
