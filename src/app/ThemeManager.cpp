@@ -228,7 +228,12 @@ void ThemeManager::apply(const EditorTheme& theme) {
     QString stylesheet = QString(
         "QWidget { color:%1; background:%2; }"
         "QLineEdit, QComboBox, QSpinBox, QTableWidget { background:%7; }"
-        "QMenu::item:selected, QTreeView::item:selected, QTableView::item:selected { background:%6; }"
+        "QMenu::item:selected, QTreeView::item:selected, QListView::item:selected, QTableView::item:selected { background:%6; }"
+        "QTreeView::item:hover, QListView::item:hover, QTableView::item:hover { background:%6; }"
+        // Keep Qt's stylesheet renderer active in every state. Without an
+        // explicit base background, native painting ignores item padding until
+        // hover/selection adds a background, shifting icons and text.
+        "QMenu::item, QListView::item, QTableView::item { border:0; background:transparent; }"
         "QToolTip { color:%1; background:%2; border:1px solid %3; }"
         "QTreeView, QStackedWidget { background:%4; }"
         "QLineEdit, QComboBox, QSpinBox { padding:4px; border:1px solid %3; }"
@@ -246,7 +251,7 @@ void ThemeManager::apply(const EditorTheme& theme) {
         "QTabBar::tab { color:%8; border:0; border-top:2px solid transparent; margin:0; padding:7px 14px; min-height:20px; }"
         "QTabBar::tab:hover { color:%1; background:%6; }"
         "QTabBar::tab:selected { color:%1; background:%7; border-top-color:%5; }"
-        "QTreeView::item { padding:2px; }"
+        "QTreeView::item { padding:2px; border:0; background:transparent; }"
         "QFrame#fileFindBar { background:%2; border:1px solid %3; }")
         .arg(c("text.primary").name(), c("window.background").name(), c("border").name(),
              c("sidebar.background").name(), c("accent").name(), c("editor.selection").name(), c("editor.background").name(), c("text.muted").name());

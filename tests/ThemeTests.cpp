@@ -11,6 +11,12 @@
 #include <QSettings>
 #include <QLabel>
 #include <QTreeWidget>
+#include <QListWidget>
+#include <QTableWidget>
+#include <QFileDialog>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
+#include <QPainter>
 #include <QVBoxLayout>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -18,6 +24,56 @@
 #include <QPushButton>
 #include <QStandardPaths>
 #include <cassert>
+
+class ItemGeometryProbe final : public QStyledItemDelegate {
+public:
+    static void check(QAbstractItemView& view,const QModelIndex& index) {
+        view.ensurePolished();
+        ItemGeometryProbe probe;
+        QStyleOptionViewItem option;option.initFrom(&view);
+        option.widget=&view;option.rect=QRect(0,0,350,32);
+        option.decorationSize=QSize(16,16);
+        probe.initStyleOption(&option,index);
+        QRect expectedIcon,expectedText;
+        for(const auto state:{QStyle::State(QStyle::State_Enabled),QStyle::State_Enabled|QStyle::State_MouseOver,
+                              QStyle::State_Enabled|QStyle::State_Selected|QStyle::State_HasFocus}) {
+            option.state=state;
+            const auto text=view.style()->subElementRect(QStyle::SE_ItemViewItemText,&option,&view);
+            QImage image(option.rect.size(),QImage::Format_ARGB32);image.fill(Qt::black);
+            QPainter painter(&image);probe.paint(&painter,option,index);painter.end();
+            QRect icon;
+            for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)
+                if(image.pixelColor(x,y)==QColor("#ff00ff"))icon=icon.united(QRect(x,y,1,1));
+            assert(!icon.isEmpty());
+            if(expectedIcon.isEmpty()){expectedIcon=icon;expectedText=text;}
+            else {
+                if(icon!=expectedIcon || text!=expectedText)
+                    qWarning()<<view.metaObject()->className()<<"row moved"<<expectedIcon<<icon<<expectedText<<text;
+                assert(icon==expectedIcon && text==expectedText);
+            }
+        }
+    }
+};
+
+static void stableItemGeometry() {
+    QPixmap marker(16,16);marker.fill(QColor("#ff00ff"));QIcon icon;
+    for(const auto mode:{QIcon::Normal,QIcon::Active,QIcon::Selected,QIcon::Disabled})
+        for(const auto state:{QIcon::Off,QIcon::On})icon.addPixmap(marker,mode,state);
+    QWidget workspace;workspace.setObjectName("workspaceBackground");
+    QFileDialog dialog(&workspace);dialog.setOption(QFileDialog::DontUseNativeDialog);
+    QWidget git(&workspace);git.setObjectName("gitPanel");
+    QWidget debug(&workspace);debug.setObjectName("debugPanel");
+    for(QWidget* parent:{static_cast<QWidget*>(nullptr),&workspace,static_cast<QWidget*>(&dialog),&git,&debug}) {
+        QTreeWidget tree(parent);tree.setColumnCount(1);
+        auto* row=new QTreeWidgetItem(&tree,QStringList{"sample.cpp"});row->setIcon(0,icon);
+        ItemGeometryProbe::check(tree,tree.model()->index(0,0));
+        QListWidget list(parent);auto* entry=new QListWidgetItem(icon,"sample.cpp",&list);
+        Q_UNUSED(entry);ItemGeometryProbe::check(list,list.model()->index(0,0));
+        QTableWidget table(1,1,parent);table.setItem(0,0,new QTableWidgetItem(icon,"sample.cpp"));
+        ItemGeometryProbe::check(table,table.model()->index(0,0));
+    }
+}
+
 int main(int argc, char** argv) {
     QTemporaryDir directory;
     assert(directory.isValid());
@@ -25,6 +81,7 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     app.setOrganizationName("TurtleCodeTests"); app.setApplicationName("ThemeTests");
     auto& manager = ThemeManager::instance(); manager.initialize();
+    stableItemGeometry();
     assert(manager.color("editor.background") == QColor("#1e1e1e"));
     int switched = 0;
     QTimer::singleShot(0, [&] {
