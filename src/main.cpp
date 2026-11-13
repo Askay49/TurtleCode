@@ -1,6 +1,7 @@
 #include <QTimer>
 #include "app/I18n.hpp"
 #include "app/AppIdentity.hpp"
+#include "app/Version.hpp"
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -67,7 +68,7 @@ int main(int argc, char* argv[]) {
     QApplication::setApplicationDisplayName("Turtle Code");
     QGuiApplication::setDesktopFileName(QStringLiteral("turtle-code"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/app/turtle-code.png")));
-    QCoreApplication::setApplicationVersion("0.9.1");
+    QCoreApplication::setApplicationVersion(QString::fromLatin1(AppVersion::Display));
     I18n::initialize();
     ThemeManager::instance().initialize();
 

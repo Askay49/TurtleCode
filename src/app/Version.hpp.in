@@ -1,0 +1,7 @@
+#pragma once
+
+// Generated from the project version in CMakeLists.txt.
+namespace AppVersion {
+inline constexpr char Display[] = "v@PROJECT_VERSION@";
+inline constexpr char UserAgent[] = "TurtleCode/v@PROJECT_VERSION@";
+}

@@ -28,6 +28,7 @@ target_compile_options(turtle-code-text-core PRIVATE
 )
 
 if(TURTLE_CODE_BUILD_APP)
+    configure_file(src/app/Version.hpp.in generated/app/Version.hpp @ONLY)
     find_package(Qt6 6.2.4 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent Test)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBGIT2 REQUIRED IMPORTED_TARGET libgit2>=1.1)
@@ -40,7 +41,7 @@ if(TURTLE_CODE_BUILD_APP)
     set(CMAKE_AUTOUIC ON)
 
     add_library(turtle-code-i18n STATIC src/app/I18n.cpp src/app/I18n.hpp)
-    target_include_directories(turtle-code-i18n PUBLIC src)
+    target_include_directories(turtle-code-i18n PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(turtle-code-i18n PUBLIC Qt6::Core)
     qt_add_resources(turtle-code-i18n turtle_code_translations
         PREFIX "/i18n" BASE "${CMAKE_CURRENT_SOURCE_DIR}/translations"

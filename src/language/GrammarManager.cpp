@@ -1,4 +1,5 @@
 #include "app/I18n.hpp"
+#include "app/Version.hpp"
 #include "GrammarManager.hpp"
 #include "LanguageRegistry.hpp"
 
@@ -120,7 +121,7 @@ void GrammarManager::downloadCandidate(const QString& id, const QString& ref, bo
     const QString kind = tag ? "tags/" : "heads/";
     QNetworkRequest request(QUrl("https://codeload.github.com/" + language->repository +
         "/tar.gz/refs/" + kind + QString::fromLatin1(QUrl::toPercentEncoding(ref))));
-    request.setHeader(QNetworkRequest::UserAgentHeader, "TurtleCode/0.9.8");
+    request.setHeader(QNetworkRequest::UserAgentHeader, QString::fromLatin1(AppVersion::UserAgent));
     request.setTransferTimeout(60000);
     auto* reply = network_.get(request);
     connect(reply, &QNetworkReply::finished, this, [this, id, ref, tag, reply] {
@@ -144,7 +145,7 @@ void GrammarManager::fetchTags(const QString& id, int page) {
     const auto* language = LanguageRegistry::language(id);
     QNetworkRequest request(QUrl("https://api.github.com/repos/" + language->repository +
         "/tags?per_page=100&page=" + QString::number(page)));
-    request.setHeader(QNetworkRequest::UserAgentHeader, "TurtleCode/0.9.8");
+    request.setHeader(QNetworkRequest::UserAgentHeader, QString::fromLatin1(AppVersion::UserAgent));
     request.setTransferTimeout(30000);
     emit statusChanged(id, I18n::text("Finding compatible versions of ") + language->name + "…");
     auto* reply = network_.get(request);
