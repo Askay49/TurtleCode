@@ -29,14 +29,17 @@ jobs:
 
       - name: Install build and packaging dependencies
         run: |
+          exec > >(tee "$RUNNER_TEMP/appimage-dependencies.log") 2>&1
+          trap 'tail -n 15 "$RUNNER_TEMP/appimage-dependencies.log" | sed "s/^/::error title=Dependency setup::/"' ERR
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            gcc-12 g++-12 ninja-build pkg-config python3-pip \
+            gcc-12 g++-12 ninja-build pkg-config python3-venv \
             qt6-base-dev qt6-base-dev-tools qt6-wayland libqt6svg6 \
             libgit2-dev libtree-sitter-dev libssl-dev \
             curl ca-certificates file desktop-file-utils patchelf
-          python3 -m pip install --user 'cmake==3.31.8'
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/cmake-venv"
+          "$RUNNER_TEMP/cmake-venv/bin/pip" install 'cmake==3.31.8'
+          echo "$RUNNER_TEMP/cmake-venv/bin" >> "$GITHUB_PATH"
 
       - name: Configure Release build
         run: >-
