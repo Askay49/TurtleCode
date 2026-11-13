@@ -1,0 +1,66 @@
+name: AppImage
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Linux x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      CC: gcc-12
+      CXX: g++-12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            gcc-12 g++-12 ninja-build pkg-config python3-pip \
+            qt6-base-dev qt6-base-dev-tools qt6-wayland libqt6svg6 \
+            libgit2-dev libtree-sitter-dev libssl-dev \
+            curl ca-certificates file desktop-file-utils patchelf
+          python3 -m pip install --user 'cmake==3.31.8'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Release build
+        run: >-
+          cmake -S . -B build/appimage -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INSTALL_PREFIX=/usr
+          -DBUILD_TESTING=ON
+
+      - name: Build application and text core tests
+        run: cmake --build build/appimage --target turtle-code turtle-code-text-tests turtle-code-history-tests --parallel 2
+
+      - name: Test text core and history
+        run: ctest --test-dir build/appimage -R '^(text-core|edit-history)$' --output-on-failure
+
+      - name: Package AppImage
+        run: bash packaging/build-appimage.sh build/appimage dist
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v7
+        with:
+          name: Turtle_Code-x86_64.AppImage
+          path: |
+            dist/Turtle_Code-x86_64.AppImage
+            dist/Turtle_Code-x86_64.AppImage.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

@@ -80,6 +80,11 @@ cmake --build build-no-treesitter -j4
 
 ## Установка в Linux
 
+Готовый `Turtle_Code-x86_64.AppImage` автоматически собирается в
+[GitHub Actions](https://github.com/Askay49/TurtleCode/actions/workflows/appimage.yml).
+Откройте успешный запуск и скачайте пакет из раздела Artifacts.
+Подробнее — [сборка AppImage](docs/BUILDING.md#appimage-и-github-actions).
+
 После сборки установите приложение для текущего пользователя:
 
 ```sh

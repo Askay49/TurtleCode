@@ -65,6 +65,39 @@ ctest --preset debug
 
 Для Release доступны аналогичные пресеты `release` и `release-tests`.
 
+## AppImage и GitHub Actions
+
+Workflow [AppImage](../.github/workflows/appimage.yml) автоматически собирает
+`Turtle_Code-x86_64.AppImage` после push в `main`, push тега `v*` и для pull request.
+Его также можно запустить вручную: GitHub → Actions → AppImage → Run workflow.
+После успешной сборки откройте запуск и скачайте архив
+`Turtle_Code-x86_64.AppImage` в разделе Artifacts. Внутри находятся AppImage и
+файл SHA-256. Артефакт хранится 30 дней; публикация GitHub Release не выполняется.
+После распаковки сделайте файл исполняемым:
+`chmod +x Turtle_Code-x86_64.AppImage`.
+
+Сборка выполняется на Ubuntu 22.04 x86_64 с GCC 12, Qt 6 и Tree-sitter.
+Проверяются текстовое ядро и история; это не полный набор тестов интерфейса.
+linuxdeploy с Qt-плагином упаковывает приложение и зависимости, включая
+платформенные плагины X11/Wayland и библиотеки TLS. Версии упаковщиков закреплены
+тегами выпусков и SHA-256 в `packaging/build-appimage.sh`.
+После упаковки проверяется запуск AppImage с `--version` через Qt offscreen.
+Это не проверка реальной графической сессии или всех дистрибутивов.
+
+Для локальной упаковки на Ubuntu 22.04 установите зависимости из workflow,
+соберите Release с префиксом `/usr`, затем выполните:
+
+```sh
+bash packaging/build-appimage.sh build/appimage dist
+chmod +x dist/Turtle_Code-x86_64.AppImage
+./dist/Turtle_Code-x86_64.AppImage
+```
+
+Для запуска AppImage может потребоваться FUSE 2. Без FUSE можно запустить
+`./dist/Turtle_Code-x86_64.AppImage --appimage-extract-and-run`.
+Языковые серверы, отладочные адаптеры, Git CLI и инструменты сборки грамматик
+по-прежнему устанавливаются отдельно. Файл AppImage не содержит весь toolchain.
+
 ## Установка
 
 После сборки:
