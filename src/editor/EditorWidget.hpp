@@ -95,7 +95,7 @@ public:
     void goToLine(int oneBasedLine);
     [[nodiscard]] QPoint navigationPosition() const;
     void setNavigationPosition(int oneBasedLine, int oneBasedColumn);
-    void revealMatch(int oneBasedLine, int oneBasedColumn, int utf16Length, bool centerVertically = false);
+    void revealMatch(int oneBasedLine, int oneBasedColumn, int utf16Length, bool centerVertically = true);
     void showFindBar(bool replace = false);
     void findNext(bool backward = false);
     void selectNextOccurrence();
@@ -212,7 +212,7 @@ private:
     void adjustDiffHighlights(const HighlightEdit& edit);
     void adjustDiffAlignment(std::size_t firstLine, int removedLines, int insertedLines);
     void updateScrollBars();
-    void ensureCursorVisible();
+    void ensureCursorVisible(bool centerVertically = false);
     [[nodiscard]] int textAreaWidth() const;
     [[nodiscard]] int cursorPixelColumn() const;
     void setModified(bool modified);

@@ -47,6 +47,54 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     if(smart){app.setOrganizationName("TurtleCodeTests");app.setApplicationName("SmartEditing");smartEditingTests();return 0;}
     {
+        std::string text;
+        for (int i=1;i<=300;++i)
+            text += (i==80 || i==220) ? "needle\n" : "context\n";
+        EditorWidget editor; load(editor,text.c_str());
+        const auto checkCentered = [&](int line) {
+            auto* scroll=editor.verticalScrollBar();
+            const int expected=std::clamp(editor.visualRowForLine(line-1)-scroll->pageStep()/2,
+                                          scroll->minimum(),scroll->maximum());
+            Q_ASSERT(editor.navigationPosition().x()==line);
+            Q_ASSERT(scroll->value()==expected);
+        };
+        // Explicit jumps center in both directions, including already visible
+        // targets, while document boundaries clamp to the available context.
+        editor.goToLine(220); checkCentered(220);
+        editor.goToLine(80); checkCentered(80);
+        editor.goToLine(81); checkCentered(81);
+        editor.goToLine(1); checkCentered(1);
+        editor.goToLine(300); checkCentered(300);
+        editor.revealMatch(220,1,6); checkCentered(220);
+        Q_ASSERT(editor.selectedText()=="needle");
+        editor.revealMatch(80,1,6); checkCentered(80);
+        // Diff spacer rows must be included in the centering calculation.
+        QVector<int> rows;
+        for(int i=0;i<300;++i){rows.append(-1);rows.append(i);}
+        editor.setDiffAlignment(rows);
+        editor.revealMatch(220,1,6); checkCentered(220);
+        editor.setDiffAlignment({});
+        editor.goToLine(1);
+        editor.showFindBar();
+        auto* query=editor.findChild<QLineEdit*>("fileFindInput");
+        auto* count=editor.findChild<QLabel*>("fileFindCount");
+        Q_ASSERT(query && count);
+        query->setText("needle");
+        QElapsedTimer timer;timer.start();
+        while(count->text()!="0/2" && timer.elapsed()<5000) {
+            QApplication::processEvents();QThread::msleep(1);
+        }
+        Q_ASSERT(count->text()=="0/2");
+        editor.findNext(); checkCentered(80);
+        editor.findNext(); checkCentered(220);
+        editor.findNext(true); checkCentered(80);
+        Q_ASSERT(editor.selectedText()=="needle");
+        // Ordinary arrow movement does not recenter the viewport.
+        const int top=editor.verticalScrollBar()->value();
+        editor.setFocus();QTest::keyClick(&editor,Qt::Key_Down);
+        Q_ASSERT(editor.verticalScrollBar()->value()==top);
+    }
+    {
         EditorWidget editor;
         std::string text;
         for (int i=0;i<2000;++i) {

@@ -682,7 +682,7 @@ void EditorWidget::navigateFind(int direction) {
     const auto match = findMatches_[index];
     cursors_ = {match.end}; cursorAnchors_ = {match.begin}; syncPrimaryCursor();
     history_.breakCoalescing();
-    updateScrollBars(); ensureCursorVisible();
+    updateScrollBars(); ensureCursorVisible(true);
     findCount_->setText(QStringLiteral("%1/%2").arg(index + 1).arg(findMatches_.size()));
     viewport()->update();
 }
@@ -819,7 +819,7 @@ void EditorWidget::refreshSyntaxHighlighting() {
 void EditorWidget::goToLine(int oneBasedLine) {
     const auto line = static_cast<std::size_t>(std::max(1, oneBasedLine) - 1);
     moveCursor(buffer_.lineStart(std::min(line, buffer_.lineCount() - 1)), false);
-    ensureCursorVisible();
+    ensureCursorVisible(true);
     viewport()->update();
 }
 
@@ -856,14 +856,7 @@ void EditorWidget::revealMatch(int oneBasedLine, int oneBasedColumn, int utf16Le
     cursorAnchors_ = {anchor_};
     history_.breakCoalescing();
     updateScrollBars();
-    if (centerVertically) {
-        const int targetLine = static_cast<int>(line);
-        const int halfPage = std::max(0, verticalScrollBar()->pageStep() / 2);
-        verticalScrollBar()->setValue(visualRowForLine(targetLine) - halfPage);
-        ensureCursorVisible();
-    } else {
-        ensureCursorVisible();
-    }
+    ensureCursorVisible(centerVertically);
     viewport()->update();
 }
 
@@ -1099,11 +1092,14 @@ void EditorWidget::updateScrollBars() {
     }
 }
 
-void EditorWidget::ensureCursorVisible() {
+void EditorWidget::ensureCursorVisible(bool centerVertically) {
     const int line = visualRowForLine(static_cast<int>(std::min<std::size_t>(currentLine(),
         static_cast<std::size_t>(std::numeric_limits<int>::max() - 1))));
     const int page = std::max(1, verticalScrollBar()->pageStep());
-    if (line < verticalScrollBar()->value()) verticalScrollBar()->setValue(line);
+    // Explicit navigation leaves context around the target. Typing and cursor
+    // movement retain minimal scrolling; the scrollbar clamps near BOF/EOF.
+    if (centerVertically) verticalScrollBar()->setValue(line - page / 2);
+    else if (line < verticalScrollBar()->value()) verticalScrollBar()->setValue(line);
     else if (line >= verticalScrollBar()->value() + page)
         verticalScrollBar()->setValue(line - page + 1);
 

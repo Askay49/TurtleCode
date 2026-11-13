@@ -123,7 +123,7 @@ private:
     void finishProjectReplace(const ProjectReplaceResult& result);
     void setProjectRoots(const QStringList& roots, bool explicitProject = true);
     void openFile(const QString& path, int line = 0, int column = 0, int length = 0,
-                  bool centerTarget = false);
+                  bool centerTarget = true);
     EditorWidget* createEditor(const QString& path);
     void formatDocument();
     void renameSymbol();
