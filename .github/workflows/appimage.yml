@@ -33,6 +33,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             gcc-12 g++-12 ninja-build pkg-config python3-venv \
             qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-wayland libqt6svg6 \
+            libgl1-mesa-dev \
             libgit2-dev libtree-sitter-dev libssl-dev \
             curl ca-certificates file desktop-file-utils patchelf
           python3 -m venv "$RUNNER_TEMP/cmake-venv"
