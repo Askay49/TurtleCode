@@ -54,6 +54,7 @@
 #include <QFrame>
 #include <QFileInfo>
 #include <QFile>
+#include <QFileSystemWatcher>
 #include <QLineEdit>
 #include <QInputDialog>
 #include <QDialog>
@@ -246,6 +247,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     grammarManager_->ensureCppInstalled();
 #endif
     initializeRecovery();
+    initializeFileMonitoring();
 }
 
 MainWindow::~MainWindow() {
@@ -1212,6 +1214,8 @@ void MainWindow::finishClose(bool accepted) {
         }
         if(recovery_)recovery_->forgetDocument(editor->property("recoveryId").toString());
         recoveredRevisions_.remove(editor);
+        externalFileStates_.remove(editor);
+        externallyReloading_.remove(editor);
         tabs_->removeTab(tabs_->indexOf(editor));editor->deleteLater();
     }
     closingEditors_.clear();closing_=false;
@@ -1585,6 +1589,146 @@ void MainWindow::stageGitPaths(const QString& repository, const QStringList& pat
         return;
     }
     gitPanel_->stagePaths(repository, paths);
+}
+
+void MainWindow::initializeFileMonitoring() {
+    documentWatcher_ = new QFileSystemWatcher(this);
+    documentChangeTimer_ = new QTimer(this);
+    documentChangeTimer_->setObjectName("externalFileDebounce");
+    documentChangeTimer_->setSingleShot(true);
+    documentChangeTimer_->setInterval(250);
+    const auto queue = [this](const QString&) { documentChangeTimer_->start(); };
+    connect(documentWatcher_, &QFileSystemWatcher::fileChanged, this, queue);
+    connect(documentWatcher_, &QFileSystemWatcher::directoryChanged, this, queue);
+    connect(documentChangeTimer_, &QTimer::timeout, this, &MainWindow::checkExternalFileChanges);
+    // Also retries busy documents, failed watches, and paths recreated after deletion.
+    auto* poll = new QTimer(this);
+    poll->setInterval(2000);
+    connect(poll, &QTimer::timeout, this, &MainWindow::checkExternalFileChanges);
+    poll->start();
+    documentChangeTimer_->start();
+}
+
+void MainWindow::checkExternalFileChanges() {
+    if (closing_ || !tabs_) return;
+    QSet<QString> files, directories;
+    for (int i = 0; i < tabs_->count(); ++i) {
+        auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
+        if (!editor || editor->filePath().isEmpty()) continue;
+        const QString path = editor->filePath();
+        const QFileInfo info(path);
+        if (info.isFile()) files.insert(path);
+        // Watching the directory survives atomic replacement of the file. Watch
+        // the nearest surviving ancestor when an entire directory disappears.
+        QDir parent = info.absoluteDir();
+        while (!parent.exists() && !parent.isRoot())
+            parent.setPath(QFileInfo(parent.absolutePath()).absolutePath());
+        directories.insert(parent.absolutePath());
+    }
+    const auto reconcile = [this](const QStringList& watched, const QSet<QString>& wanted) {
+        for (const auto& path : watched)
+            if (!wanted.contains(path)) documentWatcher_->removePath(path);
+        for (const auto& path : wanted)
+            if (!watched.contains(path)) documentWatcher_->addPath(path);
+    };
+    reconcile(documentWatcher_->files(), files);
+    reconcile(documentWatcher_->directories(), directories);
+
+    for (int i = 0; i < tabs_->count(); ++i) {
+        auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
+        if (!editor || editor->isBusy() || editor->filePath().isEmpty()
+            || externallyReloading_.contains(editor)) continue;
+        const QString path = editor->filePath();
+        const auto state = diskFileState(path);
+        auto& tracked = externalFileStates_[editor];
+        if (tracked.path != path) { tracked = {}; tracked.path = path; }
+        if (state == editor->document()->diskState) {
+            tracked.observed.clear(); tracked.acknowledged.clear();
+            continue;
+        }
+        if (tracked.acknowledged == state) continue;
+        const auto now = QDateTime::currentMSecsSinceEpoch();
+        if (tracked.observed != state) {
+            tracked.observed = state; tracked.observedAt = now;
+            documentChangeTimer_->start();
+            continue;
+        }
+        if (now - tracked.observedAt < 250) { documentChangeTimer_->start(); continue; }
+        if (state == "missing") {
+            tracked.acknowledged = state;
+            editor->markFileMissing();
+            statusBar()->showMessage(I18n::text("File deleted outside Turtle Code: %1. The open copy has been kept; save it to restore the file.").arg(path), 10000);
+            continue;
+        }
+        if (!editor->isModified()) { reloadExternalFile(editor, path, state); continue; }
+        // Do not stack dialogs over Save, Close, or other editor operations.
+        if (externalChangeDialog_ || QApplication::activeModalWidget()) continue;
+        auto* message = new IconDialogs::MessageBox(QMessageBox::Warning,
+            I18n::text("File changed on disk"),
+            I18n::text("%1 was changed outside Turtle Code and has unsaved edits. Reloading will discard your edits.").arg(path),
+            QMessageBox::NoButton, this);
+        message->setObjectName("externalFileConflict");
+        message->setAttribute(Qt::WA_DeleteOnClose);
+        auto* reload = message->addButton(I18n::text("Reload from Disk"), QMessageBox::DestructiveRole);
+        reload->setIcon(Codicons::icon("refresh"));
+        auto* keep = message->addButton(I18n::text("Keep My Changes"), QMessageBox::RejectRole);
+        keep->setIcon(Codicons::icon("edit"));
+        message->setDefaultButton(keep);
+        message->setEscapeButton(keep);
+        externalChangeDialog_ = message;
+        QPointer<EditorWidget> guard(editor);
+        const auto revision = editor->lspRevision();
+        connect(message, &QDialog::finished, this, [this, message, reload, guard, path, state, revision] {
+            externalChangeDialog_.clear();
+            if (!guard || tabs_->indexOf(guard) < 0 || guard->filePath() != path || closing_) return;
+            if (diskFileState(path) != state || guard->lspRevision() != revision || guard->isBusy()) {
+                documentChangeTimer_->start(); return;
+            }
+            if (message->clickedButton() == reload) reloadExternalFile(guard, path, state);
+            else externalFileStates_[guard].acknowledged = state;
+            // Keeping edits does not advance Document::diskState: Save still
+            // asks before overwriting the external version.
+        });
+        message->open();
+    }
+}
+
+void MainWindow::reloadExternalFile(EditorWidget* editor, const QString& path, const QByteArray& state) {
+    externallyReloading_.insert(editor);
+    QPointer<EditorWidget> guard(editor);
+    const auto revision = editor->lspRevision();
+    auto* watcher = new QFutureWatcher<LoadedFile>(this);
+    connect(watcher, &QFutureWatcher<LoadedFile>::finished, this, [this, watcher, guard, path, state, revision] {
+        auto loaded = watcher->result(); watcher->deleteLater();
+        if (!guard) return;
+        externallyReloading_.remove(guard);
+        // Reading never locks the editor. Discard stale results if the user
+        // edits, saves, renames, closes, or starts another operation meanwhile.
+        if (closing_ || tabs_->indexOf(guard) < 0 || guard->isBusy() || guard->filePath() != path || guard->lspRevision() != revision
+            || diskFileState(path) != state || loaded.diskState != state) {
+            documentChangeTimer_->start(); return;
+        }
+        if (!loaded.buffer) {
+            statusBar()->showMessage(I18n::text("Could not reload %1: %2").arg(path, loaded.error), 7000);
+            return;
+        }
+        guard->reloadBuffer(std::move(*loaded.buffer), path);
+        guard->document()->diskState = state;
+        externalFileStates_.remove(guard);
+        checkpointRecovery();
+        statusBar()->showMessage(I18n::text("Reloaded from disk: %1").arg(path), 3000);
+    });
+    watcher->setFuture(QtConcurrent::run([path, state] {
+        LoadedFile loaded;
+        if (diskFileState(path) != state) return loaded;
+        loaded.buffer = std::make_shared<PieceTreeBuffer>();
+        std::string error;
+        if (!loaded.buffer->loadFile(QFile::encodeName(path).toStdString(), &error)) {
+            loaded.error = QString::fromStdString(error); loaded.buffer.reset();
+        }
+        loaded.diskState = diskFileState(path);
+        return loaded;
+    }));
 }
 
 void MainWindow::saveCurrentFile() {
@@ -2254,6 +2398,7 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
     });
     editor->setProperty("recoveryId",QUuid::createUuid().toString(QUuid::WithoutBraces));
     connect(editor,&EditorWidget::contentChanged,this,[this,editor] {
+        if(documentChangeTimer_) documentChangeTimer_->start();
         if(gitDiff_ && gitDiff_->nativeEditor()==editor) gitDiff_->documentChanged();
         if(!QSettings().value("editor/recoveryEnabled",true).toBool())return;
         if(recoveryTimer_)recoveryTimer_->start();
@@ -2262,6 +2407,8 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
     const auto document = editor->document();
     connect(editor, &QObject::destroyed, this, [this, document, editor] {
         recoveredRevisions_.remove(editor);
+        externalFileStates_.remove(editor);
+        externallyReloading_.remove(editor);
         if (lsp_) lsp_->close(document->filePath());
     });
 

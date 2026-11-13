@@ -90,6 +90,7 @@ public:
     bool saveFile(const QString& path);
     void updateFilePathAfterRename(const QString& path);
     void detachDeletedFile();
+    void markFileMissing();
     void refreshSyntaxHighlighting();
     void goToLine(int oneBasedLine);
     [[nodiscard]] QPoint navigationPosition() const;

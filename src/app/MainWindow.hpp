@@ -33,6 +33,8 @@ class QStackedWidget;
 class QWidget;
 class QToolButton;
 class QTimer;
+class QFileSystemWatcher;
+class QMessageBox;
 class QFrame;
 class QListWidget;
 struct ProjectReplaceRequest;
@@ -77,6 +79,21 @@ private:
     QSet<QString> recoveredSourceDirectories_;
     std::vector<std::shared_ptr<QLockFile>> restorationLocks_;
     bool recoveryMigrationFailed_{false};
+
+    void initializeFileMonitoring();
+    void checkExternalFileChanges();
+    void reloadExternalFile(EditorWidget* editor, const QString& path, const QByteArray& state);
+    QFileSystemWatcher* documentWatcher_{nullptr};
+    QTimer* documentChangeTimer_{nullptr};
+    QPointer<QMessageBox> externalChangeDialog_;
+    struct ExternalFileState {
+        QString path;
+        QByteArray observed;
+        QByteArray acknowledged;
+        qint64 observedAt{0};
+    };
+    QHash<EditorWidget*, ExternalFileState> externalFileStates_;
+    QSet<EditorWidget*> externallyReloading_;
 
     void createMenus();
     void scheduleOutline();

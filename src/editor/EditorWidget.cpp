@@ -877,6 +877,12 @@ void EditorWidget::updateFilePathAfterRename(const QString& path) {
     viewport()->update();
 }
 
+void EditorWidget::markFileMissing() {
+    // Retain the path and Undo history, but protect this in-memory copy on close.
+    history_.markUnsaved();
+    setModified(true);
+}
+
 void EditorWidget::detachDeletedFile() {
     clearSemanticHighlighting();
     filePath_.clear();

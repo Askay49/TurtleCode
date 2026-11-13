@@ -725,5 +725,10 @@
   "Save %1 before pulling changes?": "Сохранить %1 перед получением изменений?",
   "Discard changes…": "Отменить изменения…",
   "Discard all unstaged changes to %1, including unsaved edits? The file will be restored from the index.": "Отменить все изменения вне индекса в %1, включая несохранённые правки? Файл будет восстановлен из индекса.",
-  "File is busy. Try again when its operation finishes.": "Файл занят. Повторите после завершения текущей операции."
+  "File is busy. Try again when its operation finishes.": "Файл занят. Повторите после завершения текущей операции.",
+  "File deleted outside Turtle Code: %1. The open copy has been kept; save it to restore the file.": "Файл удалён вне Turtle Code: %1. Открытая копия сохранена; сохраните её, чтобы восстановить файл.",
+  "%1 was changed outside Turtle Code and has unsaved edits. Reloading will discard your edits.": "%1 изменён вне Turtle Code и содержит несохранённые правки. Загрузка с диска удалит ваши правки.",
+  "Reload from Disk": "Загрузить с диска",
+  "Keep My Changes": "Оставить мои правки",
+  "Reloaded from disk: %1": "Обновлён с диска: %1"
 }

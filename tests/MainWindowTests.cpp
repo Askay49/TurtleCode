@@ -43,6 +43,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QSaveFile>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QThread>
@@ -67,6 +68,128 @@ static void closeDiscard(MainWindow& window) {
     });responder.start();window.close();
     assert(waitFor([&]{const auto editors=window.findChildren<EditorWidget*>();return !window.isVisible() || std::any_of(editors.begin(),editors.end(),[](auto* e){return e->isBusy();});}));
 }
+static void externalFileTests(QTemporaryDir& directory) {
+    const auto path = directory.filePath("external.txt");
+    const auto write = [&](const QByteArray& text, bool atomic = false) {
+        if (atomic) {
+            QSaveFile file(path); assert(file.open(QIODevice::WriteOnly));
+            assert(file.write(text) == text.size()); assert(file.commit());
+        } else {
+            QFile file(path); assert(file.open(QIODevice::WriteOnly));
+            assert(file.write(text) == text.size());
+        }
+    };
+    write("one\ntwo\nthree\n");
+    MainWindow window; window.show(); window.openPaths({path});
+    auto* editor = window.findChild<EditorWidget*>(); assert(editor);
+    assert(waitFor([&] { return !editor->isBusy(); }));
+    auto text = [&] { return QByteArray::fromStdString(editor->document()->buffer().text()); };
+    auto conflict = [&]() -> QMessageBox* {
+        for (auto* message : window.findChildren<QMessageBox*>("externalFileConflict"))
+            if (message->isVisible()) return message;
+        return nullptr;
+    };
+    auto click = [&](QMessageBox::ButtonRole role) {
+        auto* message = conflict(); assert(message);
+        for (auto* button : message->buttons())
+            if (message->buttonRole(button) == role) { button->click(); return; }
+        assert(false);
+    };
+    auto* debounce = window.findChild<QTimer*>("externalFileDebounce"); assert(debounce);
+    // Complete initial watch registration before writing.
+    assert(waitFor([&] { return !debounce->isActive(); }));
+    editor->setNavigationPosition(2, 2);
+    write("new one\nnew two\nnew three\n");
+    assert(waitFor([&] { return text().startsWith("new one"); }));
+    assert(!editor->isModified() && editor->navigationPosition() == QPoint(2, 2));
+    assert(editor->document()->diskState == diskFileState(path));
+    editor->documentUndo(); assert(text().startsWith("new one"));
+    // Atomic saves replace the inode; subsequent saves must still be observed.
+    write("atomic one\n", true);
+    assert(waitFor([&] { return text() == "atomic one\n"; }));
+    write("atomic two\n", true);
+    assert(waitFor([&] { return text() == "atomic two\n"; }));
+    // A reload clears Undo rather than permitting a return to stale content.
+    QTest::keyClick(editor, Qt::Key_X); assert(editor->isModified());
+    editor->documentUndo(); assert(!editor->isModified());
+    write("after undo\n");
+    assert(waitFor([&] { return text() == "after undo\n"; }));
+    editor->documentUndo(); assert(text() == "after undo\n" && !editor->isModified());
+
+    QTest::keyClick(editor, Qt::Key_Y); const auto local = text();
+    write("outside with conflict\n");
+    assert(waitFor([&] { return conflict() && conflict()->isVisible(); }));
+    assert(text() == local && editor->isModified());
+    click(QMessageBox::RejectRole);
+    assert(waitFor([&] { return !conflict(); }));
+    // Keeping the local copy suppresses repeated prompts but keeps Save's protection.
+    QTest::qWait(2300); assert(!conflict() && text() == local);
+    assert(editor->document()->diskState != diskFileState(path));
+    QTimer cancel; cancel.setInterval(1);
+    QObject::connect(&cancel, &QTimer::timeout, [] {
+        if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+            if (auto* button = message->button(QMessageBox::Cancel)) button->click();
+    });
+    QAction* save = nullptr;
+    for (auto* a : window.findChildren<QAction*>()) if (a->text() == "&Save") save = a;
+    assert(save); cancel.start(); save->trigger(); cancel.stop();
+    assert(text() == local && editor->isModified());
+    // A newer external version offers a fresh choice.
+    write("reload accepted\n", true);
+    assert(waitFor([&] { return conflict() && conflict()->isVisible(); }));
+    click(QMessageBox::DestructiveRole);
+    assert(waitFor([&] { return text() == "reload accepted\n" && !editor->isModified(); }));
+    assert(waitFor([&] { return !conflict(); }));
+    // Busy documents defer synchronization until the operation finishes.
+    editor->setBusy(true); write("deferred\n"); QTest::qWait(700);
+    assert(text() == "reload accepted\n"); editor->setBusy(false);
+    assert(waitFor([&] { return text() == "deferred\n"; }));
+    // Never install an asynchronous result over edits made after accepting Reload.
+    QTest::keyClick(editor, Qt::Key_Z); write("racing reload\n");
+    assert(waitFor([&] { return conflict() && conflict()->isVisible(); }));
+    click(QMessageBox::DestructiveRole);
+    QTest::keyClick(editor, Qt::Key_Q); const auto newerLocal = text();
+    assert(waitFor([&] { return conflict() && conflict()->isVisible(); }));
+    assert(text() == newerLocal && editor->isModified());
+    click(QMessageBox::DestructiveRole);
+    assert(waitFor([&] { return text() == "racing reload\n" && !editor->isModified(); }));
+    assert(waitFor([&] { return !conflict(); }));
+    // A deleted clean file becomes an unsaved copy and survives; Save recreates it.
+    assert(QFile::remove(path));
+    assert(waitFor([&] { return editor->isModified(); }));
+    assert(editor->filePath() == path && text() == "racing reload\n");
+    QTimer overwrite; overwrite.setInterval(1);
+    QObject::connect(&overwrite, &QTimer::timeout, [] {
+        if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+            for (auto* button : message->buttons())
+                if (message->buttonRole(button) == QMessageBox::DestructiveRole) { button->click(); break; }
+    });
+    overwrite.start(); save->trigger();
+    assert(waitFor([&] { return !editor->isBusy(); })); overwrite.stop();
+    assert(QFileInfo::exists(path) && !editor->isModified());
+    // Our own save does not trigger a spurious reload or clear its Undo history.
+    QTest::qWait(600); QTest::keyClick(editor, Qt::Key_W); save->trigger();
+    assert(waitFor([&] { return !editor->isBusy(); })); QTest::qWait(600);
+    assert(!conflict() && !editor->isModified());
+    editor->documentUndo(); assert(editor->isModified());
+    // Undo back to the saved state before another external update.
+    editor->documentUndo(true); assert(!editor->isModified());
+    write("still watching\n", true);
+    assert(waitFor([&] { return text() == "still watching\n"; }));
+    // Losing the parent directory must not hang the watcher reconciliation.
+    const auto folder = directory.filePath("vanishing"); assert(QDir().mkpath(folder));
+    const auto nested = folder + "/nested.txt";
+    { QFile file(nested); assert(file.open(QIODevice::WriteOnly)); file.write("nested\n"); }
+    window.openPaths({nested});
+    auto* tabs = window.findChild<QTabWidget*>();
+    auto* nestedEditor = qobject_cast<EditorWidget*>(tabs->currentWidget()); assert(nestedEditor);
+    assert(waitFor([&] { return !nestedEditor->isBusy(); }));
+    assert(QDir(folder).removeRecursively());
+    assert(waitFor([&] { return nestedEditor->isModified(); }));
+    assert(nestedEditor->document()->buffer().text() == "nested\n");
+    closeDiscard(window);
+}
+
 static void safetyTests(QTemporaryDir& directory) {
     const auto write=[&](const QString& path,const QByteArray& text){QFile file(path);assert(file.open(QIODevice::WriteOnly));assert(file.write(text)==text.size());};
     const auto read=[](const QString& path){QFile file(path);assert(file.open(QIODevice::ReadOnly));return file.readAll();};
@@ -377,6 +500,7 @@ int main(int argc,char**argv) {
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--git"){gitWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--formatting"){formattingTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--memory-workload") return memoryWorkload(argc,argv);
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--external-files"){externalFileTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--safety"){safetyTests(directory);return 0;}
     if (argc>1 && QString::fromLocal8Bit(argv[1])=="--russian-ui") {
         assert(I18n::saveLanguage("ru")); assert(I18n::initialize());
