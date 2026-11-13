@@ -30,7 +30,7 @@ jobs:
       - name: Install build and packaging dependencies
         run: |
           exec > >(tee "$RUNNER_TEMP/appimage-dependencies.log") 2>&1
-          trap 'tail -n 15 "$RUNNER_TEMP/appimage-dependencies.log" | sed "s/^/::error title=Dependency setup::/"' ERR
+          trap 'printf "::error title=Dependency setup::Failed command: %s\n" "$BASH_COMMAND"; sleep 1; tail -n 30 "$RUNNER_TEMP/appimage-dependencies.log" | sed "s/^/::error title=Dependency setup::/"' ERR
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             gcc-12 g++-12 ninja-build pkg-config python3-venv \
