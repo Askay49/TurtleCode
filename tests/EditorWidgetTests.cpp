@@ -1,4 +1,5 @@
 #include "editor/EditorWidget.hpp"
+#include "app/ThemeManager.hpp"
 
 #include <QApplication>
 #include <QPaintEvent>
@@ -46,6 +47,48 @@ int main(int argc, char** argv) {
     if(smart)qputenv("XDG_CONFIG_HOME",smartSettings.path().toUtf8());
     QApplication app(argc, argv);
     if(smart){app.setOrganizationName("TurtleCodeTests");app.setApplicationName("SmartEditing");smartEditingTests();return 0;}
+    {
+        EditorWidget editor;
+        load(editor,"adc + value\nadc adc_state my_adc adc2 ADC (adc)\nvalue value\n");
+        const auto original=editor.document()->buffer().text();
+        const int height=editor.fontMetrics().height()+3;
+        const auto pixel=[&](int row,const QString& prefix) {
+            return editor.viewport()->grab().toImage().pixelColor(
+                editor.lineNumberAreaWidth()+14+editor.fontMetrics().horizontalAdvance(prefix),row*height+height-3);
+        };
+        const auto highlight=QColor::fromRgb(ThemeManager::instance().color("editor.occurrence").rgb());
+        editor.setNavigationPosition(1,2);
+        if(qEnvironmentVariableIsSet("TURTLE_CODE_OCCURRENCE_SCREENSHOT"))
+            editor.grab().save(qEnvironmentVariable("TURTLE_CODE_OCCURRENCE_SCREENSHOT"));
+        Q_ASSERT(pixel(1,"")==highlight);
+        Q_ASSERT(pixel(1,"adc adc_state my_adc adc2 ADC (")==highlight);
+        for(const auto& prefix:QStringList{"adc ","adc adc_state my_","adc adc_state my_adc ","adc adc_state my_adc adc2 "})
+            Q_ASSERT(pixel(1,prefix)!=highlight);
+        Q_ASSERT(pixel(2,"")!=highlight);
+        PaintRecorder recorder;editor.viewport()->installEventFilter(&recorder);
+        QApplication::processEvents();recorder.painted=QRegion();
+        QTest::keyClick(&editor,Qt::Key_End);QApplication::processEvents();
+        Q_ASSERT(recorder.painted.contains(editor.viewport()->rect()));
+        // Moving the caret changes and clears the decoration immediately.
+        editor.setNavigationPosition(1,9);
+        Q_ASSERT(pixel(1,"")!=highlight && pixel(2,"")==highlight);
+        editor.setNavigationPosition(1,5); // '+'
+        Q_ASSERT(pixel(1,"")!=highlight && pixel(2,"")!=highlight);
+        // Explicit fragments follow the same substring rules as Ctrl+D.
+        editor.revealMatch(2,5,3);
+        Q_ASSERT(pixel(1,"adc adc_state my_")==highlight);
+        editor.revealMatch(1,4,1); // whitespace-only selections do not highlight
+        Q_ASSERT(pixel(1,"")!=highlight);
+        editor.revealMatch(1,1,3);
+        Q_ASSERT(pixel(1,"")==highlight);
+        Q_ASSERT(editor.document()->buffer().text()==original && !editor.isModified());
+        load(editor,"датчик +\nдатчик датчик_state\n");
+        editor.setNavigationPosition(1,3);
+        Q_ASSERT(pixel(1,"")==highlight && pixel(1,"датчик ")!=highlight);
+        // Exceptional lines and large selections do not trigger full scans.
+        editor.loadBuffer(PieceTreeBuffer(std::string(128*1024,'a')),"long.txt");
+        Q_ASSERT(!editor.viewport()->grab().isNull());
+    }
     {
         std::string text;
         for (int i=1;i<=300;++i)

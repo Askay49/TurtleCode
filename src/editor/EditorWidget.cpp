@@ -11,6 +11,7 @@
 #include "core/text/LineAnchor.hpp"
 #include <map>
 #include "UnicodeNavigation.hpp"
+#include "OccurrenceMatching.hpp"
 
 #include <QApplication>
 #include <QCompleter>
@@ -1204,6 +1205,34 @@ QString EditorWidget::selectedText() const {
     return QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()));
 }
 
+std::pair<QString,bool> EditorWidget::occurrenceQuery() const {
+    if (!preeditText_.isEmpty()) return {};
+    const auto [begin,end] = selectionRange();
+    const auto row = buffer_.lineIndexAt(hasSelection()?begin:cursorPosition_);
+    const auto start = buffer_.lineStart(row);
+    // Keep automatic highlighting bounded, including on exceptional long lines
+    // and large/multiline selections. It never materializes the whole document.
+    if (buffer_.lineEnd(row)-start > 64u*1024u) return {};
+    if (hasSelection() && (end-begin>4096 || buffer_.lineIndexAt(end)!=row)) return {};
+    const auto& text = cachedLine(row);
+    qsizetype first = buffer_.utf16Before(hasSelection()?begin:cursorPosition_) - buffer_.utf16Before(start);
+    qsizetype last = first;
+    if (hasSelection()) {
+        last += buffer_.utf16Before(end)-buffer_.utf16Before(begin);
+    } else {
+        // At the right edge of an identifier, keep that identifier active.
+        if (!OccurrenceMatching::isWord(text,first) && OccurrenceMatching::isWord(text,first-1)) --first;
+        if (!OccurrenceMatching::isWord(text,first)) return {};
+        last=first+1;
+        while (OccurrenceMatching::isWord(text,first-1)) --first;
+        while (OccurrenceMatching::isWord(text,last)) ++last;
+    }
+    if (last-first>4096) return {};
+    const auto query=text.mid(first,last-first);
+    if (query.trimmed().isEmpty()) return {};
+    return {query,OccurrenceMatching::wholeWord(text,first,last)};
+}
+
 void EditorWidget::paintEvent(QPaintEvent*) {
     updateBracketMatch();
     QPainter painter(viewport());
@@ -1222,6 +1251,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
     WorkspaceBackground::instance().paint(viewport(), painter, QRect(0, 0, gutter, viewport()->height()), ThemeManager::instance().color("sidebar.background"));
     const auto [selBegin, selEnd] = selectionRange();
     const auto activeLine = currentLine();
+    const auto [occurrence,wholeOccurrence] = occurrenceQuery();
 
     const int visualCount = diffRows_.isEmpty() ? static_cast<int>(std::min<std::size_t>(buffer_.lineCount(), INT_MAX-1)) : int(diffRows_.size());
     const int visibleEnd = static_cast<int>(std::min<long long>(visualCount, static_cast<long long>(firstLine) + visibleLines));
@@ -1290,6 +1320,26 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         painter.save();
         painter.setClipRect(QRect(gutter, 0, viewport()->width() - gutter,
                                   viewport()->height()), Qt::IntersectClip);
+        if (!occurrence.isEmpty()) {
+            // Only visible ordinary lines are scanned. Cap geometry work for
+            // highly repetitive lines; search/selection are painted on top.
+            int painted=0;
+            int nextX=gutter+12-horizontalOffset;
+            qsizetype measured=0;
+            const int width=fontMetrics().horizontalAdvance(occurrence);
+            for (qsizetype match=line.indexOf(occurrence);match>=0 && painted<256;
+                 match=line.indexOf(occurrence,match+occurrence.size())) {
+                if (wholeOccurrence && (OccurrenceMatching::isWord(line,match-1) ||
+                                        OccurrenceMatching::isWord(line,match+occurrence.size()))) continue;
+                const int x=nextX+fontMetrics().horizontalAdvance(line.mid(measured,match-measured));
+                nextX=x+width;
+                measured=match+occurrence.size();
+                if (x>=viewport()->width()) break;
+                if (x+width<=gutter) continue;
+                painter.fillRect(QRect(x,y+2,std::max(2,width),lh-4),ThemeManager::instance().color("editor.occurrence"));
+                ++painted;
+            }
+        }
         if (!findMatches_.empty()) {
             const auto first = std::lower_bound(findMatches_.begin(), findMatches_.end(), start,
                 [](const FindMatch& match, std::size_t offset) { return match.end <= offset; });
@@ -1617,6 +1667,7 @@ void EditorWidget::setDiagnostics(const QJsonArray& items) {
     viewport()->update();
 }
 void EditorWidget::moveCursor(std::size_t position, bool keepAnchor) {
+    const auto previousOccurrence=occurrenceQuery();
     const auto previousLine = currentLine();
     const bool previousSelection = hasSelection();
     const int previousVerticalOffset = verticalScrollBar()->value();
@@ -1649,7 +1700,7 @@ void EditorWidget::moveCursor(std::size_t position, bool keepAnchor) {
 
     const bool scrolled = previousVerticalOffset != verticalScrollBar()->value() ||
                           previousHorizontalOffset != horizontalScrollBar()->value();
-    if (scrolled || previousSelection || hasSelection()) {
+    if (scrolled || previousSelection || hasSelection() || previousOccurrence!=occurrenceQuery()) {
         viewport()->update();
     } else {
         const auto updateLine = [this](std::size_t line) {
@@ -2019,20 +2070,7 @@ void EditorWidget::redo() {
 void EditorWidget::selectNextOccurrence() {
     if (busy_) return;
 
-        // Identifier boundaries include Unicode letters, digits and combining
-        // marks. Treat both UTF-16 halves of a supplementary letter as a word.
-        const auto isWord = [](const QString& text, qsizetype index) {
-            if (index < 0 || index >= text.size()) return false;
-            char32_t code = text[index].unicode();
-            if (text[index].isLowSurrogate() && index > 0 && text[index-1].isHighSurrogate())
-                code = QChar::surrogateToUcs4(text[index-1],text[index]);
-            else if (text[index].isHighSurrogate() && index+1 < text.size() && text[index+1].isLowSurrogate())
-                code = QChar::surrogateToUcs4(text[index],text[index+1]);
-            const auto category = QChar::category(code);
-            return QChar::isLetterOrNumber(code) || code == U'_' ||
-                category == QChar::Mark_NonSpacing || category == QChar::Mark_SpacingCombining ||
-                category == QChar::Mark_Enclosing;
-        };
+        const auto isWord = OccurrenceMatching::isWord;
         std::size_t queryBegin = 0;
         std::size_t queryEnd = 0;
         if (hasSelection()) {
@@ -2063,8 +2101,7 @@ void EditorWidget::selectNextOccurrence() {
         const auto sourceBegin = static_cast<qsizetype>(buffer_.utf16Before(queryBegin) -
                                                        buffer_.utf16Before(buffer_.lineStart(queryLine)));
         const auto sourceEnd = sourceBegin + query.size();
-        bool wholeWord = sourceEnd <= source.size() && !isWord(source,sourceBegin-1) && !isWord(source,sourceEnd);
-        for (qsizetype i=0;wholeWord && i<query.size();++i) wholeWord = isWord(query,i);
+        const bool wholeWord = OccurrenceMatching::wholeWord(source,sourceBegin,sourceEnd);
         // Continue after the furthest selected occurrence.  Searching from the
         // first occurrence again makes repeated Ctrl+D add the same cursor.
         std::size_t searchStart = queryEnd;

@@ -97,6 +97,7 @@ ThemeManager::ThemeManager() {
             {"border", dark ? QColor(panel).lighter(155) : QColor(panel).darker(120)},
             {"accent", QColor(accent)}, {"accent.text", QColor(dark ? "#ffffff" : "#000000")},
             {"search.match", dark ? QColor("#584c28") : QColor("#fff0ad")},
+            {"editor.occurrence", dark ? QColor(accent).darker(260) : QColor(accent).lighter(180)},
             {"search.activeMatch", dark ? QColor("#b0802a") : QColor("#ffd166")},
             {"diagnostic.error", QColor(dark ? "#f14c4c" : "#c62828")},
             {"diagnostic.warning", QColor(dark ? "#cca700" : "#936500")},
@@ -167,6 +168,7 @@ QColor ThemeManager::color(const QString& role) const {
     if (found != current_.colors.cend()) return *found;
     // Optional terminal overrides inherit editor colors, including in older custom themes.
     static const QMap<QString, QString> inherited = {
+        {"editor.occurrence", "editor.selection"},
         {"terminal.background", "editor.background"}, {"terminal.foreground", "text.primary"},
         {"terminal.cursor", "editor.cursor"}, {"terminal.selectionBackground", "editor.selection"},
         {"terminal.selectionForeground", "text.primary"}

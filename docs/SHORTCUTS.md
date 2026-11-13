@@ -31,6 +31,14 @@ The editor header shows only the current document, without a close button. The r
 Unicode combining marks belong to identifiers. An explicitly selected fragment
 inside an identifier keeps substring matching. Matching is case-sensitive.
 
+The editor also highlights matching text automatically, using the word at the
+caret or the current single-line selection and the same identifier boundaries.
+This is textual highlighting and does not require a language server. Search
+matches and selections are drawn above it. The theme role is `editor.occurrence`.
+Only visible lines are scanned; lines over 64 KiB, queries over 4096 UTF-16 units,
+multiline/whitespace-only selections and IME preedit are skipped. At most 256
+visible matches per line are drawn. Highlighting never changes text or history.
+
 Line operations are available in **Code / Код**:
 
 | Command | Default shortcut |

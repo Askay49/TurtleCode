@@ -230,6 +230,7 @@ private:
     void positionFindBar();
     void updateFindMatches();
     void navigateFind(int direction);
+    std::pair<QString,bool> occurrenceQuery() const;
     void replaceFindMatch(bool all);
     void clearSelection();
     void clearAllSelections();
