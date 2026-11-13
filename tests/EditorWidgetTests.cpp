@@ -48,6 +48,37 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     if(smart){app.setOrganizationName("TurtleCodeTests");app.setApplicationName("SmartEditing");smartEditingTests();return 0;}
     {
+        // Fractional glyph advances must not be rounded once per colored run:
+        // doing so gradually separates painted text from caret/hit-test geometry.
+        const QString line="if(i==0 && i < 12314 || 123213) { return i + 12345; }";
+        for(const int pixels:{13,17}) {
+            EditorWidget editor;
+            QFont font("DejaVu Sans Mono");font.setPixelSize(pixels);editor.setFont(font);
+            load(editor,(line+"\n").toUtf8().constData());
+            SemanticHighlightResult result;result.valid=true;
+            for(int i=0;i<line.size();++i)
+                result.lines[0].push_back({0,i,1,i%2?"number":"variable",{}});
+            editor.setSemanticHighlighting(result,editor.lspRevision(),editor.semanticGeneration());
+            editor.setNavigationPosition(1,line.size()+1);
+            const int endX=editor.viewport()->mapFromGlobal(editor.cursorScreenPosition()).x();
+            editor.setNavigationPosition(2,1); // Keep caret/occurrence decorations off the measured row.
+            const auto image=editor.viewport()->grab().toImage();
+            const auto background=ThemeManager::instance().color("editor.background").rgb();
+            int rightmost=-1;
+            const int height=editor.fontMetrics().height()+3;
+            for(int y=0;y<height;++y)for(int x=editor.lineNumberAreaWidth()+12;x<image.width();++x)
+                if(image.pixelColor(x,y).rgb()!=background)rightmost=std::max(rightmost,x);
+            const int cell=editor.fontMetrics().horizontalAdvance('M');
+            Q_ASSERT(rightmost<=endX+1 && rightmost>=endX-cell);
+            // Clicking each character boundary uses the same full-line metrics.
+            for(int column=0;column<line.size();++column) {
+                const int x=editor.lineNumberAreaWidth()+12+editor.fontMetrics().horizontalAdvance(line.left(column));
+                QTest::mouseClick(editor.viewport(),Qt::LeftButton,Qt::NoModifier,QPoint(x,height/2));
+                Q_ASSERT(editor.navigationPosition()==QPoint(1,column+1));
+            }
+        }
+    }
+    {
         EditorWidget editor;
         load(editor,"adc + value\nadc adc_state my_adc adc2 ADC (adc)\nvalue value\n");
         const auto original=editor.document()->buffer().text();

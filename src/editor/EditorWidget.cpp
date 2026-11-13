@@ -33,6 +33,7 @@
 #include "app/FontSettings.hpp"
 #include "app/WorkspaceBackground.hpp"
 #include <QFontMetrics>
+#include <QFontMetricsF>
 #include <QKeyEvent>
 #include <QEvent>
 #include <QContextMenuEvent>
@@ -1238,6 +1239,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
     QPainter painter(viewport());
     // Keep glyph metrics, line drawing and cursor X calculations on one font.
     painter.setFont(font());
+    const QFontMetricsF textMetrics(font());
     WorkspaceBackground::instance().paint(viewport(), painter, viewport()->rect(), ThemeManager::instance().color("editor.background"));
     auto currentLineBackground = ThemeManager::instance().color("editor.currentLine");
     if (WorkspaceBackground::instance().enabled()) currentLineBackground.setAlpha(100);
@@ -1324,19 +1326,19 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             // Only visible ordinary lines are scanned. Cap geometry work for
             // highly repetitive lines; search/selection are painted on top.
             int painted=0;
-            int nextX=gutter+12-horizontalOffset;
+            qreal nextX=gutter+12-horizontalOffset;
             qsizetype measured=0;
-            const int width=fontMetrics().horizontalAdvance(occurrence);
+            const qreal width=textMetrics.horizontalAdvance(occurrence);
             for (qsizetype match=line.indexOf(occurrence);match>=0 && painted<256;
                  match=line.indexOf(occurrence,match+occurrence.size())) {
                 if (wholeOccurrence && (OccurrenceMatching::isWord(line,match-1) ||
                                         OccurrenceMatching::isWord(line,match+occurrence.size()))) continue;
-                const int x=nextX+fontMetrics().horizontalAdvance(line.mid(measured,match-measured));
+                const qreal x=nextX+textMetrics.horizontalAdvance(line.mid(measured,match-measured));
                 nextX=x+width;
                 measured=match+occurrence.size();
                 if (x>=viewport()->width()) break;
                 if (x+width<=gutter) continue;
-                painter.fillRect(QRect(x,y+2,std::max(2,width),lh-4),ThemeManager::instance().color("editor.occurrence"));
+                painter.fillRect(QRectF(x,y+2,std::max(qreal(2),width),lh-4),ThemeManager::instance().color("editor.occurrence"));
                 ++painted;
             }
         }
@@ -1462,15 +1464,17 @@ void EditorWidget::paintEvent(QPaintEvent*) {
                     segments.last().length+=length;
                 else segments.append({position,length,style});
             }
-            int x=textX;
+            qreal x=textX;
             for(const auto& segment:segments) {
                 QFont styled=font(); styled.setBold(segment.style.fontStyles&1); styled.setItalic(segment.style.fontStyles&2);
                 styled.setUnderline(segment.style.fontStyles&4); styled.setStrikeOut(segment.style.fontStyles&8);
                 painter.setFont(styled); painter.setPen(segment.style.color);
                 const auto part=line.mid(segment.start,segment.length);
-                painter.drawText(QPoint(x,baseline),part);
-                // Preserve fixed-pitch cursor/hit-test geometry with italic glyphs.
-                x+=fontMetrics().horizontalAdvance(part);
+                painter.drawText(QPointF(x,baseline),part);
+                // Keep fractional advances across color/style boundaries.
+                // Rounding every run accumulates drift from whole-line caret,
+                // selection and mouse hit-test coordinates.
+                x+=textMetrics.horizontalAdvance(part);
             }
             painter.setFont(font());
         }
