@@ -4,6 +4,12 @@
 #include <QString>
 #include <sys/stat.h>
 
+#ifdef __APPLE__
+#define st_atim st_atimespec
+#define st_mtim st_mtimespec
+#define st_ctim st_ctimespec
+#endif
+
 // Nanosecond timestamps plus identity detect replacement, deletion and in-place edits.
 inline QByteArray diskFileState(const QString& path) {
     struct stat info{};
