@@ -467,6 +467,17 @@ int main(int argc, char** argv) {
         Q_ASSERT(editor.cursorCount()==1 && editor.navigationPosition()==QPoint(1,2));
         QTest::keyClick(&editor,Qt::Key_X);
         Q_ASSERT(editor.document()->buffer().text()=="fxoo foo\nfoo foo\n");
+        // Escape also clears a single selection without moving its active end.
+        for(const bool reverse:{false,true}) {
+            load(editor,"alpha beta\n");
+            editor.setNavigationPosition(1,reverse?6:1);
+            QTest::keyClick(&editor,reverse?Qt::Key_Left:Qt::Key_Right,Qt::ShiftModifier);
+            Q_ASSERT(!editor.selectedText().isEmpty() && editor.cursorCount()==1);
+            const auto position=editor.navigationPosition();
+            QTest::keyClick(&editor,Qt::Key_Escape);
+            Q_ASSERT(editor.selectedText().isEmpty() && editor.navigationPosition()==position);
+            Q_ASSERT(editor.document()->buffer().text()=="alpha beta\n" && !editor.isModified());
+        }
     }
     {
         EditorWidget editor;

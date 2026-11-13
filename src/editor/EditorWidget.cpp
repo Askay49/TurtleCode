@@ -2174,7 +2174,7 @@ void EditorWidget::keyPressEvent(QKeyEvent* event) {
         }
     }
     if (busy_) { event->accept(); return; }
-    if (event->key()==Qt::Key_Escape && event->modifiers()==Qt::NoModifier && cursors_.size()>1) {
+    if (event->key()==Qt::Key_Escape && event->modifiers()==Qt::NoModifier && (cursors_.size()>1 || hasSelection())) {
         cursors_={cursorPosition_};
         clearAllSelections();
         preferredColumn_=static_cast<std::size_t>(-1);
