@@ -86,7 +86,7 @@ ShortcutManager::ShortcutManager() {
     add("debug.stepOut", "Step Out", "Run and Debug", "Shift+F11");
     add("debug.breakpoint", "Toggle breakpoint at cursor", "Run and Debug", "F9");
     add("view.git", "Git", "View", "Ctrl+Shift+G");
-    add("view.explorer", "Toggle explorer", "View", "Ctrl+B");
+    add("view.explorer", "Toggle sidebar", "View", "Ctrl+B");
     add("settings.interfaceLanguage", "Interface language", "Settings");
     add("settings.theme", "Theme", "Settings");
     add("settings.languages", "Languages", "Settings");

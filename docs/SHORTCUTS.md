@@ -39,6 +39,11 @@ Only visible lines are scanned; lines over 64 KiB, queries over 4096 UTF-16 unit
 multiline/whitespace-only selections and IME preedit are skipped. At most 256
 visible matches per line are drawn. Highlighting never changes text or history.
 
+**Ctrl+B** hides or restores the current left sidebar page, retaining the chosen
+Explorer/Search/Git/Debug page. The activity icons remain visible. Clicking the
+active icon hides its panel; clicking it again reopens it. Clicking another icon
+switches to that panel. Hiding the sidebar returns focus to the editor.
+
 Line operations are available in **Code / Код**:
 
 | Command | Default shortcut |

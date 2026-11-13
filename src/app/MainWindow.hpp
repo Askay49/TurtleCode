@@ -169,6 +169,8 @@ private:
     QToolButton* gitActivity_{nullptr};
     QStackedWidget* sidebarStack_{nullptr};
     QWidget* sidebar_{nullptr};
+    void setSidebarVisible(bool visible);
+    void updateSidebarActivities();
     QToolButton* explorerActivity_{nullptr};
     QToolButton* searchActivity_{nullptr};
     QStringList projectRoots_;

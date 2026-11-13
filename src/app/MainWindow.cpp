@@ -280,7 +280,11 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 }
 
 void MainWindow::createUi() {
-    auto* splitter = new QSplitter(this);
+    auto* workspace = new QWidget(this);
+    auto* workspaceLayout = new QHBoxLayout(workspace);
+    workspaceLayout->setContentsMargins(0,0,0,0);
+    workspaceLayout->setSpacing(0);
+    auto* splitter = new QSplitter(workspace);
     connect(splitter, &QSplitter::splitterMoved, this, [this] {
         update();
         for (auto* child : findChildren<QWidget*>()) child->update();
@@ -293,13 +297,14 @@ void MainWindow::createUi() {
     auto* sidebarLayout = new QHBoxLayout(sidebar_);
     sidebarLayout->setContentsMargins(0, 0, 0, 0);
     sidebarLayout->setSpacing(0);
-    auto* activityBar = new QWidget(sidebar_);
+    auto* activityBar = new QWidget(workspace);
     activityBar->setObjectName("activityBar");
     activityBar->setFixedWidth(46);
     auto* activityLayout = new QVBoxLayout(activityBar);
     activityLayout->setContentsMargins(0, 0, 0, 0);
     activityLayout->setSpacing(0);
     explorerActivity_ = new QToolButton(activityBar);
+    explorerActivity_->setObjectName("explorerActivity");
     explorerActivity_->setIcon(Codicons::icon("files"));
     explorerActivity_->setIconSize(QSize(24, 24));
     explorerActivity_->setFixedSize(40, 40);
@@ -308,6 +313,7 @@ void MainWindow::createUi() {
     explorerActivity_->setCheckable(true);
     explorerActivity_->setChecked(true);
     searchActivity_ = new QToolButton(activityBar);
+    searchActivity_->setObjectName("searchActivity");
     searchActivity_->setIcon(Codicons::icon("search"));
     searchActivity_->setIconSize(QSize(24, 24));
     searchActivity_->setFixedSize(40, 40);
@@ -339,6 +345,7 @@ void MainWindow::createUi() {
     activityLayout->addStretch();
 
     sidebarStack_ = new QStackedWidget(sidebar_);
+    sidebarStack_->setObjectName("sidebarStack");
     auto* explorerPage = new QWidget(sidebarStack_);
     auto* explorerLayout = new QVBoxLayout(explorerPage);
     explorerLayout->setContentsMargins(0, 0, 0, 0);
@@ -531,16 +538,15 @@ void MainWindow::createUi() {
         if(!path.isEmpty() && line>0 && QFileInfo(path).isFile()) openFile(path,line);
         for(auto* e:findChildren<EditorWidget*>()) e->setDebugLine(e->filePath()==path?line:0);
     });
-    sidebarLayout->addWidget(activityBar);
     sidebarLayout->addWidget(sidebarStack_, 1);
 
     const auto showSidebarPage = [this](int index) {
-        sidebar_->show();
+        if (!sidebar_->isHidden() && sidebarStack_->currentIndex()==index) {
+            setSidebarVisible(false);
+            return;
+        }
         sidebarStack_->setCurrentIndex(index);
-        explorerActivity_->setChecked(index == 0);
-        searchActivity_->setChecked(index == 1);
-        gitActivity_->setChecked(index == 2);
-        debugActivity_->setChecked(index == 3);
+        setSidebarVisible(true);
         if (index == 2) gitPanel_->refresh();
         if (index == 1) searchPanel_->focusSearch();
     };
@@ -548,10 +554,7 @@ void MainWindow::createUi() {
     connect(searchActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(1); });
     connect(gitActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(2); });
     connect(debugActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(3); });
-    connect(sidebarStack_, &QStackedWidget::currentChanged, this, [this](int index) {
-        explorerActivity_->setChecked(index==0); searchActivity_->setChecked(index==1);
-        gitActivity_->setChecked(index==2); debugActivity_->setChecked(index==3);
-    });
+    connect(sidebarStack_, &QStackedWidget::currentChanged, this, [this] { updateSidebarActivities(); });
     connect(explorer_, &ProjectExplorer::fileActivated, this, [this](const QString& path) {
         openFile(path);
     });
@@ -677,9 +680,25 @@ void MainWindow::createUi() {
     splitter->addWidget(editorArea_);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({300, 980});
-    setCentralWidget(splitter);
+    splitter->setSizes({254, 980});
+    workspaceLayout->addWidget(activityBar);
+    workspaceLayout->addWidget(splitter,1);
+    setCentralWidget(workspace);
     setProjectRoots({QDir::homePath()}, false);
+}
+
+void MainWindow::updateSidebarActivities() {
+    int index=0;
+    for (auto* button : {explorerActivity_,searchActivity_,gitActivity_,debugActivity_}) {
+        button->setChecked(!sidebar_->isHidden() && sidebarStack_->currentIndex()==index);
+        ++index;
+    }
+}
+
+void MainWindow::setSidebarVisible(bool visible) {
+    sidebar_->setVisible(visible);
+    updateSidebarActivities();
+    if (!visible && tabs_ && tabs_->currentWidget()) tabs_->currentWidget()->setFocus();
 }
 
 void MainWindow::createMenus() {
@@ -904,27 +923,20 @@ void MainWindow::createMenus() {
         searchPanel_->setShowHidden(show);
         statusBar()->showMessage(show ? I18n::text("Hidden files are visible") : I18n::text("Hidden files are hidden"), 2000);
     });
-    auto* explorerAction = viewMenu->addAction(Codicons::icon("files"), I18n::text("Toggle Explorer"));
+    auto* explorerAction = viewMenu->addAction(Codicons::icon("files"), I18n::text("Toggle Side Bar"));
+    explorerAction->setObjectName("view.explorer");
     ShortcutManager::instance().bind("view.explorer", explorerAction);
     connect(explorerAction, &QAction::triggered, this, [this] {
-        if (sidebar_->isVisible() && sidebarStack_->currentWidget() == explorer_) {
-            sidebar_->hide();
-        } else {
-            sidebar_->show();
-            sidebarStack_->setCurrentWidget(explorer_);
-            explorerActivity_->setChecked(true);
-            searchActivity_->setChecked(false);
-            gitActivity_->setChecked(false);
-        }
+        setSidebarVisible(sidebar_->isHidden());
     });
     auto* debugAction = viewMenu->addAction(Codicons::icon("debug-alt"), I18n::text("Run and Debug"));
     ShortcutManager::instance().bind("view.debug",debugAction);
-    connect(debugAction,&QAction::triggered,this,[this]{sidebar_->show();sidebarStack_->setCurrentWidget(debugPanel_);});
+    connect(debugAction,&QAction::triggered,this,[this]{setSidebarVisible(true);sidebarStack_->setCurrentWidget(debugPanel_);});
     for(const auto& command:QStringList{"start","stop","next","stepIn","stepOut"}) {
         auto* action=new QAction(this); addAction(action);
         ShortcutManager::instance().bind("debug."+command,action);
         connect(action,&QAction::triggered,this,[this,command]{
-            if(command=="start") { sidebar_->show(); sidebarStack_->setCurrentWidget(debugPanel_); }
+            if(command=="start") { setSidebarVisible(true); sidebarStack_->setCurrentWidget(debugPanel_); }
             debugPanel_->perform(command);
         });
     }
@@ -934,7 +946,7 @@ void MainWindow::createMenus() {
     auto* gitAction = viewMenu->addAction(Codicons::icon("source-control"), I18n::text("Git"));
     ShortcutManager::instance().bind("view.git", gitAction);
     connect(gitAction, &QAction::triggered, this, [this] {
-        sidebar_->show(); sidebarStack_->setCurrentWidget(gitPanel_);
+        setSidebarVisible(true); sidebarStack_->setCurrentWidget(gitPanel_);
         explorerActivity_->setChecked(false); searchActivity_->setChecked(false); gitActivity_->setChecked(true);
         gitPanel_->refresh();
     });
@@ -1153,6 +1165,7 @@ void MainWindow::requestClose(QVector<QPointer<EditorWidget>> editors,bool windo
     }
     closing_=true;closingWindow_=window;closingIndex_=0;
     menuBar()->setEnabled(false);sidebar_->setEnabled(false);
+    findChild<QWidget*>("activityBar")->setEnabled(false);
     closingEditors_=std::move(editors);discardedRevisions_.clear();
     for(const auto& editor:closingEditors_)if(editor)editor->setEnabled(false);
     advanceClose();
@@ -1183,6 +1196,7 @@ void MainWindow::finishClose(bool accepted) {
         QTimer::singleShot(50,this,[this]{finishClose(true);});return;
     }
     menuBar()->setEnabled(true);sidebar_->setEnabled(true);
+    findChild<QWidget*>("activityBar")->setEnabled(true);
     for(const auto& editor:closingEditors_)if(editor)editor->setEnabled(true);
     if(!accepted){closing_=false;closingEditors_.clear();return;}
     finishTabSwitch(false);
@@ -1853,7 +1867,7 @@ void MainWindow::updateWindowTitle() {
 }
 
 void MainWindow::searchInProject() {
-    sidebar_->show();
+    setSidebarVisible(true);
     sidebarStack_->setCurrentWidget(searchPanel_);
     explorerActivity_->setChecked(false);
     searchActivity_->setChecked(true);

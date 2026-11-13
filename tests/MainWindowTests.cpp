@@ -7,6 +7,7 @@
 #include "terminal/TerminalSession.hpp"
 #include <QToolButton>
 #include <QSplitter>
+#include <QStackedWidget>
 #include "app/ThemeManager.hpp"
 #include "app/WorkspaceBackground.hpp"
 #include <QImage>
@@ -368,7 +369,7 @@ static void terminalWindowTests(const QTemporaryDir& directory) {
     auto* toggle = window.findChild<QAction*>("view.terminal"); assert(toggle);
     assert(toggle->shortcut() == QKeySequence("Ctrl+`"));
     assert(!window.findChild<TerminalPanel*>());
-    auto* workspace = qobject_cast<QSplitter*>(window.centralWidget()); assert(workspace);
+    auto* workspace = window.findChild<QSplitter*>("workspaceSplitter"); assert(workspace);
     auto* sidebar = workspace->widget(0);
     auto bounds = [&window](QWidget* widget) { return QRect(widget->mapTo(&window, QPoint()), widget->size()); };
     const auto sidebarBefore = bounds(sidebar);
@@ -583,6 +584,39 @@ int main(int argc,char**argv) {
         const auto path=directory.filePath(name); QFile file(path); assert(file.open(QIODevice::WriteOnly));
         assert(file.write("int value = 1;\n")>0); return path;
     };
+    {
+        MainWindow window;window.resize(1100,720);window.show();window.activateWindow();
+        window.openPaths({write("sidebar.cpp")});
+        auto* editor=window.findChild<EditorWidget*>();assert(editor);
+        assert(waitFor([&]{return !editor->isBusy();}));
+        auto* stack=window.findChild<QStackedWidget*>("sidebarStack");assert(stack);
+        auto* sidebar=stack->parentWidget();
+        auto* bar=window.findChild<QWidget*>("activityBar");assert(bar);
+        auto* splitter=window.findChild<QSplitter*>("workspaceSplitter");assert(splitter);
+        editor->setFocus();QApplication::processEvents();
+        const int expanded=splitter->widget(1)->width();
+        QTest::keyClick(&window,Qt::Key_B,Qt::ControlModifier);QApplication::processEvents();
+        assert(sidebar->isHidden() && bar->isVisible());
+        assert(splitter->widget(1)->width()>expanded);
+        QTest::keyClick(&window,Qt::Key_B,Qt::ControlModifier);QApplication::processEvents();
+        assert(sidebar->isVisible() && stack->currentIndex()==0);
+        const QStringList buttons{"explorerActivity","searchActivity","gitActivity","debugActivity"};
+        for(int i=0;i<buttons.size();++i) {
+            // Begin hidden, then reopen each page using its permanent icon.
+            if(!sidebar->isHidden())window.findChild<QAction*>("view.explorer")->trigger();
+            auto* button=window.findChild<QToolButton*>(buttons[i]);assert(button);
+            QTest::mouseClick(button,Qt::LeftButton);QApplication::processEvents();
+            assert(sidebar->isVisible() && stack->currentIndex()==i && button->isChecked());
+            QTest::mouseClick(button,Qt::LeftButton);QApplication::processEvents();
+            assert(sidebar->isHidden() && bar->isVisible() && !button->isChecked());
+            // Ctrl+B restores the last page, including Search/Git/Debug.
+            QTest::keyClick(&window,Qt::Key_B,Qt::ControlModifier);QApplication::processEvents();
+            assert(sidebar->isVisible() && stack->currentIndex()==i && button->isChecked());
+        }
+        QTest::mouseClick(window.findChild<QToolButton*>("explorerActivity"),Qt::LeftButton);
+        assert(sidebar->isVisible() && stack->currentIndex()==0);
+        assert(!editor->isModified());closeDiscard(window);
+    }
     const auto cpp=write("test.cpp"), text=write("test.txt");
     {
         assert(QDir().mkpath(directory.filePath("quick-project")));
