@@ -2174,6 +2174,17 @@ void EditorWidget::keyPressEvent(QKeyEvent* event) {
         }
     }
     if (busy_) { event->accept(); return; }
+    if (event->key()==Qt::Key_Escape && event->modifiers()==Qt::NoModifier && cursors_.size()>1) {
+        cursors_={cursorPosition_};
+        clearAllSelections();
+        preferredColumn_=static_cast<std::size_t>(-1);
+        history_.breakCoalescing();
+        updateScrollBars();
+        ensureCursorVisible();
+        viewport()->update();
+        event->accept();
+        return;
+    }
     for(const auto& command:std::vector<std::pair<QString,std::pair<int,bool>>>{
         {"editor.copyLineUp",{-1,true}},{"editor.copyLineDown",{1,true}},
         {"editor.moveLineUp",{-1,false}},{"editor.moveLineDown",{1,false}}})

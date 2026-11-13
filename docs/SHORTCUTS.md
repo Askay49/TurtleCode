@@ -31,6 +31,10 @@ The editor header shows only the current document, without a close button. The r
 Unicode combining marks belong to identifiers. An explicitly selected fragment
 inside an identifier keeps substring matching. Matching is case-sensitive.
 
+**Escape** cancels multiple cursors in the editor, keeping the primary cursor
+at its current position and clearing selections. Document text and Undo history
+are preserved. Completion popups and search fields retain their own Escape action.
+
 The editor also highlights matching text automatically, using the word at the
 caret or the current single-line selection and the same identifier boundaries.
 This is textual highlighting and does not require a language server. Search

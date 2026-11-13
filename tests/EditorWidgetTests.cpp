@@ -447,6 +447,28 @@ int main(int argc, char** argv) {
         Q_ASSERT(editor.document()->buffer().text() == "foo foo\nfoo foo\n");
     }
     {
+        EditorWidget editor;load(editor,"foo foo\nfoo foo\n");
+        editor.selectNextOccurrence();editor.selectNextOccurrence();
+        Q_ASSERT(editor.cursorCount()==3);
+        const auto primary=editor.navigationPosition();
+        const auto original=editor.document()->buffer().text();
+        QTest::keyClick(&editor,Qt::Key_Escape);
+        Q_ASSERT(editor.cursorCount()==1 && editor.selectedText().isEmpty());
+        Q_ASSERT(editor.navigationPosition()==primary);
+        Q_ASSERT(editor.document()->buffer().text()==original && !editor.isModified());
+        QTest::keyClick(&editor,Qt::Key_X);
+        Q_ASSERT(editor.document()->buffer().text()=="foox foo\nfoo foo\n");
+        editor.documentUndo();Q_ASSERT(editor.document()->buffer().text()==original);
+        // Cursor-only multicursors use the same cancellation path.
+        editor.setNavigationPosition(1,2);
+        QTest::keyClick(&editor,Qt::Key_Down,Qt::ControlModifier|Qt::ShiftModifier);
+        Q_ASSERT(editor.cursorCount()==2);
+        QTest::keyClick(&editor,Qt::Key_Escape);
+        Q_ASSERT(editor.cursorCount()==1 && editor.navigationPosition()==QPoint(1,2));
+        QTest::keyClick(&editor,Qt::Key_X);
+        Q_ASSERT(editor.document()->buffer().text()=="fxoo foo\nfoo foo\n");
+    }
+    {
         EditorWidget editor;
         const char* original="adc adc_state my_adc adc2 ADC\nadc (adc) adc\n";
         load(editor,original);
