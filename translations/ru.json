@@ -732,5 +732,6 @@
   "%1 was changed outside Turtle Code and has unsaved edits. Reloading will discard your edits.": "%1 изменён вне Turtle Code и содержит несохранённые правки. Загрузка с диска удалит ваши правки.",
   "Reload from Disk": "Загрузить с диска",
   "Keep My Changes": "Оставить мои правки",
-  "Reloaded from disk: %1": "Обновлён с диска: %1"
+  "Reloaded from disk: %1": "Обновлён с диска: %1",
+  "Applying EditorConfig…": "Применение EditorConfig…"
 }

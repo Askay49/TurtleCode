@@ -585,6 +585,23 @@ int main(int argc,char**argv) {
         assert(file.write("int value = 1;\n")>0); return path;
     };
     {
+        const auto project=directory.filePath("editorconfig-project");assert(QDir().mkpath(project));
+        {QFile config(project+"/.editorconfig");assert(config.open(QIODevice::WriteOnly));
+         config.write("root=true\n[*]\nindent_style=space\nindent_size=2\nend_of_line=lf\ntrim_trailing_whitespace=true\ninsert_final_newline=true\n");}
+        const auto path=project+"/sample.txt";const QByteArray original="x  \r\ny\t";
+        {QFile file(path);assert(file.open(QIODevice::WriteOnly));file.write(original);}
+        MainWindow window;window.show();window.activateWindow();window.openPaths({path});
+        auto* editor=window.findChild<EditorWidget*>();assert(editor);
+        assert(waitFor([&]{return !editor->isBusy();}));
+        editor->setFocus();QApplication::processEvents();
+        QTest::keyClick(editor,Qt::Key_S,Qt::ControlModifier);
+        assert(waitFor([&]{QFile file(path);return !editor->isBusy() && file.open(QIODevice::ReadOnly) && file.readAll()=="x\ny\n";}));
+        assert(editor->document()->buffer().text()=="x\ny\n" && !editor->isModified());
+        editor->documentUndo();assert(waitFor([&]{return !editor->isBusy();}));
+        assert(editor->document()->buffer().text()==original.toStdString() && editor->isModified());
+        closeDiscard(window);
+    }
+    {
         MainWindow window;window.resize(1100,720);window.show();window.activateWindow();
         window.openPaths({write("sidebar.cpp")});
         auto* editor=window.findChild<EditorWidget*>();assert(editor);

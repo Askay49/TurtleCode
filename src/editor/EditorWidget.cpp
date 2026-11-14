@@ -118,6 +118,7 @@ struct BulkResult {
     HistoryResult cursor;
     QString error;
     bool cancelled{false};
+    bool changed{false};
 };
 std::size_t mapPositionThroughChanges(std::size_t position,
                                       const std::vector<EditChange>& sortedChanges) {
@@ -176,7 +177,7 @@ protected:
                 const auto text=QString::fromUtf8(bytes.data(),qsizetype(bytes.size()));
                 int column=0;
                 for (QChar ch:text) {
-                    if (ch==QLatin1Char('\t')) { column+=4-column%4; continue; }
+                    if (ch==QLatin1Char('\t')) { column+=editor_->tabWidth_-column%editor_->tabWidth_; continue; }
                     if (column>=width()-8) break;
                     if (!ch.isSpace()) map.drawLine(4+column,int(row*scale),4+column,int(row*scale)+1);
                     ++column;
@@ -416,6 +417,7 @@ void EditorWidget::loadBuffer(PieceTreeBuffer buffer, const QString& path) {
     invalidateLineCache();
     horizontalExtentDirty_ = true;
     filePath_ = path;
+    refreshEditorConfig();
     document_->diskState = diskFileState(path);
     highlighter_.setLanguageForPath(path);
     highlighter_.clear();
@@ -460,6 +462,7 @@ void EditorWidget::completeAsyncSave(const QString& path) {
     const bool languageChanged = QFileInfo(filePath_).suffix().compare(
         QFileInfo(path).suffix(), Qt::CaseInsensitive) != 0;
     filePath_ = path;
+    refreshEditorConfig();
     document_->diskState = diskFileState(path);
     if (languageChanged) {
         highlighter_.setLanguageForPath(path);
@@ -865,6 +868,7 @@ void EditorWidget::revealMatch(int oneBasedLine, int oneBasedColumn, int utf16Le
 void EditorWidget::updateFilePathAfterRename(const QString& path) {
     clearSemanticHighlighting();
     filePath_ = path;
+    refreshEditorConfig();
     document_->diskState = diskFileState(path);
     highlighter_.setLanguageForPath(filePath_);
     highlighter_.clear();
@@ -881,12 +885,28 @@ void EditorWidget::markFileMissing() {
 void EditorWidget::detachDeletedFile() {
     clearSemanticHighlighting();
     filePath_.clear();
+    refreshEditorConfig();
     highlighter_.setLanguageForPath(QString());
     highlighter_.clear();
     viewport()->update();
 }
 
 bool EditorWidget::saveFile(const QString& path) {
+    try {
+        const auto settings=EditorConfig::resolve(path);
+        if(!settings.warning.isEmpty())emit highlightingStatusChanged(settings.warning);
+        if(settings.normalizes()) {
+            auto staged=buffer_.snapshot();auto stagedHistory=history_;
+            const auto result=EditorConfig::normalize(staged,stagedHistory,cursors_,settings);
+            if(stagedHistory.stateId()!=history_.stateId()) {
+                buffer_=std::move(staged);history_=std::move(stagedHistory);
+                cursors_=result.cursorPositions;cursorPosition_=result.cursorPosition;
+                clearAllSelections();invalidateLineCache();horizontalExtentDirty_=true;
+                clearSemanticHighlighting();highlighter_.setDocumentText(buffer_);setModified(history_.isModified());
+                updateScrollBars();viewport()->update();
+            }
+        }
+    } catch(const std::exception& error){emit highlightingStatusChanged(QString::fromUtf8(error.what()));return false;}
     QSaveFile file(path);
     if(!file.open(QIODevice::WriteOnly)) return false;
     if(!buffer_.forEachChunk([&file](std::string_view chunk) {
@@ -894,6 +914,7 @@ bool EditorWidget::saveFile(const QString& path) {
     }) || !file.commit()) return false;
     const bool languageChanged=QFileInfo(filePath_).suffix().compare(QFileInfo(path).suffix(),Qt::CaseInsensitive)!=0;
     filePath_ = path;
+    refreshEditorConfig();
     document_->diskState = diskFileState(path);
     if(languageChanged) {
         highlighter_.setLanguageForPath(path);
@@ -942,12 +963,30 @@ void EditorWidget::rebuildHitTestCache(int line) const {
         const auto next = EditorUnicode::nextGrapheme(bytes, byteOffset);
         const QString prefix = QString::fromUtf8(bytes.data(), static_cast<qsizetype>(next));
         hitTestOffsets_.push_back(next);
-        hitTestColumns_.push_back(fontMetrics().horizontalAdvance(prefix));
+        hitTestColumns_.push_back(textWidth(prefix));
         byteOffset = next;
     }
 }
 
 int EditorWidget::lineHeight() const { return fontMetrics().height() + 3; }
+QString EditorWidget::expandedTabs(const QString& text,int& column) const {
+    QString result;
+    result.reserve(text.size());
+    for(QChar ch:text) {
+        if(ch=='\t') {const int count=tabWidth_-column%tabWidth_;result+=QString(count,' ');column+=count;}
+        else {
+            result+=ch;
+            const auto category=ch.category();
+            if(!ch.isLowSurrogate() && category!=QChar::Mark_NonSpacing && category!=QChar::Mark_Enclosing)++column;
+        }
+    }
+    return result;
+}
+int EditorWidget::textWidth(const QString& text) const {
+    if(!text.contains('\t'))return fontMetrics().horizontalAdvance(text);
+    int column=0;
+    return qRound(QFontMetricsF(font()).horizontalAdvance(expandedTabs(text,column)));
+}
 int EditorWidget::gutterWidth() const {
     return fontMetrics().horizontalAdvance(QString::number(buffer_.lineCount())) + 24;
 }
@@ -964,7 +1003,7 @@ int EditorWidget::cursorPixelColumn() const {
     }
     const auto prefixBytes = buffer_.slice(start, cursorPosition_ - start);
     const QString prefix = QString::fromUtf8(prefixBytes.data(), static_cast<qsizetype>(prefixBytes.size()));
-    return fontMetrics().horizontalAdvance(prefix);
+    return textWidth(prefix);
 }
 
 int EditorWidget::visualRowForLine(int line) const {
@@ -1080,7 +1119,7 @@ void EditorWidget::updateScrollBars() {
             cachedHorizontalWidth_=static_cast<int>(std::min<std::size_t>(columns*std::max(1,fontMetrics().horizontalAdvance('M')),std::numeric_limits<int>::max()/2));
         } else {
             const auto bytes=buffer_.line(lineNo);
-            cachedHorizontalWidth_=fontMetrics().horizontalAdvance(QString::fromUtf8(bytes.data(),bytes.size()));
+            cachedHorizontalWidth_=textWidth(QString::fromUtf8(bytes.data(),bytes.size()));
         }
         cachedHorizontalLine_ = lineNo;
         horizontalExtentDirty_ = false;
@@ -1306,8 +1345,8 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         if(diff!=diffHighlights_.cend()) {
             painter.fillRect(QRect(gutter,y,viewport()->width()-gutter,lh),QColor(40,170,90,50));
             if(diff->second>0) {
-                const int x=gutter+12+fontMetrics().horizontalAdvance(line.left(diff->first))-horizontalOffset;
-                const int width=fontMetrics().horizontalAdvance(line.mid(diff->first,diff->second));
+                const int x=gutter+12+textWidth(line.left(diff->first))-horizontalOffset;
+                const int width=textWidth(line.left(diff->first+diff->second))-textWidth(line.left(diff->first));
                 painter.fillRect(QRect(x,y,std::max(2,width),lh),QColor(40,190,90,110));
             }
         }
@@ -1328,12 +1367,13 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             int painted=0;
             qreal nextX=gutter+12-horizontalOffset;
             qsizetype measured=0;
-            const qreal width=textMetrics.horizontalAdvance(occurrence);
+            int displayColumn=0;
             for (qsizetype match=line.indexOf(occurrence);match>=0 && painted<256;
                  match=line.indexOf(occurrence,match+occurrence.size())) {
                 if (wholeOccurrence && (OccurrenceMatching::isWord(line,match-1) ||
                                         OccurrenceMatching::isWord(line,match+occurrence.size()))) continue;
-                const qreal x=nextX+textMetrics.horizontalAdvance(line.mid(measured,match-measured));
+                const qreal x=nextX+textMetrics.horizontalAdvance(expandedTabs(line.mid(measured,match-measured),displayColumn));
+                const qreal width=textMetrics.horizontalAdvance(expandedTabs(occurrence,displayColumn));
                 nextX=x+width;
                 measured=match+occurrence.size();
                 if (x>=viewport()->width()) break;
@@ -1348,10 +1388,10 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             for (auto it = first; it != findMatches_.end() && it->begin < end; ++it) {
                 const auto a = std::max(start, it->begin) - start;
                 const auto b = std::min(end, it->end) - start;
-                const int x = gutter + 12 + fontMetrics().horizontalAdvance(
+                const int x = gutter + 12 + textWidth(
                     line.left(QString::fromUtf8(buffer_.slice(start, a).c_str()).size())) - horizontalOffset;
-                const int width = fontMetrics().horizontalAdvance(QString::fromUtf8(
-                    buffer_.slice(start + a, b - a).c_str()));
+                const int width = textWidth(line.left(QString::fromUtf8(buffer_.slice(start,b).c_str()).size())) -
+                                  textWidth(line.left(QString::fromUtf8(buffer_.slice(start,a).c_str()).size()));
                 const auto index = static_cast<int>(it - findMatches_.begin());
                 painter.fillRect(QRect(x, y + 2, std::max(2, width), lh - 4),
                     index == activeFindMatch_ ? ThemeManager::instance().color("search.activeMatch") : ThemeManager::instance().color("search.match"));
@@ -1364,12 +1404,12 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             const auto selected = buffer_.slice(start + a, b - a);
             const QString qPrefix = QString::fromUtf8(prefix.data(), static_cast<qsizetype>(prefix.size()));
             const QString qSelected = QString::fromUtf8(selected.data(), static_cast<qsizetype>(selected.size()));
-            const int x = gutter + 12 + fontMetrics().horizontalAdvance(qPrefix) - horizontalOffset;
-            const int width = fontMetrics().horizontalAdvance(qSelected);
+            const int x = gutter + 12 + textWidth(qPrefix) - horizontalOffset;
+            const int width = textWidth(qPrefix+qSelected)-textWidth(qPrefix);
             painter.fillRect(QRect(x, y + 2, std::max(2, width), lh - 4), ThemeManager::instance().color("editor.selection"));
         }
         if (selBegin <= end && selEnd > end && end < buffer_.size() && buffer_.byteAt(end) == '\n') {
-            const int x = gutter + 12 + fontMetrics().horizontalAdvance(line) - horizontalOffset;
+            const int x = gutter + 12 + textWidth(line) - horizontalOffset;
             painter.fillRect(QRect(x, y + 2, std::max(2, viewport()->width() - x), lh - 4),
                              ThemeManager::instance().color("editor.selection"));
         }
@@ -1384,14 +1424,14 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             const auto selected = buffer_.slice(start + a, b - a);
             const QString qPrefix = QString::fromUtf8(prefix.data(), static_cast<qsizetype>(prefix.size()));
             const QString qSelected = QString::fromUtf8(selected.data(), static_cast<qsizetype>(selected.size()));
-            const int x = gutter + 12 + fontMetrics().horizontalAdvance(qPrefix) - horizontalOffset;
-            const int width = fontMetrics().horizontalAdvance(qSelected);
+            const int x = gutter + 12 + textWidth(qPrefix) - horizontalOffset;
+            const int width = textWidth(qPrefix+qSelected)-textWidth(qPrefix);
             painter.fillRect(QRect(x, y + 2, std::max(2, width), lh - 4), ThemeManager::instance().color("editor.selection"));
         }
         for(const auto position:{bracketMatch_.first,bracketMatch_.second}) {
             if(!position || *position<start || *position>=end || (!bracketMatch_.second && !bracketMatch_.unmatched))continue;
             const auto prefix=buffer_.slice(start,*position-start);
-            const int x=gutter+12+fontMetrics().horizontalAdvance(QString::fromUtf8(prefix.data(),prefix.size()))-horizontalOffset;
+            const int x=gutter+12+textWidth(QString::fromUtf8(prefix.data(),prefix.size()))-horizontalOffset;
             const int width=fontMetrics().horizontalAdvance(QChar::fromLatin1(buffer_.byteAt(*position)));
             auto color=ThemeManager::instance().color(bracketMatch_.unmatched?"diagnostic.error":"accent");
             auto fill=color;fill.setAlpha(45);painter.fillRect(QRect(x,y+1,std::max(2,width),lh-2),fill);
@@ -1403,8 +1443,8 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             const auto prefixBytes = buffer_.slice(start, localBytes);
             const QString compositionPrefix = QString::fromUtf8(prefixBytes.data(), static_cast<qsizetype>(prefixBytes.size()));
             displayLine = compositionPrefix + preeditText_ + line.mid(compositionPrefix.size());
-            const int preeditX = gutter + 12 + fontMetrics().horizontalAdvance(compositionPrefix) - horizontalOffset;
-            const int preeditWidth = fontMetrics().horizontalAdvance(preeditText_);
+            const int preeditX = gutter + 12 + textWidth(compositionPrefix) - horizontalOffset;
+            const int preeditWidth = textWidth(preeditText_);
             painter.setPen(ThemeManager::instance().color("syntax.variable"));
             painter.drawLine(preeditX, y + lh - 2, preeditX + preeditWidth, y + lh - 2);
         }
@@ -1412,7 +1452,8 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         const int baseline = y + (lh - fontMetrics().height()) / 2 + fontMetrics().ascent();
         if (!preeditText_.isEmpty() && lineNo == activeLine) {
             painter.setPen(ThemeManager::instance().color("text.primary"));
-            painter.drawText(QPoint(textX, baseline), displayLine);
+            int column=0;
+            painter.drawText(QPoint(textX, baseline), expandedTabs(displayLine,column));
         } else {
             const auto spans = highlighter_.highlightLine(lineNo, start, line,
                 [this](std::size_t index) {
@@ -1465,11 +1506,12 @@ void EditorWidget::paintEvent(QPaintEvent*) {
                 else segments.append({position,length,style});
             }
             qreal x=textX;
+            int displayColumn=0;
             for(const auto& segment:segments) {
                 QFont styled=font(); styled.setBold(segment.style.fontStyles&1); styled.setItalic(segment.style.fontStyles&2);
                 styled.setUnderline(segment.style.fontStyles&4); styled.setStrikeOut(segment.style.fontStyles&8);
                 painter.setFont(styled); painter.setPen(segment.style.color);
-                const auto part=line.mid(segment.start,segment.length);
+                const auto part=expandedTabs(line.mid(segment.start,segment.length),displayColumn);
                 painter.drawText(QPointF(x,baseline),part);
                 // Keep fractional advances across color/style boundaries.
                 // Rounding every run accumulates drift from whole-line caret,
@@ -1484,8 +1526,8 @@ void EditorWidget::paintEvent(QPaintEvent*) {
                 const int begin = std::clamp(diagnostic.start, 0, static_cast<int>(line.size()));
                 const int end = diagnostic.end < 0 ? static_cast<int>(line.size())
                     : std::clamp(diagnostic.end, begin, static_cast<int>(line.size()));
-                const int x1 = textX + fontMetrics().horizontalAdvance(line.left(begin));
-                const int x2 = textX + fontMetrics().horizontalAdvance(line.left(end));
+                const int x1 = textX + textWidth(line.left(begin));
+                const int x2 = textX + textWidth(line.left(end));
                 painter.setPen(diagnostic.severity == 1 ? ThemeManager::instance().color("diagnostic.error") : ThemeManager::instance().color("diagnostic.warning"));
                 painter.drawLine(x1, y + lh - 2, std::max(x1 + 3, x2), y + lh - 2);
             }
@@ -1501,7 +1543,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
     const int cursorHeight = std::max(1, glyphHeight - 2);
 
     if (!preeditText_.isEmpty())
-        cursorX += fontMetrics().horizontalAdvance(preeditText_.left(preeditCursor_));
+        cursorX += textWidth(preeditText_.left(preeditCursor_));
     if (hasFocus() && cursorY + lh > 0 && cursorY < viewport()->height())
         painter.fillRect(QRect(cursorX, cursorTop, 2, cursorHeight), ThemeManager::instance().color("editor.cursor"));
 
@@ -1518,7 +1560,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
                 width=static_cast<int>(std::min<std::size_t>(INT_MAX/2,columns*std::max(1,fontMetrics().horizontalAdvance('M'))));
             } else {
                 const auto prefixBytes=buffer_.slice(extraStart,position-extraStart);
-                width=fontMetrics().horizontalAdvance(QString::fromUtf8(prefixBytes.data(),static_cast<qsizetype>(prefixBytes.size())));
+                width=textWidth(QString::fromUtf8(prefixBytes.data(),static_cast<qsizetype>(prefixBytes.size())));
             }
             const int extraX=gutter+12+width-horizontalOffset;
             if (extraY + lh > 0 && extraY < viewport()->height())
@@ -2153,6 +2195,7 @@ void EditorWidget::selectNextOccurrence() {
     }
 
 bool EditorWidget::event(QEvent* event) {
+    if(event->type()==QEvent::FocusIn && !busy_)refreshEditorConfig();
     // QWidget consumes Tab for focus traversal before calling keyPressEvent.
     // Reserve plain Tab/Backtab only while the code surface itself has focus;
     // find/replace fields retain their normal focus chain.
@@ -2660,7 +2703,7 @@ void EditorWidget::inputMethodEvent(QInputMethodEvent* event) {
 QRect EditorWidget::inputCursorRect() const {
     const auto lineNo = currentLine();
     int x=gutterWidth()+12+cursorPixelColumn()-horizontalScrollBar()->value();
-    if (!preeditText_.isEmpty()) x += fontMetrics().horizontalAdvance(preeditText_.left(preeditCursor_));
+    if (!preeditText_.isEmpty()) x += textWidth(preeditText_.left(preeditCursor_));
     const int y = (visualRowForLine(static_cast<int>(lineNo)) - verticalScrollBar()->value()) * lineHeight();
     return QRect(x, y, 2, lineHeight());
 }
@@ -2795,6 +2838,7 @@ void EditorWidget::applyHistorySettings() {
 void EditorWidget::applyFontSettings() {
     hideCompletions();
     setFont(FontSettings::font(FontSettings::Area::Editor));
+    hitTestLine_=-1;
     horizontalExtentDirty_=true;
     updateScrollBars();
     ensureCursorVisible();
@@ -2803,7 +2847,31 @@ void EditorWidget::applyFontSettings() {
     viewport()->update();
 }
 
-void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modifies,std::function<void()> committed) {
+void EditorWidget::refreshEditorConfig() {
+    editorConfig_=EditorConfig::resolve(filePath_);
+    if(!editorConfig_.warning.isEmpty())emit highlightingStatusChanged(editorConfig_.warning);
+    const int width=editorConfig_.tabSize();
+    if(tabWidth_!=width) {
+        tabWidth_=width;hitTestLine_=-1;horizontalExtentDirty_=true;
+        updateScrollBars();viewport()->update();
+        if(miniMap_)miniMap_->invalidate();
+    }
+}
+
+void EditorWidget::prepareEditorConfigSave(const QString& path,std::function<void(bool)> completed) {
+    if(busy_){completed(false);return;}
+    const auto settings=EditorConfig::resolve(path);
+    if(!settings.warning.isEmpty())emit highlightingStatusChanged(settings.warning);
+    if(!settings.normalizes()){completed(true);return;}
+    const auto before=cursors_;
+    runBulkOperation(I18n::text("Applying EditorConfig…"),[settings,before](PieceTreeBuffer& buffer,EditHistory& history,
+                      std::shared_ptr<ChunkedFile>&,const BulkStep& step) {
+        return EditorConfig::normalize(buffer,history,before,settings,step);
+    },true,{},std::move(completed));
+}
+
+void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modifies,std::function<void()> committed,
+                                    std::function<void(bool)> completed) {
     if(busy_)return;
     setBusy(true);const auto revision=lspRevision_;const auto doc=document_;QPointer<EditorWidget> guard(this);
     auto cancelled=std::make_shared<std::atomic<bool>>(false);auto percent=std::make_shared<std::atomic<int>>(0);
@@ -2812,14 +2880,14 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
     connect(progress,&QProgressDialog::canceled,progress,[cancelled]{cancelled->store(true);});
     auto* tick=new QTimer(progress);tick->setInterval(50);connect(tick,&QTimer::timeout,progress,[progress,percent,cancelled]{if(progress->wasCanceled())cancelled->store(true);else progress->setValue(percent->load());});tick->start();
     auto* watcher=new QFutureWatcher<std::shared_ptr<BulkResult>>(this);
-    connect(watcher,&QFutureWatcher<std::shared_ptr<BulkResult>>::finished,this,[this,guard,watcher,progress,revision,modifies,cancelled,committed] {
+    connect(watcher,&QFutureWatcher<std::shared_ptr<BulkResult>>::finished,this,[this,guard,watcher,progress,revision,modifies,cancelled,committed,completed] {
         const auto result=watcher->result();
         if(progress->wasCanceled())cancelled->store(true);
         watcher->deleteLater();progress->deleteLater();if(!guard)return;
         setBusy(false);
-        if(result->cancelled || cancelled->load() || lspRevision_!=revision){applyHistorySettings();return;}
-        if(!result->error.isEmpty()){emit highlightingStatusChanged(result->error);return;}
-        if(modifies) {
+        if(result->cancelled || cancelled->load() || lspRevision_!=revision){applyHistorySettings();if(completed)completed(false);return;}
+        if(!result->error.isEmpty()){emit highlightingStatusChanged(result->error);if(completed)completed(false);return;}
+        if(modifies && result->changed) {
             QMap<int,int> anchors;
             for(const auto& [original,mapped]:result->lineAnchors) anchors.insert(original,mapped);
             if(!anchors.isEmpty()) emit debugAnchorsMoved(anchors);
@@ -2832,6 +2900,7 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
         if(committed)committed();
         if(result->clipboard)QApplication::clipboard()->setMimeData(new StoredClipboard(result->clipboard));
         applyHistorySettings();
+        if(completed)completed(true);
     });
     watcher->setFuture(QtConcurrent::run([doc,task=std::move(task),cancelled,percent,anchors=debugBreakpoints_.values()] {
         auto result=std::make_shared<BulkResult>();
@@ -2843,7 +2912,10 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
                 if(!removed && !inserted) return;
                 for(auto& [original,line]:result->lineAnchors) { (void)original; line=projectLineAnchor(line,static_cast<int>(row),static_cast<int>(column),static_cast<int>(removed),static_cast<int>(inserted)); }
             };
-            result->cursor=task(*result->buffer,*result->history,result->clipboard,step);result->buffer->lineEditObserver={};step(100);
+            const auto state=result->history->stateId();
+            result->cursor=task(*result->buffer,*result->history,result->clipboard,step);
+            result->changed=result->history->stateId()!=state;
+            result->buffer->lineEditObserver={};step(100);
         } catch(const std::exception& error){result->cancelled=cancelled->load();result->error=QString::fromUtf8(error.what());}
         return result;
     }));
@@ -3062,11 +3134,13 @@ void EditorWidget::toggleBlockComment() {
 }
 void EditorWidget::indentSelection(bool unindent) {
     if(busy_)return;
-    const auto before=cursors_;const auto anchors=cursorAnchors_;const auto width=tabWidth_;
+    refreshEditorConfig();
+    const auto before=cursors_;const auto anchors=cursorAnchors_;const auto width=editorConfig_.indentation();
+    const bool tabs=editorConfig_.tabs.value_or(false);
     bool selected=false;for(std::size_t i=0;i<before.size();++i)selected=selected || cursorHasSelection(i);
-    if(!selected && !unindent){replaceSelection(std::string(width,' '));return;}
-    runSmartCommand([before,anchors,unindent,width](const PieceTreeBuffer& buffer,const std::function<void()>& checkpoint) {
-        return SmartEditing::indent(buffer,before,anchors,unindent,width,checkpoint);
+    if(!selected && !unindent){replaceSelection(tabs?"\t":std::string(width,' '));return;}
+    runSmartCommand([before,anchors,unindent,width,tabs](const PieceTreeBuffer& buffer,const std::function<void()>& checkpoint) {
+        return SmartEditing::indent(buffer,before,anchors,unindent,width,checkpoint,tabs);
     });
 }
 
@@ -3142,15 +3216,17 @@ bool EditorWidget::smartBackspace() {
 }
 
 void EditorWidget::smartEnter() {
-    const auto newline=SmartEditing::eol(buffer_);
+    refreshEditorConfig();
+    const auto newline=editorConfig_.eol.value_or(SmartEditing::eol(buffer_));
     if(!QSettings().value("editor/autoIndent",true).toBool()){replaceSelection(newline);return;}
-    const auto before=cursors_;const auto anchors=cursorAnchors_;const auto rules=editingRules();const auto width=tabWidth_;
+    const auto before=cursors_;const auto anchors=cursorAnchors_;const auto rules=editingRules();const auto width=editorConfig_.indentation();
+    const auto tabs=editorConfig_.tabs;
     std::vector<bool> code;
     for(std::size_t i=0;i<before.size();++i) {
         const auto position=std::min(before[i],anchors[i].value_or(before[i]));
         const auto state=codeContext_.at(buffer_,position,rules);code.push_back(state && state->mode==CodeContext::Mode::Code);
     }
-    runSmartCommand([before,anchors,code,width,newline](const PieceTreeBuffer& buffer,const std::function<void()>& checkpoint) {
+    runSmartCommand([before,anchors,code,width,newline,tabs](const PieceTreeBuffer& buffer,const std::function<void()>& checkpoint) {
         SmartEditing::Plan plan;std::vector<std::size_t> begins,inside;
         for(std::size_t i=0;i<before.size();++i) {
             if(checkpoint)checkpoint();
@@ -3161,7 +3237,7 @@ void EditorWidget::smartEnter() {
             const auto indent=buffer.slice(start,indentEnd-start);
             auto left=a;while(left>indentEnd && (reader.at(left-1)==' ' || reader.at(left-1)=='\t'))--left;
             const bool opens=code[i] && left>start && reader.at(left-1)=='{';
-            std::string unit(width,' ');if(!indent.empty() && indent.back()=='\t')unit="\t";
+            std::string unit(width,' ');if(tabs.value_or(!indent.empty() && indent.back()=='\t'))unit="\t";
             const auto inner=indent+(opens?unit:"");std::string inserted=newline+inner;
             const auto cursor=inserted.size();auto right=b;
             while(right<buffer.lineEnd(buffer.lineIndexAt(b)) && right-b<64*1024 && (reader.at(right)==' ' || reader.at(right)=='\t'))++right;

@@ -20,6 +20,7 @@
 #include <QScrollBar>
 #include <algorithm>
 #include <QSettings>
+#include <QDir>
 
 namespace {
 class PaintRecorder final : public QObject {
@@ -43,10 +44,69 @@ void load(EditorWidget& editor, const char* text) {
 
 int main(int argc, char** argv) {
     QTemporaryDir smartSettings;
+    QTemporaryDir workingDirectory;Q_ASSERT(workingDirectory.isValid());
+    Q_ASSERT(QDir().setCurrent(workingDirectory.path()));
     const bool smart=argc>1 && QString::fromLocal8Bit(argv[1])=="--smart-editing";
     if(smart)qputenv("XDG_CONFIG_HOME",smartSettings.path().toUtf8());
     QApplication app(argc, argv);
     if(smart){app.setOrganizationName("TurtleCodeTests");app.setApplicationName("SmartEditing");smartEditingTests();return 0;}
+    {
+        QTemporaryDir project;Q_ASSERT(project.isValid());
+        const auto path=project.filePath("sample.cpp");
+        const auto configure=[&](const QByteArray& indentation) {
+            QFile file(project.filePath(".editorconfig"));Q_ASSERT(file.open(QIODevice::WriteOnly));
+            file.write("root=true\n[*]\ncharset=utf-8\nend_of_line=crlf\ntrim_trailing_whitespace=true\ninsert_final_newline=true\n");
+            file.write(indentation);
+        };
+        configure("indent_style=space\nindent_size=2\n");
+        EditorWidget editor;editor.loadBuffer(PieceTreeBuffer("{"),path);
+        editor.resize(800,400);editor.show();editor.setFocus();QApplication::processEvents();
+        QTest::keyClick(&editor,Qt::Key_Tab);
+        Q_ASSERT(editor.document()->buffer().text()=="  {");
+        editor.setNavigationPosition(1,4);QTest::keyClick(&editor,Qt::Key_Return);
+        Q_ASSERT(editor.document()->buffer().text()=="  {\r\n    ");
+        // Editing .editorconfig outside the editor is picked up by the next command.
+        configure("indent_style=tab\nindent_size=tab\ntab_width=8\n");
+        editor.loadBuffer(PieceTreeBuffer("{"),path);
+        editor.setNavigationPosition(1,2);QTest::keyClick(&editor,Qt::Key_Return);
+        Q_ASSERT(editor.document()->buffer().text()=="{\r\n\t");
+        Q_ASSERT(editor.indentationSize()==8 && !editor.insertsSpaces());
+        editor.loadBuffer(PieceTreeBuffer("\tvalue\tz"),path);editor.setNavigationPosition(1,2);
+        const int tabX=editor.viewport()->mapFromGlobal(editor.cursorScreenPosition()).x();
+        const int expectedX=editor.lineNumberAreaWidth()+12+editor.fontMetrics().horizontalAdvance(QString(8,' '));
+        Q_ASSERT(std::abs(tabX-expectedX)<=1);
+        QTest::mouseClick(editor.viewport(),Qt::LeftButton,Qt::NoModifier,QPoint(expectedX,editor.fontMetrics().height()/2));
+        Q_ASSERT(editor.navigationPosition()==QPoint(1,2));
+        editor.loadBuffer(PieceTreeBuffer(""),path);QTest::keyClick(&editor,Qt::Key_Tab);
+        Q_ASSERT(editor.document()->buffer().text()=="\t");
+        QTest::keyClick(&editor,Qt::Key_Backtab,Qt::ShiftModifier);
+        Q_ASSERT(editor.document()->buffer().text().empty());
+        configure("indent_style=space\nindent_size=2\n");
+        const std::string original="\xef\xbb\xbf" "x \t\r\ny   ";
+        editor.loadBuffer(PieceTreeBuffer(original),path);
+        bool done=false,ok=false;
+        editor.prepareEditorConfigSave(path,[&](bool success){done=true;ok=success;});
+        QElapsedTimer timer;timer.start();
+        while(!done && timer.elapsed()<10000){QApplication::processEvents();QThread::msleep(1);}
+        Q_ASSERT(done && ok && editor.document()->buffer().text()=="x\r\ny\r\n");
+        Q_ASSERT(!QFile::exists(path)); // Preparation never writes the original file.
+        editor.documentUndo();timer.restart();
+        while(editor.isBusy() && timer.elapsed()<10000){QApplication::processEvents();QThread::msleep(1);}
+        Q_ASSERT(editor.document()->buffer().text()==original && !editor.isModified());
+        Q_ASSERT(editor.saveFile(path));QFile saved(path);Q_ASSERT(saved.open(QIODevice::ReadOnly));
+        Q_ASSERT(saved.readAll()=="x\r\ny\r\n");saved.close();
+        editor.revealMatch(1,1,1);done=false;
+        editor.prepareEditorConfigSave(path,[&](bool success){done=true;ok=success;});timer.restart();
+        while(!done && timer.elapsed()<10000){QApplication::processEvents();QThread::msleep(1);}
+        Q_ASSERT(done && ok && editor.selectedText()=="x" && !editor.isModified());
+        // Cancelling a prepared save leaves the live buffer/history intact.
+        editor.loadBuffer(PieceTreeBuffer(original),path);done=false;ok=true;
+        editor.prepareEditorConfigSave(path,[&](bool success){done=true;ok=success;});
+        const auto progresses=editor.findChildren<QProgressDialog*>();Q_ASSERT(!progresses.isEmpty());
+        for(auto* progress:progresses)progress->cancel();timer.restart();
+        while(!done && timer.elapsed()<10000){QApplication::processEvents();QThread::msleep(1);}
+        Q_ASSERT(done && !ok && editor.document()->buffer().text()==original && !editor.document()->history().canUndo());
+    }
     {
         // Fractional glyph advances must not be rounded once per colored run:
         // doing so gradually separates painted text from caret/hit-test geometry.

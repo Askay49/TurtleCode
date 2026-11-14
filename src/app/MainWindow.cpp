@@ -1781,6 +1781,14 @@ void MainWindow::saveEditor(EditorWidget* editor,std::function<void(bool)> compl
         if(path.isEmpty()){fail();return;}
     }
     const auto expected=diskFileState(path);
+    QPointer<EditorWidget> guard(editor);
+    editor->prepareEditorConfigSave(path,[this,guard,path,expected,completion](bool ok) {
+        if(!ok || !guard){if(completion)completion(false);return;}
+        writeEditor(guard,path,expected,completion);
+    });
+}
+
+void MainWindow::writeEditor(EditorWidget* editor,const QString& path,const QByteArray& expected,std::function<void(bool)> completion) {
     const auto previousPath=editor->filePath();
     editor->setBusy(true);
     QPointer<EditorWidget> guard(editor);
@@ -1798,6 +1806,10 @@ void MainWindow::saveEditor(EditorWidget* editor,std::function<void(bool)> compl
         if(lsp_ && previousPath!=path)lsp_->close(previousPath);
         if(previousPath!=path) debugPanel_->renameSource(previousPath,path);
         guard->completeAsyncSave(path);
+        if(QFileInfo(path).fileName()==".editorconfig")
+            for(auto* window:QApplication::topLevelWidgets())
+                if(auto* main=qobject_cast<MainWindow*>(window))
+                    for(auto* open:main->findChildren<EditorWidget*>())open->refreshEditorConfig();
         guard->setDebugBreakpoints(debugPanel_->breakpoints(path),debugPanel_->disabledBreakpoints(path));guard->document()->diskState=result.diskState;
         if(lsp_ && lsp_->available() && lsp_->supports(path) && guard->lspEligible() &&
            (guard->lspAutomaticEligible() || lsp_->documentVersion(path)>0)) {
@@ -2128,7 +2140,8 @@ void MainWindow::formatDocument() {
     lsp_->change(path,editor->lspText());
     QPointer<EditorWidget> guard(editor);
     statusBar()->showMessage(I18n::text("Formatting document…"),10000);
-    lsp_->formatDocument(path,4,true,[this,guard,path,revision,generation,before](QJsonValue result) {
+    editor->refreshEditorConfig();
+    lsp_->formatDocument(path,editor->tabSize(),editor->insertsSpaces(),[this,guard,path,revision,generation,before](QJsonValue result) {
         if(closing_ || renameInProgress_ || !replaceLockedEditors_.isEmpty() || !guard || tabs_->currentWidget()!=guard || guard->isBusy() || guard->filePath()!=path
             || guard->lspRevision()!=revision || guard->property("formatGeneration").toULongLong()!=generation) return;
         if(result.isUndefined()) return; // Preserve the protocol error shown by LspClient.

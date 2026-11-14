@@ -112,7 +112,8 @@ while True:
                 'selectionRange': {'start': {'line': 0, 'character': 0}, 'end': start},
                 'children': [{'name': 'value', 'detail': 'int', 'kind': 8, 'range': rng, 'selectionRange': rng}]}], delayed=True)
     elif method == 'textDocument/formatting':
-        assert params['options'] == {'tabSize': 4, 'insertSpaces': True}
+        expected_options = {'tabSize': 8, 'insertSpaces': False} if '--format-tabs' in sys.argv else {'tabSize': 4, 'insertSpaces': True}
+        assert params['options'] == expected_options
         uri = params['textDocument']['uri']
         text = documents[uri]
         if '--format-error' in sys.argv:

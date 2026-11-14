@@ -5,6 +5,9 @@
 
 ## Редактор
 
+Для поддержки EditorConfig установите EditorConfig Core C с заголовками
+(`libeditorconfig-dev` в Ubuntu); общие зависимости перечислены в README.
+
 ```sh
 cmake -S . -B build
 cmake --build build -j4
@@ -77,7 +80,7 @@ Workflow [AppImage](../.github/workflows/appimage.yml) автоматическ�
 `chmod +x Turtle_Code-x86_64.AppImage`.
 
 Сборка выполняется на Ubuntu 22.04 x86_64 с GCC 12, Qt 6 и Tree-sitter.
-Проверяются текстовое ядро и история; это не полный набор тестов интерфейса.
+Проверяются текстовое ядро, история и EditorConfig; это не полный набор тестов интерфейса.
 linuxdeploy с Qt-плагином упаковывает приложение и зависимости, включая
 платформенные плагины X11/Wayland и библиотеки TLS. Версии упаковщиков закреплены
 тегами выпусков и SHA-256 в `packaging/build-appimage.sh`.

@@ -137,6 +137,7 @@ private:
     void stageGitPaths(const QString& repository, const QStringList& paths, quint64 generation);
     void saveCurrentFile();
     void saveEditor(EditorWidget* editor, std::function<void(bool)> completion = {}, bool saveAs = false);
+    void writeEditor(EditorWidget* editor,const QString& path,const QByteArray& expected,std::function<void(bool)> completion);
     void saveAllFiles();
     void saveCurrentFileAs();
     void updateWindowTitle();

@@ -47,12 +47,12 @@ inline std::size_t indentationEnd(const PieceTreeBuffer& buffer,std::size_t row)
     return p;
 }
 inline Plan indent(const PieceTreeBuffer& buffer,const std::vector<std::size_t>& cursors,
-                   const std::vector<std::optional<std::size_t>>& anchors,bool unindent,int width,const std::function<void()>& checkpoint={}) {
+                   const std::vector<std::optional<std::size_t>>& anchors,bool unindent,int width,const std::function<void()>& checkpoint={},bool tabs=false) {
     Plan plan;
     for(auto block:LineOperations::ranges(buffer,cursors,anchors))for(auto row=block.first;row<=block.last;++row) {
         if(checkpoint)checkpoint();
         const auto start=LineOperations::contentStart(buffer,row);
-        if(!unindent)plan.changes.push_back({start,{},std::string(width,' ')});
+        if(!unindent)plan.changes.push_back({start,{},tabs?"\t":std::string(width,' ')});
         else {
             std::size_t count=0;
             if(start<buffer.size() && buffer.byteAt(start)=='\t')count=1;

@@ -5,13 +5,19 @@ static void formattingTests(QTemporaryDir& directory) {
     const auto read=[](const QString& path) {
         QFile file(path);assert(file.open(QIODevice::ReadOnly));return file.readAll();
     };
-    for(const auto& mode:QStringList{"", "--format-invalid", "--format-error", "--no-format", "--format-null"}) {
+    for(const auto& mode:QStringList{"", "--format-tabs", "--format-invalid", "--format-error", "--no-format", "--format-null"}) {
         QSettings settings;settings.setValue("lsp/enabled",true);
         settings.setValue("editor/recoveryEnabled",false);
         settings.setValue("lsp/semanticHighlighting",false);
         settings.setValue("lsp/clangd/command",QStandardPaths::findExecutable("python3"));
         settings.setValue("lsp/clangd/arguments",QString("\"%1\" %2").arg(QString::fromUtf8(LSP_FAKE_SERVER),mode));
-        const auto path=directory.filePath("format.cpp");
+        const auto folder=mode=="--format-tabs"?directory.filePath("format-tabs"):directory.path();
+        assert(QDir().mkpath(folder));
+        if(mode=="--format-tabs") {
+            QFile config(folder+"/.editorconfig");assert(config.open(QIODevice::WriteOnly));
+            config.write("root=true\n[*]\nindent_style=tab\nindent_size=tab\ntab_width=8\n");
+        }
+        const auto path=folder+"/format.cpp";
         const QByteArray original=QByteArray("\xef\xbb\xbf")+QString::fromUtf8("// привет 😀\r\nint  value=1;\r\n").toUtf8();
         {QFile file(path);assert(file.open(QIODevice::WriteOnly));assert(file.write(original)==original.size());}
         MainWindow window;window.show();window.openPaths({path});
@@ -27,7 +33,7 @@ static void formattingTests(QTemporaryDir& directory) {
         editor->setFocus();window.activateWindow();QTest::qWait(30);
         QTest::keyClick(editor,Qt::Key_I,Qt::ControlModifier|Qt::ShiftModifier);
         assert(waitFor([&]{return client->ready();}));
-        if(mode.isEmpty()) {
+        if(mode.isEmpty() || mode=="--format-tabs") {
             assert(waitFor([&]{return QByteArray::fromStdString(editor->document()->buffer().text())==formatted;}));
             assert(editor->isModified() && read(path)==original);
             QTest::keyClick(editor,Qt::Key_Z,Qt::ControlModifier);

@@ -65,6 +65,7 @@ public:
     void markUnsaved() noexcept { savedState_ = UINT64_MAX; }
     void breakCoalescing() noexcept { coalescingBarrier_ = true; }
     [[nodiscard]] bool isModified() const noexcept;
+    [[nodiscard]] std::uint64_t stateId() const noexcept { return currentState_; }
     [[nodiscard]] bool canUndo() const noexcept { return !undo_.empty(); }
     [[nodiscard]] bool canRedo() const noexcept { return !redo_.empty(); }
 

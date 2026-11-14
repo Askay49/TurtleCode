@@ -17,6 +17,7 @@
 #include "core/text/EditHistory.hpp"
 #include "SyntaxHighlighter.hpp"
 #include "SmartEditing.hpp"
+#include "EditorConfig.hpp"
 #include "language/SemanticHighlighting.hpp"
 #include "language/LspAdaptivePolicy.hpp"
 #include "document/Document.hpp"
@@ -52,6 +53,11 @@ public:
     void reloadBuffer(PieceTreeBuffer buffer, const QString& path);
     void applyHistorySettings();
     void applyFontSettings();
+    void refreshEditorConfig();
+    int indentationSize() const { return editorConfig_.indentation(); }
+    int tabSize() const { return tabWidth_; }
+    bool insertsSpaces() const { return !editorConfig_.tabs.value_or(false); }
+    void prepareEditorConfigSave(const QString& path,std::function<void(bool)> completed);
     void setMiniMapEnabled(bool enabled);
     bool miniMapEnabled() const { return miniMapEnabled_; }
     [[nodiscard]] int lineNumberAreaWidth() const { return gutterWidth(); }
@@ -164,7 +170,8 @@ private:
     using BulkTask=std::function<HistoryResult(PieceTreeBuffer&,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep&)>;
     void replaceSelectionsInBackground(const QString& text,std::shared_ptr<ChunkedFile> source={});
     bool selectionsNeedBackground() const;
-    void runBulkOperation(const QString& label,BulkTask task,bool modifies=true, std::function<void()> committed = {});
+    void runBulkOperation(const QString& label,BulkTask task,bool modifies=true, std::function<void()> committed = {},
+                          std::function<void(bool)> completed = {});
     void editLines(int direction, bool copy);
     void applySmartPlan(SmartEditing::Plan plan);
     using SmartBuilder=std::function<SmartEditing::Plan(const PieceTreeBuffer&,const std::function<void()>&)>;
@@ -256,6 +263,9 @@ private:
     std::size_t preferredColumn_{static_cast<std::size_t>(-1)};
     bool modified_{false};
     int tabWidth_{4};
+    EditorConfig::Settings editorConfig_;
+    QString expandedTabs(const QString& text,int& column) const;
+    int textWidth(const QString& text) const;
     EditHistory& history_;
     SyntaxHighlighter highlighter_;
     QElapsedTimer editClock_;

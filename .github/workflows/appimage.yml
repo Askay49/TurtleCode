@@ -34,7 +34,7 @@ jobs:
             gcc-12 g++-12 ninja-build pkg-config python3-venv \
             qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-wayland libqt6svg6 \
             libgl1-mesa-dev \
-            libgit2-dev libtree-sitter-dev libssl-dev \
+            libgit2-dev libtree-sitter-dev libeditorconfig-dev libssl-dev \
             curl ca-certificates file desktop-file-utils patchelf
           python3 -m venv "$RUNNER_TEMP/cmake-venv"
           "$RUNNER_TEMP/cmake-venv/bin/pip" install 'cmake==3.31.6'
@@ -52,11 +52,11 @@ jobs:
             exit 1
           fi
 
-      - name: Build application and text core tests
-        run: cmake --build build/appimage --target turtle-code turtle-code-text-tests turtle-code-history-tests --parallel 2
+      - name: Build application and core tests
+        run: cmake --build build/appimage --target turtle-code turtle-code-text-tests turtle-code-history-tests turtle-code-editorconfig-tests --parallel 2
 
-      - name: Test text core and history
-        run: ctest --test-dir build/appimage -R '^(text-core|edit-history)$' --output-on-failure
+      - name: Test text core, history and EditorConfig
+        run: ctest --test-dir build/appimage -R '^(text-core|edit-history|editorconfig)$' --output-on-failure
 
       - name: Package AppImage
         run: bash packaging/build-appimage.sh build/appimage dist
