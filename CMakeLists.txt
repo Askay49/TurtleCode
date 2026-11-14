@@ -129,6 +129,7 @@ if(TURTLE_CODE_BUILD_APP)
     target_link_libraries(turtle-code-workspace-edits PUBLIC Qt6::Core)
 
     qt_add_executable(turtle-code
+        MACOSX_BUNDLE
         src/main.cpp
         src/document/RecoveryStore.cpp
         src/document/RecoveryStore.hpp
@@ -205,6 +206,13 @@ if(TURTLE_CODE_BUILD_APP)
         target_compile_definitions(turtle-code PRIVATE TURTLE_CODE_WITH_TREE_SITTER=1)
         target_link_libraries(turtle-code PRIVATE "${TREE_SITTER_LIBRARY}")
     endif()
+
+    set_target_properties(turtle-code PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.turtlecode.turtlecode"
+        MACOSX_BUNDLE_BUNDLE_NAME "Turtle Code"
+        MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+        MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    )
 
     target_link_libraries(turtle-code PRIVATE
         turtle-code-terminal
@@ -449,7 +457,7 @@ if(BUILD_TESTING)
 endif()
 
 if(TURTLE_CODE_BUILD_APP)
-    install(TARGETS turtle-code RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(TARGETS turtle-code RUNTIME BUNDLE DESTINATION "${CMAKE_INSTALL_BINDIR}")
     install(FILES packaging/turtle-code.desktop
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
     install(DIRECTORY assets/icons/

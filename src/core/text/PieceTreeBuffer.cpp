@@ -4,6 +4,13 @@
 #include "ChunkedFile.hpp"
 #include <sys/stat.h>
 #include <limits>
+
+#ifdef __APPLE__
+#define st_atim st_atimespec
+#define st_mtim st_mtimespec
+#define st_ctim st_ctimespec
+#endif
+
 namespace {
 std::size_t utf16Units(std::string_view bytes) {std::size_t result=0;for(unsigned char c:bytes)if((c&0xc0)!=0x80)result+=c>=0xf0?2:1;return result;}
 std::size_t codePoints(std::string_view bytes) {return std::count_if(bytes.begin(),bytes.end(),[](unsigned char c){return (c&0xc0)!=0x80;});}
