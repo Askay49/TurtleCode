@@ -1,3 +1,5 @@
+#include <QElapsedTimer>
+#include <bit>
 #include "app/IconDialogs.hpp"
 #include "app/FileIcons.hpp"
 #include "app/Codicons.hpp"
@@ -184,11 +186,15 @@ SearchPanel::SearchPanel(QWidget* parent) : QWidget(parent) {
         else requestReplace();
     });
     connect(detailsToggle, &QToolButton::toggled, details_, &QWidget::setVisible);
+    deliveryTimer_=new QTimer(this);deliveryTimer_->setSingleShot(true);deliveryTimer_->setInterval(0);
+    connect(deliveryTimer_,&QTimer::timeout,this,&SearchPanel::deliverResults);
+    connect(&service_,&ProjectSearchService::searchProgress,this,&SearchPanel::displayResult);
     connect(&service_, &ProjectSearchService::searchStarted, this, [this] {
+        searching_=true;updateReplaceButton();
         status_->setText(tr("Searching…"));
     });
     connect(&service_, &ProjectSearchService::searchFinished,
-            this, &SearchPanel::displayResult);
+            this, [this](const ProjectSearchResult& value){searching_=false;displayResult(value);});
     connect(&replaceService_, &ProjectReplaceService::replaceFinished, this,
             [this](const ProjectReplaceResult& result) {
         replacing_ = false;
@@ -221,12 +227,11 @@ SearchPanel::SearchPanel(QWidget* parent) : QWidget(parent) {
         if (!item->parent()) {
             const QString path = item->data(0, Qt::UserRole).toString();
             const bool checked = item->checkState(0) == Qt::Checked;
-            for (const auto index : fileMatches_.value(path)) {
-                if (selected_.testBit(index) == checked) continue;
-                selected_.setBit(index, checked);
-                selectedCount_ += checked ? 1 : -1;
-            }
-            selectedPerFile_[path] = checked ? fileMatches_.value(path).size() : 0;
+            const auto range=fileMatches_.value(path);
+            const auto previous=selectedPerFile_.value(path);
+            selected_.fill(checked,range.first,range.first+range.count);
+            selectedCount_+=(checked?range.count:0)-previous;
+            selectedPerFile_[path]=checked?range.count:0;
             for (int index = 0; index < item->childCount(); ++index)
                 if (item->child(index)->data(0, Qt::UserRole + 4).toLongLong() >= 0)
                     item->child(index)->setCheckState(0, checked ? Qt::Checked : Qt::Unchecked);
@@ -248,6 +253,7 @@ SearchPanel::SearchPanel(QWidget* parent) : QWidget(parent) {
         updateReplaceButton();
     });
     connect(results_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int) {
+        if(item && item->data(0,Qt::UserRole+6).isValid()){const auto first=item->data(0,Qt::UserRole+6).toLongLong();QTimer::singleShot(0,this,[this,first]{changePage(first);});return;}
         if (item && item->data(0, Qt::UserRole + 4).toLongLong() == -1) {
             const QString path = item->data(0, Qt::UserRole).toString();
             QTimer::singleShot(0, this, [this, path] { loadMore(path, 200); });
@@ -266,7 +272,7 @@ SearchPanel::SearchPanel(QWidget* parent) : QWidget(parent) {
     });
     connect(results_, &QTreeWidget::itemDoubleClicked, this,
             [this](QTreeWidgetItem* item, int) {
-        if (!item || item->childCount() > 0) return;
+        if (!item || item->childCount() > 0 || item->data(0,Qt::UserRole+6).isValid()) return;
         if (item->data(0, Qt::UserRole + 4).toLongLong() == -1) return;
         emit fileActivated(item->data(0, Qt::UserRole).toString(),
                            item->data(0, Qt::UserRole + 1).toInt(),
@@ -293,10 +299,13 @@ void SearchPanel::focusSearch() {
     query_->selectAll();
 }
 
+bool SearchPanel::queryTextEmpty() const { return query_->text().isEmpty(); }
+
 void SearchPanel::scheduleSearch() {
     if (replacing_) return;
     service_.cancel();
     currentResult_ = {};
+    renderedMatches_=0;pageFirst_=0;previousPages_.clear();searching_=false;deliveryTimer_->stop();
     results_->clear();
     fileMatches_.clear();
     fileItems_.clear();
@@ -325,6 +334,7 @@ ProjectSearchOptions SearchPanel::options() const {
     value.wholeWord = wholeWord_->isChecked();
     value.regularExpression = regex_->isChecked();
     value.showHidden = showHidden_;
+    value.includeIgnored = includeIgnored_;
     return value;
 }
 
@@ -337,6 +347,7 @@ void SearchPanel::startSearch() {
         results_->clear();
     }
     currentResult_ = {};
+    renderedMatches_=0;pageFirst_=0;previousPages_.clear();searching_=false;deliveryTimer_->stop();
     fileMatches_.clear();
     fileItems_.clear();
     loadedPerFile_.clear();
@@ -352,54 +363,50 @@ void SearchPanel::startSearch() {
     service_.search(searchedOptions_);
 }
 
-void SearchPanel::displayResult(const ProjectSearchResult& result) {
-    currentResult_ = result;
+static qsizetype selectedInRange(const QBitArray& bits,qsizetype first,qsizetype count) {
+    qsizetype total=0,last=first+count;
+    while(first<last && (first&7)){total+=bits.testBit(first);++first;}
+    const auto* bytes=reinterpret_cast<const unsigned char*>(bits.bits());
+    while(first+8<=last){total+=std::popcount(bytes[first/8]);first+=8;}
+    while(first<last){total+=bits.testBit(first);++first;}return total;
+}
+void SearchPanel::changePage(qsizetype first) {
     QSignalBlocker blocker(results_);
-    results_->setUpdatesEnabled(false);
-    results_->clear();
-    fileMatches_.clear();
-    fileItems_.clear();
-    loadedPerFile_.clear();
-    selectedPerFile_.clear();
-    selected_.resize(result.matches.size());
-    selected_.fill(true);
-    selectedCount_ = result.matches.size();
-    if (!result.error.isEmpty()) {
-        status_->setText(tr("Invalid search: %1").arg(result.error));
-        results_->setUpdatesEnabled(true);
-        updateReplaceButton();
-        return;
+    if(first>pageFirst_)previousPages_.push_back(pageFirst_);else if(!previousPages_.isEmpty())previousPages_.pop_back();
+    results_->clear();fileMatches_.clear();fileItems_.clear();loadedPerFile_.clear();selectedPerFile_.clear();
+    pageFirst_=first;renderedMatches_=first;deliveryTimer_->start();
+}
+void SearchPanel::displayResult(const ProjectSearchResult& result) {
+    currentResult_=result;
+    if(!result.error.isEmpty()) {
+        deliveryTimer_->stop();results_->clear();fileMatches_.clear();fileItems_.clear();selected_.clear();selectedCount_=0;
+        status_->setText(result.error);updateReplaceButton();return;
     }
-    QStringList fileOrder;
-    for (qsizetype matchIndex = 0; matchIndex < result.matches.size(); ++matchIndex) {
-        const auto& match = result.matches[matchIndex];
-        if (!fileMatches_.contains(match.path)) fileOrder.push_back(match.path);
-        fileMatches_[match.path].push_back(matchIndex);
+    const auto old=selected_.size();selected_.resize(result.matches.size());selected_.fill(true,old,selected_.size());selectedCount_+=result.matches.size()-old;
+    deliveryTimer_->start();
+}
+void SearchPanel::deliverResults() {
+    QSignalBlocker blocker(results_);QElapsedTimer budget;budget.start();
+    for(int i=results_->topLevelItemCount()-1;i>=0;--i)if(results_->topLevelItem(i)->data(0,Qt::UserRole+6).isValid())delete results_->takeTopLevelItem(i);
+    while(renderedMatches_<currentResult_.matches.size() && fileItems_.size()<500) {
+        const auto first=renderedMatches_;
+        const auto match=currentResult_.matches[first];
+        const auto count=currentResult_.matches.runLength(first);
+        auto& range=fileMatches_[match.path];range={first,count};
+        const auto checked=selectedInRange(selected_,first,count);
+        auto* file=new QTreeWidgetItem(results_);fileItems_[match.path]=file;
+        file->setText(0,QStringLiteral("%1 — %2  (%3)").arg(QFileInfo(match.path).fileName(),match.relativePath).arg(count));
+        file->setToolTip(0,match.path);file->setIcon(0,FileIcons::icon(match.path));file->setData(0,Qt::UserRole,match.path);
+        file->setFlags(file->flags()|Qt::ItemIsUserCheckable);file->setCheckState(0,checked==count?Qt::Checked:checked==0?Qt::Unchecked:Qt::PartiallyChecked);selectedPerFile_[match.path]=checked;
+        const int initial=results_->topLevelItemCount()<=10?int(std::min<qsizetype>(50,count)):0;
+        loadMore(match.path,initial);file->setExpanded(initial>0);renderedMatches_+=count;
+        if(budget.elapsed()>=4){deliveryTimer_->start();break;}
     }
-    int initialBudget = 500;
-    for (const auto& path : fileOrder) {
-        const auto& indices = fileMatches_[path];
-        auto* file = new QTreeWidgetItem(results_);
-        file->setText(0, QStringLiteral("%1 — %2  (%3)")
-            .arg(QFileInfo(path).fileName(), result.matches[indices.front()].relativePath)
-            .arg(indices.size()));
-        file->setToolTip(0, path);
-        file->setIcon(0, FileIcons::icon(path));
-        file->setData(0, Qt::UserRole, path);
-        file->setFlags(file->flags() | Qt::ItemIsUserCheckable);
-        file->setCheckState(0, Qt::Checked);
-        fileItems_.insert(path, file);
-        selectedPerFile_.insert(path, indices.size());
-        const int initial = std::min<int>(50, std::min<int>(initialBudget, indices.size()));
-        loadMore(path, initial);
-        initialBudget -= initial;
-        file->setExpanded(initial > 0);
-    }
-    status_->setText((replaceSummary_.isEmpty() ? QString() : replaceSummary_ + '\n') +
-        tr("%1 results in %2 files searched")
-        .arg(result.matches.size()).arg(result.filesSearched));
-    results_->setUpdatesEnabled(true);
-    updateReplacePreview();
+    if(pageFirst_>0){auto* previous=new QTreeWidgetItem(results_,{tr("Previous files page")});previous->setData(0,Qt::UserRole+6,qlonglong(previousPages_.isEmpty()?0:previousPages_.back()));}
+    if(renderedMatches_<currentResult_.matches.size() && fileItems_.size()>=500){auto* next=new QTreeWidgetItem(results_,{tr("Next files page")});next->setData(0,Qt::UserRole+6,qlonglong(renderedMatches_));}
+    status_->setText(tr("%1 results in %2 files searched").arg(currentResult_.matches.size()).arg(currentResult_.filesSearched)+(searching_?tr(" — Searching…"):QString{})+
+        (currentResult_.skippedFiles?tr(" — %1 files skipped (regex budget)").arg(currentResult_.skippedFiles):QString{}));
+    status_->setToolTip(currentResult_.warnings.join('\n'));
     updateReplaceButton();
 }
 
@@ -444,7 +451,7 @@ void SearchPanel::updateReplacePreview() {
 
 void SearchPanel::updateReplaceButton() {
     if (replacing_) return;
-    replaceButton_->setEnabled(replaceToggle_->isChecked() && selectedCount_ > 0 &&
+    replaceButton_->setEnabled(replaceToggle_->isChecked() && !searching_ && selectedCount_ > 0 &&
                                currentResult_.error.isEmpty());
     replaceButton_->setToolTip(tr("Replace %1 checked matches in files").arg(selectedCount_));
 }

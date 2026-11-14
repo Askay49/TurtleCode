@@ -549,6 +549,29 @@ private slots:
         write(dir.path(), "extra.txt", "added\n"); panel.refresh(); QTRY_VERIFY(!panel.service()->busy());
         QVERIFY(!tree->topLevelItem(1)->isExpanded());
     }
+    void largeFilePages() {
+        QTemporaryDir directory;init(directory.path());
+        for(int i=0;i<4001;++i)write(directory.path(),QString("file%1.txt").arg(i,5,10,QChar('0')),"x");
+        GitPanel panel;panel.show();panel.setRoots({directory.path()});
+        QTRY_VERIFY(!panel.service()->busy());
+        QCOMPARE(panel.service()->status().entries.size(),4001);
+        auto* tree=panel.findChild<QTreeWidget*>("gitFiles");QVERIFY(tree);
+        QSet<int> seen;
+        for(int page=0;page<20;++page) {
+            QTreeWidgetItem* next=nullptr;int displayed=0;
+            for(int root=0;root<tree->topLevelItemCount();++root) {
+                auto* item=tree->topLevelItem(root);
+                if(item->data(0,Qt::UserRole+3).isValid() && item->text(0)=="Next page")next=item;
+                for(int row=0;row<item->childCount();++row) {
+                    const auto entry=item->child(row)->data(0,Qt::UserRole);if(entry.isValid()){seen.insert(entry.toInt());++displayed;}
+                }
+            }
+            QVERIFY(displayed<=501);
+            if(!next)break;
+            Q_EMIT tree->itemClicked(next,0);
+        }
+        QCOMPARE(seen.size(),4001);
+    }
     void panelAndDiff() {
         QTemporaryDir dir; init(dir.path()); write(dir.path(), "a.txt", "new\n");
         GitPanel panel; panel.resize(300, 600); panel.show(); panel.setRoots({dir.path()});

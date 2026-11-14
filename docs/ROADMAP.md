@@ -1,4 +1,7 @@
-# Roadmap
+# История реализованных этапов
+
+Открытые задачи и планы удалены по указанию пользователя 14 ноября 2026 года.
+Ниже сохранены записи о реализованных этапах и технические сведения.
 
 - [x] v0.1 — Qt desktop shell and basic editor
 - [x] v0.2 — Piece Tree text buffer and core tests
@@ -12,22 +15,15 @@
 - [x] v0.8.1 — debounced background Tree-sitter parsing with immutable snapshots and stale-result rejection
 - [x] v0.8.2 — persistent worker-side Tree-sitter tree, ordered TSInputEdit application, changed-range query refresh and stale-result handling
 - [x] v0.8.3 — preserve committed syntax spans during edits; atomically swap in matching parse results to prevent full-document highlight flashing
-- [ ] v0.8.x — interruptible parsing, snapshot-copy reduction, large-file profiling and redraw benchmarks
-  - [x] ordinary edits replay on a worker-owned source instead of snapshotting the live document for every parse
-  - [ ] initial/undo snapshots, cancellation and reproducible large-file benchmarks
+- [x] ordinary edits replay on a worker-owned source instead of snapshotting the live document for every parse
 - [x] v0.9.0 — async lazy project Explorer, multi-root folders, `.gitignore`, directory watcher, project search, CLI paths and local IPC
-- [ ] v0.9 — project engine: asynchronous scanning, lazy tree, `.gitignore`, file watcher and recovery
 - [x] v0.10 — fast project-wide search and replace
   - [x] Quick Open (`Ctrl+P`) with asynchronous workspace indexing, fuzzy path matching and recent files
   - [x] Go to Line (`Ctrl+G`) using the existing editor navigation API
   - [x] compact find/replace bar in current file with match highlighting, navigation, case/word/regex and single/batch replace
   - [x] VS Code-style sidebar search, grouped results, case/word/regex options, include/exclude filters, hidden-file toggle and cancellation
   - [x] replace preview for visible results, progressive result loading, selected matches, protection for modified buffers, file-change checks and streaming project-wide replace
-- [ ] v0.11 — LSP client, diagnostics, completion, go-to-definition
-  - [x] initial clangd integration for C/C++: diagnostics, Ctrl+Space completion and F12 definition
-  - [ ] incremental document sync, additional language servers and configuration UI
-- [ ] v0.12 — Git, terminal, Command Palette, settings and themes
-- [ ] v1.0 — stabilization, performance profiling and packaging
+- [x] initial clangd integration for C/C++: diagnostics, Ctrl+Space completion and F12 definition
 
 ## Current editor performance notes
 

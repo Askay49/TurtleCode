@@ -345,6 +345,8 @@ static void safetyTests(QTemporaryDir& directory) {
 }
 #include "MemoryWorkload.hpp"
 #include "FormattingTests.hpp"
+#include "CommandPaletteTests.hpp"
+#include "ProjectScaleWindowTests.hpp"
 #include "GitWindowTests.hpp"
 
 static void terminalWindowTests(const QTemporaryDir& directory) {
@@ -499,6 +501,8 @@ int main(int argc,char**argv) {
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--lsp"){lspWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--terminal"){terminalWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--git"){gitWindowTests(directory);return 0;}
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--project-scale"){projectScaleWindowTests(directory);return 0;}
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--commands"){commandPaletteTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--formatting"){formattingTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--memory-workload") return memoryWorkload(argc,argv);
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--external-files"){externalFileTests(directory);return 0;}
@@ -654,7 +658,7 @@ int main(int argc,char**argv) {
                 auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()); assert(dialog);
                 auto* input=dialog->findChild<QLineEdit*>();
                 auto* results=dialog->findChild<QListWidget*>(); assert(input && results);
-                assert(waitFor([&] { return input->placeholderText().contains(QStringLiteral(" files)...")); }));
+                assert(waitFor([&] { return results->property("indexing").isValid() && !results->property("indexing").toBool(); }));
                 QStringList actual;
                 for (int i=0;i<results->count();++i) actual.push_back(results->item(i)->data(Qt::UserRole).toString());
                 actual.sort(); expected.sort(); assert(actual==expected);

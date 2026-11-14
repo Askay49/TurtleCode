@@ -114,3 +114,6 @@ cmake --install build --prefix "$HOME/.local"
 Для `~/.local` права администратора не нужны. Проверьте, что `~/.local/bin`
 входит в `PATH` графической сессии. Подробности обновления меню приведены
 в [README](../README.md#установка-в-linux).
+
+Для индекса и поиска нужны SQLite 3 и PCRE2-16 (`libsqlite3-dev`, `libpcre2-dev`).
+Работа с большими проектами и нагрузочный сценарий описаны в [LARGE_PROJECTS.md](LARGE_PROJECTS.md).

@@ -41,6 +41,7 @@ public:
     void toggleBreakpoint(const QString& path,int line);
     QSet<int> breakpoints(const QString& path) const { return state_.points.value(path); }
     bool active() const;
+    bool commandAvailable(const QString& command) const;
 signals:
     void configurationRequested(const QString& path);
     void consoleRequested();

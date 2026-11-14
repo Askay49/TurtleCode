@@ -42,6 +42,7 @@ Turtle Code — нативный редактор кода для Linux на C++
 - Qt 6.2.4 или новее: Core, Gui, Widgets, Network, Concurrent и Test.
 - pkg-config и libgit2 1.1 или новее с заголовочными файлами.
 - EditorConfig Core C с заголовочными файлами (`libeditorconfig-dev` в Ubuntu).
+- SQLite 3 и PCRE2-16 с заголовочными файлами (`libsqlite3-dev`, `libpcre2-dev`).
 - Tree-sitter runtime с заголовочными файлами. Требуется API ограничения времени
   разбора или progress callback; доступность проверяется CMake.
 - Python 3.8 или новее для полного набора тестов.
@@ -146,6 +147,7 @@ ctest --test-dir build --output-on-failure -LE memory
 ## Документация
 
 - [Сборка и тесты](docs/BUILDING.md)
+- [Большие проекты и нагрузочные проверки](docs/LARGE_PROJECTS.md)
 - [Архитектура](docs/ARCHITECTURE.md)
 - [Подсветка и языковые грамматики](docs/HIGHLIGHTING.md)
 - [Языковые серверы LSP](docs/LSP.md)

@@ -22,6 +22,7 @@ public:
     void applyFontSettings();
     void setRoots(const QStringList& roots);
     void setShowHidden(bool show);
+    void setIncludeIgnored(bool include) { includeIgnored_=include; if(!queryTextEmpty()) scheduleSearch(); }
     void focusSearch();
     void startReplace(ProjectReplaceRequest request);
 
@@ -31,9 +32,17 @@ signals:
     void replaceFinished(const ProjectReplaceResult& result);
 
 private:
+    bool queryTextEmpty() const;
     void scheduleSearch();
     void startSearch();
     void displayResult(const ProjectSearchResult& result);
+    void deliverResults();
+    void changePage(qsizetype first);
+    qsizetype pageFirst_{0};
+    QVector<qsizetype> previousPages_;
+    QTimer* deliveryTimer_{nullptr};
+    qsizetype renderedMatches_{0};
+    bool searching_{false};
     void loadMore(const QString& path, int count);
     void updateReplacePreview();
     void updateReplaceButton();
@@ -41,11 +50,18 @@ private:
     ProjectSearchOptions options() const;
 
     QStringList roots_;
-    bool showHidden_{false};
+    bool showHidden_{false},includeIgnored_{false};
     ProjectSearchService service_;
     ProjectReplaceService replaceService_;
     ProjectSearchResult currentResult_;
-    QHash<QString, QVector<qsizetype>> fileMatches_;
+    struct Range {
+        qsizetype first{},count{};
+        qsizetype size() const{return count;} qsizetype front() const{return first;}
+        qsizetype operator[](qsizetype i)const{return first+i;}
+        struct Iterator {qsizetype value;qsizetype operator*()const{return value;}Iterator& operator++(){++value;return *this;}bool operator!=(const Iterator& other)const{return value!=other.value;}};
+        Iterator begin()const{return {first};}Iterator end()const{return {first+count};}
+    };
+    QHash<QString, Range> fileMatches_;
     QHash<QString, QTreeWidgetItem*> fileItems_;
     QHash<QString, int> loadedPerFile_;
     QHash<QString, qsizetype> selectedPerFile_;

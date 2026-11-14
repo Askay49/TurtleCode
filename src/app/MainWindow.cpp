@@ -1,3 +1,4 @@
+#include "CommandPalette.hpp"
 #include "app/IconDialogs.hpp"
 #include "document/RecoveryStore.hpp"
 #include "document/FileState.hpp"
@@ -93,6 +94,7 @@
 #include "editor/OutlinePanel.hpp"
 #include "editor/EditorTabs.hpp"
 #include "project/ProjectExplorer.hpp"
+#include "project/WorkspaceIndex.hpp"
 #include "search/SearchPanel.hpp"
 #include "git/GitPanel.hpp"
 #include "debug/DebugPanel.hpp"
@@ -117,60 +119,12 @@ struct SavedFile {
     QString error;
 };
 
-int fuzzyMatchScore(const QString& candidate, const QString& query) {
-    const QString text = candidate.toLower();
-    const QString needle = query.toLower();
-    int score = 0;
-    int previous = -2;
-    int position = 0;
-    for (const QChar character : needle) {
-        const int found = text.indexOf(character, position);
-        if (found < 0) return -1;
-        score += 10;
-        if (found == previous + 1) score += 12;
-        if (found == 0 || text.at(found - 1) == QLatin1Char('/')
-            || text.at(found - 1) == QLatin1Char('_')
-            || text.at(found - 1) == QLatin1Char('-')) score += 8;
-        score -= found - position;
-        previous = found;
-        position = found + 1;
-    }
-    return score - (text.size() - needle.size()) / 20;
-}
 
-QStringList scanWorkspaceFiles(const QStringList& roots) {
-    QStringList files;
-    QSet<QString> visited;
-    const QSet<QString> excluded{QStringLiteral(".git"), QStringLiteral("build"),
-        QStringLiteral("node_modules"), QStringLiteral(".cache"), QStringLiteral(".venv"),
-        QStringLiteral("venv"), QStringLiteral(".idea"), QStringLiteral(".vscode")};
-    QVector<QString> pending;
-    for (const QString& root : roots) pending.push_back(root);
-    constexpr qsizetype maxFiles = 150000;
-    while (!pending.isEmpty() && files.size() < maxFiles) {
-        const QString directory = pending.takeLast();
-        const QString canonical = QFileInfo(directory).canonicalFilePath();
-        const QString identity = canonical.isEmpty() ? QDir::cleanPath(directory) : canonical;
-        if (visited.contains(identity)) continue;
-        visited.insert(identity);
-        const QFileInfoList entries = QDir(directory).entryInfoList(
-            QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name);
-        for (const QFileInfo& entry : entries) {
-            if (entry.isDir()) {
-                if (!entry.isSymLink() && !entry.fileName().startsWith(QLatin1Char('.'))
-                    && !excluded.contains(entry.fileName())) pending.push_back(entry.absoluteFilePath());
-            } else if (entry.isFile() && !entry.fileName().startsWith(QLatin1Char('.'))) {
-                files.push_back(entry.absoluteFilePath());
-                if (files.size() >= maxFiles) break;
-            }
-        }
-    }
-    return files;
-}
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setObjectName("workspaceBackground");
+    workspaceIndex_ = new WorkspaceIndex(this);
     createUi();
     lsp_ = new LspManager(this);
     lspStatus_ = new QLabel(this);
@@ -354,6 +308,8 @@ void MainWindow::createUi() {
     explorerHeading->setObjectName("explorerHeading");
     explorerLayout->addWidget(explorerHeading);
     explorer_ = new ProjectExplorer(explorerPage);
+    connect(explorer_, &ProjectExplorer::filesChanged, workspaceIndex_, &WorkspaceIndex::invalidate);
+    connect(explorer_,&ProjectExplorer::backgroundError,this,[this](const QString& error){statusBar()->showMessage(error,10000);});
     explorerLayout->addWidget(explorer_, 1);
     searchPanel_ = new SearchPanel(sidebarStack_);
     sidebarStack_->addWidget(explorerPage);
@@ -817,6 +773,10 @@ void MainWindow::createMenus() {
     }
 
     auto* goMenu = menuBar()->addMenu(I18n::text("&Go"));
+    auto* commandsAction = goMenu->addAction(Codicons::icon("terminal"), I18n::text("Command palette"));
+    commandsAction->setObjectName("navigation.commands");
+    ShortcutManager::instance().bind("navigation.commands", commandsAction);
+    connect(commandsAction, &QAction::triggered, this, &MainWindow::commandPalette);
     auto* quickOpenAction = goMenu->addAction(Codicons::icon("go-to-file"), I18n::text("Quick Open..."));
     ShortcutManager::instance().bind("navigation.quickOpen", quickOpenAction);
     connect(quickOpenAction, &QAction::triggered, this, &MainWindow::quickOpen);
@@ -841,6 +801,7 @@ void MainWindow::createMenus() {
 
     auto* settingsMenu = menuBar()->addMenu(I18n::text("&Settings"));
     auto* editorSettings=settingsMenu->addAction(Codicons::icon("settings-gear"), I18n::text("Editor..."));
+    ShortcutManager::instance().bind("settings.editor", editorSettings);
     connect(editorSettings,&QAction::triggered,this,&MainWindow::showEditorSettings);
     auto* interfaceLanguageAction = settingsMenu->addAction(Codicons::icon("globe"), I18n::text("Interface language..."));
     ShortcutManager::instance().bind("settings.interfaceLanguage", interfaceLanguageAction);
@@ -873,6 +834,7 @@ void MainWindow::createMenus() {
     auto* outlineAction=outline_->toggleViewAction();
     outlineAction->setObjectName("view.outline"); outlineAction->setIcon(Codicons::icon("list-tree"));
     viewMenu->addAction(outlineAction);
+    ShortcutManager::instance().bind("view.outline", outlineAction);
     const bool showOutline=QSettings().value("view/outline",true).toBool();
     outline_->setVisible(showOutline);
     QTimer::singleShot(0,this,[this] {
@@ -883,6 +845,7 @@ void MainWindow::createMenus() {
     connect(outline_,&QDockWidget::visibilityChanged,this,[this](bool) { scheduleOutline(); });
     auto* miniMapAction=viewMenu->addAction(Codicons::icon("map"),I18n::text("Minimap"));
     miniMapAction->setObjectName("view.minimap");
+    ShortcutManager::instance().bind("view.minimap", miniMapAction);
     miniMapAction->setCheckable(true);
     miniMapAction->setChecked(QSettings().value("editor/minimap",true).toBool());
     connect(miniMapAction,&QAction::toggled,this,[this](bool enabled) {
@@ -917,11 +880,26 @@ void MainWindow::createMenus() {
     });
     auto* hiddenAction = viewMenu->addAction(Codicons::icon("eye"), I18n::text("Show Hidden Files"));
     hiddenAction->setCheckable(true);
+    hiddenAction->setChecked(QSettings().value("view/showHidden",false).toBool());
+    explorer_->setShowHidden(hiddenAction->isChecked());searchPanel_->setShowHidden(hiddenAction->isChecked());
     ShortcutManager::instance().bind("view.hidden", hiddenAction);
     connect(hiddenAction, &QAction::toggled, this, [this](bool show) {
+        QSettings().setValue("view/showHidden",show);
         explorer_->setShowHidden(show);
+        workspaceIndex_->configure(explicitProject_?projectRoots_:QStringList{}, {show,QSettings().value("project/includeIgnored",false).toBool(),{}});
         searchPanel_->setShowHidden(show);
         statusBar()->showMessage(show ? I18n::text("Hidden files are visible") : I18n::text("Hidden files are hidden"), 2000);
+    });
+    auto* ignoredAction = viewMenu->addAction(Codicons::icon("filter"), I18n::text("Include ignored files"));
+    ShortcutManager::instance().bind("view.ignored",ignoredAction);
+    ignoredAction->setCheckable(true);
+    ignoredAction->setChecked(QSettings().value("project/includeIgnored",false).toBool());
+    explorer_->setIncludeIgnored(ignoredAction->isChecked());
+    searchPanel_->setIncludeIgnored(ignoredAction->isChecked());
+    connect(ignoredAction,&QAction::toggled,this,[this](bool include) {
+        QSettings().setValue("project/includeIgnored",include);
+        explorer_->setIncludeIgnored(include);searchPanel_->setIncludeIgnored(include);
+        workspaceIndex_->configure(explicitProject_?projectRoots_:QStringList{},{QSettings().value("view/showHidden",false).toBool(),include,{}});
     });
     auto* explorerAction = viewMenu->addAction(Codicons::icon("files"), I18n::text("Toggle Side Bar"));
     explorerAction->setObjectName("view.explorer");
@@ -971,6 +949,7 @@ void MainWindow::setProjectRoots(const QStringList& roots, bool explicitProject)
         }
     }
     projectRoots_ = valid;
+    workspaceIndex_->configure(explicitProject?valid:QStringList{}, {QSettings().value("view/showHidden",false).toBool(), QSettings().value("project/includeIgnored",false).toBool(), {}});
     debugPanel_->setWorkspace(valid.value(0));
     explicitProject_ = explicitProject && !valid.isEmpty();
     if (lsp_) lsp_->setRoot(projectRoots_.isEmpty() ? QDir::homePath() : projectRoots_.front());
@@ -1012,109 +991,95 @@ void MainWindow::rememberRecentFile(const QString& path) {
     settings.setValue(QStringLiteral("editor/recentFiles"), recent);
 }
 
-void MainWindow::quickOpen() {
-    QDialog dialog(this);
-    dialog.setWindowTitle(I18n::text("Quick Open"));
-    dialog.setModal(true);
-    dialog.resize(680, 420);
-    auto* layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(10, 10, 10, 10);
-    auto* input = new QLineEdit(&dialog);
-    input->setPlaceholderText(I18n::text("Search files by name or path..."));
-    auto* results = new QListWidget(&dialog);
-    results->setUniformItemSizes(true);
-    layout->addWidget(input);
-    layout->addWidget(results, 1);
-
-    QSettings settings;
-    QStringList recent = settings.value(QStringLiteral("editor/recentFiles")).toStringList();
-    recent.erase(std::remove_if(recent.begin(), recent.end(), [](const QString& path) {
-        return !QFileInfo::exists(path);
-    }), recent.end());
-    const QStringList roots = explicitProject_ ? projectRoots_ : QStringList{};
-    QStringList openFiles;
-    for (int i = 0; i < tabs_->count(); ++i) {
-        if (auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i)); editor && !editor->filePath().isEmpty())
-            openFiles.push_back(editor->filePath());
-    }
-    QStringList indexedFiles;
-    auto* watcher = new QFutureWatcher<QStringList>(&dialog);
-    const auto refresh = [&] {
-        const QString query = input->text().trimmed();
-        struct Match { QString path; int score; };
-        QVector<Match> matches;
-        QSet<QString> seen;
-        const auto consider = [&](const QString& path, int recentRank) {
-            if (seen.contains(path)) return;
-            QString display = path;
-            bool inScope = roots.isEmpty() && openFiles.contains(path);
-            for (const QString& root : roots) {
-                const QString relative = QDir(root).relativeFilePath(path);
-                if (!QDir::isAbsolutePath(relative) && relative != QStringLiteral("..") &&
-                    !relative.startsWith(QStringLiteral("../"))) {
-                    display = relative;
-                    inScope = true;
-                    break;
-                }
-            }
-            if (!inScope) return;
-            seen.insert(path);
-            const int score = query.isEmpty() ? 0 : fuzzyMatchScore(display, query);
-            if (!query.isEmpty() && score < 0) return;
-            matches.push_back({path, score + (recentRank >= 0 ? 10000 - recentRank * 100 : 0)});
-        };
-        for (int i = 0; i < recent.size(); ++i) consider(recent.at(i), i);
-        for (const QString& path : openFiles) consider(path, -1);
-        for (const QString& path : indexedFiles) consider(path, -1);
-        std::sort(matches.begin(), matches.end(), [](const Match& a, const Match& b) {
-            return a.score > b.score;
-        });
-        results->clear();
-        for (int i = 0; i < std::min(100, static_cast<int>(matches.size())); ++i) {
-            const QString path = matches.at(i).path;
-            QString display = path;
-            for (const QString& root : roots) {
-                const QString prefix = QDir(root).absolutePath() + QDir::separator();
-                if (path.startsWith(prefix)) { display = path.mid(prefix.size()); break; }
-            }
-            auto* item = new QListWidgetItem(FileIcons::icon(path), display, results);
-            item->setToolTip(path);
-            item->setData(Qt::UserRole, path);
+void MainWindow::commandPalette() {
+    QPointer<QWidget> previousFocus = QApplication::focusWidget();
+    QPointer<EditorWidget> editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    QVector<PaletteCommand> entries;
+    auto& manager = ShortcutManager::instance();
+    for (const auto& command : manager.commands()) {
+        if (command.id == "navigation.commands") continue;
+        QPointer<QObject> target = manager.target(command.id, this, editor);
+        if (!target && !command.id.startsWith("editor.")) continue;
+        PaletteCommand entry;
+        entry.id = command.id;
+        entry.title = command.category + ": " + command.name;
+        entry.searchText = command.englishName + " " + command.id;
+        entry.shortcut = manager.sequence(command.id).toString(QKeySequence::NativeText);
+        entry.icon = Codicons::icon("chevron-right");
+        if (auto* action = qobject_cast<QAction*>(target)) {
+            if (!action->icon().isNull()) entry.icon = action->icon();
+            entry.enabled = action->isEnabled();
+            entry.checked = action->isCheckable() ? (action->isChecked() ? 1 : 0) : -1;
+        } else if (auto* shortcut = qobject_cast<QShortcut*>(target)) entry.enabled = shortcut->isEnabled();
+        const bool needsEditor = command.id.startsWith("editor.") || command.id.startsWith("code.") ||
+            command.id == "file.save" || command.id == "file.saveAs" || command.id == "navigation.line" ||
+            command.id == "debug.breakpoint" || (command.id.startsWith("search.") && command.id != "search.project");
+        if (needsEditor && (!editor || editor->isBusy())) {
+            entry.enabled = false;
+            entry.reason = I18n::text(editor ? "Document is busy" : "No open document");
         }
-        if (results->count() > 0) results->setCurrentRow(0);
-    };
-    connect(input, &QLineEdit::textChanged, &dialog, refresh);
-    connect(watcher, &QFutureWatcher<QStringList>::finished, &dialog, [&] {
-        indexedFiles = watcher->result();
-        input->setPlaceholderText(I18n::text("Search files by name or path (%1 files)...")
-                                      .arg(indexedFiles.size()));
-        refresh();
-    });
-    watcher->setFuture(QtConcurrent::run([roots] { return scanWorkspaceFiles(roots); }));
-    connect(input, &QLineEdit::returnPressed, &dialog, [&] {
-        if (results->currentItem()) dialog.accept();
-    });
-    connect(results, &QListWidget::itemActivated, &dialog, [&dialog](QListWidgetItem*) {
-        dialog.accept();
-    });
-    auto* nextResult = new QShortcut(QKeySequence(Qt::Key_Down), &dialog);
-    nextResult->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(nextResult, &QShortcut::activated, &dialog, [results] {
-        if (results->count() == 0) return;
-        results->setCurrentRow(std::min(results->currentRow() + 1, results->count() - 1));
-    });
-    auto* previousResult = new QShortcut(QKeySequence(Qt::Key_Up), &dialog);
-    previousResult->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(previousResult, &QShortcut::activated, &dialog, [results] {
-        if (results->count() == 0) return;
-        results->setCurrentRow(std::max(0, results->currentRow() - 1));
-    });
-    input->setFocus();
-    refresh();
-    if (dialog.exec() == QDialog::Accepted && results->currentItem()) {
-        const QString path = results->currentItem()->data(Qt::UserRole).toString();
-        if (!path.isEmpty()) openFile(path);
+        if (command.id == "code.problems") entry.enabled = true;
+        else if (command.id.startsWith("code.") && editor && !editor->isBusy() && !lsp_->supports(editor->filePath())) {
+            entry.enabled = false; entry.reason = I18n::text("Language server not configured");
+        }
+        if (command.id.startsWith("debug.") && !debugPanel_->commandAvailable(command.id.mid(6))) {
+            entry.enabled = false; entry.reason = I18n::text("Debug command is unavailable in the current state");
+        }
+        if (!entry.enabled && entry.reason.isEmpty()) entry.reason = I18n::text("Command is unavailable");
+        entry.execute = [this, target, editor, needsEditor, id=command.id] {
+            if (needsEditor && id != "code.problems" && (!editor || editor->isBusy() || tabs_->currentWidget() != editor)) return;
+            if (id.startsWith("debug.") && !debugPanel_->commandAvailable(id.mid(6))) return;
+            if (needsEditor && editor) editor->setFocus(Qt::OtherFocusReason);
+            if (auto* action = qobject_cast<QAction*>(target)) { if (action->isEnabled()) action->trigger(); }
+            else if (auto* shortcut = qobject_cast<QShortcut*>(target); shortcut && shortcut->isEnabled())
+                QMetaObject::invokeMethod(shortcut, "activated", Qt::DirectConnection);
+        };
+        entries.push_back(std::move(entry));
     }
+    CommandPalette palette(std::move(entries), this);
+    const int result = palette.exec();
+    activateWindow();
+    if (previousFocus) previousFocus->setFocus(Qt::OtherFocusReason);
+    else if (editor) editor->setFocus(Qt::OtherFocusReason);
+    if (result == QDialog::Accepted) palette.executeSelected();
+}
+
+void MainWindow::quickOpen() {
+    workspaceIndex_->invalidate();
+    QDialog dialog(this); dialog.setWindowTitle(I18n::text("Quick Open"));dialog.resize(680,420);
+    auto* layout=new QVBoxLayout(&dialog);
+    auto* input=new QLineEdit(&dialog);input->setPlaceholderText(I18n::text("Search files by name or path..."));
+    auto* results=new QListWidget(&dialog);results->setUniformItemSizes(true);
+    auto* status=new QLabel(&dialog);
+    layout->addWidget(input);layout->addWidget(results,1);layout->addWidget(status);
+    QTimer debounce;debounce.setSingleShot(true);debounce.setInterval(60);
+    const auto refresh=[&] {
+        QStringList open;
+        for(int i=0;i<tabs_->count();++i)if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i)))if(!editor->filePath().isEmpty())open<<editor->filePath();
+        status->setText(I18n::text("Searching…"));
+        workspaceIndex_->query(input->text().trimmed(),QSettings().value("editor/recentFiles").toStringList(),open,&dialog,
+            [results,status,input](FileQueryResult value) {
+                results->setProperty("indexing",value.indexing);
+                input->setPlaceholderText(I18n::text("Search files by name or path (%1 files)...").arg(value.indexedFiles));
+                results->clear();
+                for(const auto& file:value.files){auto* item=new QListWidgetItem(FileIcons::icon(file.path),file.relative,results);item->setToolTip(file.path);item->setData(Qt::UserRole,file.path);}
+                if(results->count())results->setCurrentRow(0);
+                status->setText(!value.error.isEmpty()?value.error:value.indexing?I18n::text("Indexing project…"):I18n::text("Enter to open · Escape to close"));
+            });
+    };
+    connect(&debounce,&QTimer::timeout,&dialog,refresh);
+    connect(input,&QLineEdit::textChanged,&dialog,[&]{workspaceIndex_->cancelQuery();results->clear();debounce.start();});
+    connect(workspaceIndex_,&WorkspaceIndex::updated,&dialog,[&]{debounce.start();});
+    connect(input,&QLineEdit::returnPressed,&dialog,[&]{if(results->currentItem())dialog.accept();});
+    connect(results,&QListWidget::itemActivated,&dialog,[&](QListWidgetItem*){dialog.accept();});
+    for(const auto key:{Qt::Key_Down,Qt::Key_Up}) {
+        auto* shortcut=new QShortcut(QKeySequence(key),&dialog);shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(shortcut,&QShortcut::activated,&dialog,[results,key]{if(results->count())results->setCurrentRow(std::clamp(results->currentRow()+(key==Qt::Key_Down?1:-1),0,results->count()-1));});
+    }
+    input->setFocus();refresh();
+    const auto accepted=dialog.exec()==QDialog::Accepted;
+    workspaceIndex_->cancelQuery();
+    if(accepted && results->currentItem())openFile(results->currentItem()->data(Qt::UserRole).toString());
 }
 
 void MainWindow::updateTabMru(QWidget* current) {
@@ -1624,21 +1589,19 @@ void MainWindow::initializeFileMonitoring() {
 }
 
 void MainWindow::checkExternalFileChanges() {
-    if (closing_ || !tabs_) return;
-    QSet<QString> files, directories;
-    for (int i = 0; i < tabs_->count(); ++i) {
-        auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
-        if (!editor || editor->filePath().isEmpty()) continue;
-        const QString path = editor->filePath();
-        const QFileInfo info(path);
-        if (info.isFile()) files.insert(path);
-        // Watching the directory survives atomic replacement of the file. Watch
-        // the nearest surviving ancestor when an entire directory disappears.
-        QDir parent = info.absoluteDir();
-        while (!parent.exists() && !parent.isRoot())
-            parent.setPath(QFileInfo(parent.absolutePath()).absolutePath());
-        directories.insert(parent.absolutePath());
+    if(closing_ || !tabs_ || fileCheckRunning_)return;
+    struct Observation {QHash<QString,QByteArray> states;QSet<QString> files,directories;};
+    QStringList paths;QHash<QString,quint64> revisions;QHash<QString,QByteArray> expected;
+    for(int i=0;i<tabs_->count();++i)if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i))) {
+        const auto path=editor->filePath();if(path.isEmpty())continue;
+        paths<<path;revisions[path]=editor->lspRevision();expected[path]=editor->document()->diskState;
     }
+    fileCheckRunning_=true;
+    auto* worker=new QFutureWatcher<Observation>(this);
+    connect(worker,&QFutureWatcher<Observation>::finished,this,[this,worker,revisions,expected] {
+        const auto observations=worker->result();worker->deleteLater();fileCheckRunning_=false;
+        if(closing_)return;
+        const auto& files=observations.files;const auto& directories=observations.directories;
     const auto reconcile = [this](const QStringList& watched, const QSet<QString>& wanted) {
         for (const auto& path : watched)
             if (!wanted.contains(path)) documentWatcher_->removePath(path);
@@ -1653,7 +1616,8 @@ void MainWindow::checkExternalFileChanges() {
         if (!editor || editor->isBusy() || editor->filePath().isEmpty()
             || externallyReloading_.contains(editor)) continue;
         const QString path = editor->filePath();
-        const auto state = diskFileState(path);
+        if(!observations.states.contains(path) || revisions.value(path)!=editor->lspRevision() || expected.value(path)!=editor->document()->diskState){documentChangeTimer_->start();continue;}
+        const auto state = observations.states.value(path);
         auto& tracked = externalFileStates_[editor];
         if (tracked.path != path) { tracked = {}; tracked.path = path; }
         if (state == editor->document()->diskState) {
@@ -1705,6 +1669,18 @@ void MainWindow::checkExternalFileChanges() {
         });
         message->open();
     }
+    });
+    worker->setFuture(QtConcurrent::run([paths] {
+        Observation result;
+        for(const auto& path:paths) {
+            const QFileInfo info(path);result.states[path]=diskFileState(path);
+            if(info.isFile())result.files.insert(path);
+            auto parent=info.absoluteDir();
+            while(!parent.exists() && !parent.isRoot())parent.setPath(QFileInfo(parent.absolutePath()).absolutePath());
+            result.directories.insert(parent.absolutePath());
+        }
+        return result;
+    }));
 }
 
 void MainWindow::reloadExternalFile(EditorWidget* editor, const QString& path, const QByteArray& state) {
@@ -1889,19 +1865,13 @@ void MainWindow::searchInProject() {
 
 void MainWindow::startProjectReplace(ProjectReplaceRequest request) {
     QSet<QString> selectedPaths(request.selectedPaths.cbegin(), request.selectedPaths.cend());
-    if (selectedPaths.isEmpty()) {
-        for (qsizetype index = 0; index < request.matches.size(); ++index) {
-            if (!request.selected.isEmpty() && !request.selected.testBit(index)) continue;
-            selectedPaths.insert(request.matches[index].path);
-        }
-    }
     replaceLockedEditors_.clear();
     for (int index = 0; index < tabs_->count(); ++index) {
         auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(index));
         if (!editor) continue;
         const QString path = editor->filePath().isEmpty()
             ? tabs_->tabToolTip(index) : editor->filePath();
-        if (!selectedPaths.contains(path)) continue;
+        if (!selectedPaths.contains(path) && !request.matches.containsPath(path)) continue;
         if (editor->isModified() || editor->isBusy()) {
             request.protectedPaths.push_back(path);
         } else {

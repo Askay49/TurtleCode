@@ -7,7 +7,7 @@ class QAction;
 class QShortcut;
 class QWidget;
 class QKeyEvent;
-struct ShortcutCommand { QString id, name, category, scope; QKeySequence standard; };
+struct ShortcutCommand { QString id, name, category, scope, englishName; QKeySequence standard; };
 class ShortcutManager {
 public:
     static ShortcutManager& instance();
@@ -15,6 +15,7 @@ public:
     QKeySequence sequence(const QString& id) const;
     void bind(const QString& id, QAction* action);
     void bind(const QString& id, QShortcut* shortcut);
+    QObject* target(const QString& id, QWidget* window, QWidget* editor = nullptr) const;
     bool matches(const QString& id, const QKeyEvent* event) const;
     QString validate(const QMap<QString, QKeySequence>& values) const;
     bool save(const QMap<QString, QKeySequence>& values, QString* error);

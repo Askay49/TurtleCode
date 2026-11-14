@@ -1,3 +1,5 @@
+#include "project/WorkspaceFiles.hpp"
+#include <QDateTime>
 #include "GitService.hpp"
 #include "GitBackend.hpp"
 #include <QFutureWatcher>
@@ -67,6 +69,7 @@ bool GitService::parseStatus(const QByteArray& bytes, GitStatus& status) {
 }
 GitService::GitService(QObject* parent) : QObject(parent) {}
 GitService::~GitService() {
+    if(discoveryCancel_)discoveryCancel_->store(true);
     if (process_) { process_->disconnect(this); process_->kill(); process_->waitForFinished(1000); }
 }
 void GitService::run(const QString& directory, const QStringList& args, Completion completion, const QByteArray& input) {
@@ -126,6 +129,8 @@ void GitService::finish() {
     if (pendingRefresh_) { pendingRefresh_ = false; QTimer::singleShot(0, this, &GitService::refresh); }
 }
 void GitService::setRoots(const QStringList& roots) {
+    if(discoveryCancel_)discoveryCancel_->store(true);
+    lastStatusRead_.clear();
     roots_ = roots; ++generation_; rediscover_ = true;
     repository_.clear(); repositories_.clear(); statuses_.clear(); status_ = {}; emit changed(); refresh();
 }
@@ -150,6 +155,12 @@ void GitService::refresh() {
     if (rediscover_) { rediscover_ = false; discover(generation_); }
     else if (!repository_.isEmpty()) readStatus(generation_);
     else finish();
+}
+void GitService::refreshBackground() {
+    if(busy_)return;
+    if(rediscover_){refresh();return;}
+    if(repository_.isEmpty() || !begin())return;
+    readStatus(generation_,false);
 }
 const GitStatus& GitService::status(const QString& repository) const {
     const auto it = statuses_.constFind(repository);
@@ -189,24 +200,18 @@ void GitService::pull() {
 void GitService::push() { mutate({"push"}); }
 void GitService::discover(quint64 generation) {
     const auto roots = roots_;
-    readAsync(this,[roots] {
-        QStringList repositories;
-        QSet<QString> visited;
-        int remaining = 12000;
-        const QSet<QString> skip{".git", ".cache", "node_modules", "build", "dist", ".venv", "__pycache__"};
-        std::function<void(const QString&,int)> scan = [&](const QString& path, int depth) {
-            if (depth > 8 || --remaining < 0) return;
-            const auto canonical = QFileInfo(path).canonicalFilePath();
-            if (canonical.isEmpty() || visited.contains(canonical)) return;
-            visited.insert(canonical);
-            if (depth == 0 || QFileInfo::exists(path + "/.git")) {
-                const auto repository = GitBackend::discover(path);
-                if (!repository.isEmpty() && !repositories.contains(repository)) repositories.append(repository);
-            }
-            const auto children = QDir(path).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name);
-            for (const auto& child : children) if (!skip.contains(child.fileName())) scan(child.absoluteFilePath(), depth + 1);
-        };
-        for (const auto& root : roots) scan(root, 0);
+    if(discoveryCancel_)discoveryCancel_->store(true);
+    discoveryCancel_=std::make_shared<std::atomic_bool>(false);const auto cancel=discoveryCancel_;
+    readAsync(this,[roots,cancel] {
+        QStringList repositories;QSet<QString> visited;
+        for(const auto& root:roots) {
+            WorkspaceFiles workspace(root,{false,false,{}});
+            workspace.walk([](const QFileInfo&){},cancel,[&](const QString& path) {
+                if(path!=root && !QFileInfo::exists(path+"/.git"))return;
+                const auto repository=GitBackend::discover(path);
+                if(!repository.isEmpty() && !visited.contains(repository)){visited.insert(repository);repositories<<repository;}
+            });
+        }
         return repositories;
     },[this,generation](auto result) {
         if(generation==generation_) {
@@ -221,10 +226,12 @@ void GitService::discover(quint64 generation) {
         finish();
     });
 }
-void GitService::readStatus(quint64 generation) {
-    const auto repositories = repositories_;
-    readAsync(this,[repositories] {
-        QHash<QString, GitStatus> statuses;
+void GitService::readStatus(quint64 generation, bool all) {
+    QStringList repositories;const auto now=QDateTime::currentMSecsSinceEpoch();
+    for(const auto& repo:repositories_)if(all || repo==repository_ || now-lastStatusRead_.value(repo)>60000){repositories<<repo;lastStatusRead_[repo]=now;}
+    const auto previous=statuses_;
+    readAsync(this,[repositories,previous] {
+        auto statuses=previous;
         for (const auto& repository : repositories) {
             // A removed/broken nested repository must not hide the others.
             try { statuses.insert(repository, GitBackend::status(repository)); }

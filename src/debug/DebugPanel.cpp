@@ -250,6 +250,12 @@ void DebugPanel::perform(const QString& command) {
     else if(command=="stepIn") stepIn_->click();
     else if(command=="stepOut") stepOut_->click();
 }
+bool DebugPanel::commandAvailable(const QString& command) const {
+    if (command == "start") return !active() || session_.stopped;
+    if (command == "stop") return active() && !session_.ending;
+    if (command == "next" || command == "stepIn" || command == "stepOut") return session_.stopped && !session_.ending;
+    return true;
+}
 bool DebugPanel::active() const { return preparing_ || client_->active(); }
 void DebugPanel::useFile(const QString& path) {
     if(active() || path.isEmpty())return;

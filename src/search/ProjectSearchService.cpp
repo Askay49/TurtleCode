@@ -1,3 +1,9 @@
+#include "SearchScanner.hpp"
+#include "project/WorkspaceThreads.hpp"
+#include <QMutex>
+#include <QMutexLocker>
+#include <QTimer>
+#include <optional>
 #include "app/I18n.hpp"
 #include "ProjectSearchService.hpp"
 
@@ -12,137 +18,6 @@
 #include <QSet>
 #include <QtConcurrent/QtConcurrentRun>
 
-namespace {
-QStringList splitPatterns(const QString& value) {
-    QString normalized = value;
-    normalized.replace(';', ',');
-    QStringList patterns;
-    for (QString pattern : normalized.split(',', Qt::SkipEmptyParts)) {
-        pattern = pattern.trimmed();
-        if (!pattern.isEmpty()) patterns.push_back(pattern);
-    }
-    return patterns;
-}
-
-bool matchesPatterns(const QString& relativePath, const QStringList& patterns) {
-    if (patterns.isEmpty()) return false;
-    for (const QString& pattern : patterns) {
-        const auto expression = QRegularExpression::wildcardToRegularExpression(
-            pattern, QRegularExpression::UnanchoredWildcardConversion);
-        if (QRegularExpression(expression, QRegularExpression::CaseInsensitiveOption)
-                .match(relativePath).hasMatch())
-            return true;
-    }
-    return false;
-}
-
-struct PendingDirectory {
-    QString path;
-};
-
-ProjectSearchResult runSearch(const ProjectSearchOptions& options,
-                              const std::shared_ptr<std::atomic_bool>& cancelled) {
-    ProjectSearchResult result;
-    if (options.query.isEmpty() || options.roots.isEmpty()) return result;
-
-    QRegularExpression::PatternOptions patternOptions;
-    if (!options.matchCase) patternOptions |= QRegularExpression::CaseInsensitiveOption;
-    QString pattern = options.regularExpression
-        ? options.query : QRegularExpression::escape(options.query);
-    if (options.wholeWord)
-        pattern = QStringLiteral("(?<![\\p{L}\\p{N}_])(?:%1)(?![\\p{L}\\p{N}_])").arg(pattern);
-    const QRegularExpression expression(pattern, patternOptions);
-    if (!expression.isValid()) {
-        result.error = expression.errorString();
-        return result;
-    }
-
-    const QStringList includes = splitPatterns(options.filesToInclude);
-    const QStringList excludes = splitPatterns(options.filesToExclude);
-    QSet<QString> visitedFiles;
-    for (const QString& inputRoot : options.roots) {
-        const QString root = QDir::cleanPath(QFileInfo(inputRoot).absoluteFilePath());
-        QList<PendingDirectory> pending{{root}};
-        while (!pending.isEmpty() && !cancelled->load(std::memory_order_relaxed)) {
-            PendingDirectory current = pending.takeLast();
-            QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot | QDir::System | QDir::NoSymLinks;
-            if (options.showHidden) filters |= QDir::Hidden;
-            const QFileInfoList entries = QDir(current.path).entryInfoList(
-                filters,
-                QDir::DirsFirst | QDir::Name | QDir::IgnoreCase);
-            for (const QFileInfo& info : entries) {
-                if (cancelled->load(std::memory_order_relaxed)) return result;
-                const QString path = info.absoluteFilePath();
-                const QString relative = QDir(root).relativeFilePath(path);
-                if (matchesPatterns(relative, excludes)) continue;
-                if (info.isDir()) {
-                    pending.push_back({path});
-                    continue;
-                }
-                if (!info.isFile()) continue;
-                if (!includes.isEmpty() && !matchesPatterns(relative, includes)) continue;
-                if (visitedFiles.contains(path)) continue;
-                visitedFiles.insert(path);
-
-                QFile file(path);
-                if (!file.open(QIODevice::ReadOnly)) continue;
-                const QByteArray probe = file.peek(8192);
-                if (probe.contains('\0')) continue;
-                ++result.filesSearched;
-                int lineNumber = 0;
-                qint64 lineOffset = 0;
-                const auto firstMatch = result.matches.size();
-                QCryptographicHash hash(QCryptographicHash::Sha256);
-                bool validText = true;
-                while (!file.atEnd()) {
-                    if (cancelled->load(std::memory_order_relaxed)) return result;
-                    const QByteArray bytes = file.readLine();
-                    hash.addData(bytes);
-                    const QString line = QString::fromUtf8(bytes.constData(), bytes.size());
-                    if (bytes.contains('\0') || line.toUtf8() != bytes) {
-                        validText = false;
-                        break;
-                    }
-                    ++lineNumber;
-                    auto iterator = expression.globalMatch(line);
-                    const QString preview = line.trimmed().left(180);
-                    qsizetype lastColumn = 0;
-                    qint64 lastByte = 0;
-                    while (iterator.hasNext()) {
-                        if ((result.matches.size() & 4095) == 0 &&
-                            cancelled->load(std::memory_order_relaxed)) return result;
-                        const auto match = iterator.next();
-                        if (match.capturedLength() == 0) continue;
-                        lastByte += line.mid(lastColumn, match.capturedStart() - lastColumn).toUtf8().size();
-                        lastColumn = match.capturedStart();
-                        ProjectSearchMatch item;
-                        item.path = path;
-                        item.relativePath = relative;
-                        item.line = lineNumber;
-                        item.column = match.capturedStart() + 1;
-                        item.length = static_cast<int>(match.capturedLength());
-                        item.preview = preview;
-                        item.byteOffset = lineOffset + lastByte;
-                        item.byteLength = match.captured().toUtf8().size();
-                        item.matchedText = match.captured();
-                        if (options.regularExpression) item.captures = match.capturedTexts();
-                        result.matches.push_back(std::move(item));
-                        lastColumn = match.capturedEnd();
-                        lastByte += result.matches.back().byteLength;
-                    }
-                    lineOffset += bytes.size();
-                }
-                if (!validText || file.error() != QFileDevice::NoError) {
-                    while (result.matches.size() > firstMatch) result.matches.pop_back();
-                    continue;
-                }
-                if (result.matches.size() > firstMatch) result.fileHashes.insert(path, hash.result());
-            }
-        }
-    }
-    return result;
-}
-}
 
 ProjectSearchService::ProjectSearchService(QObject* parent) : QObject(parent) {
     qRegisterMetaType<ProjectSearchResult>();
@@ -162,16 +37,26 @@ void ProjectSearchService::search(ProjectSearchOptions options) {
     cancellation_ = std::make_shared<std::atomic_bool>(false);
     const auto cancellation = cancellation_;
     emit searchStarted();
+    struct Mailbox { QMutex mutex; std::optional<ProjectSearchResult> latest; };
+    auto mailbox=std::make_shared<Mailbox>();
+    auto* timer=new QTimer(this);timer->setInterval(100);
+    connect(timer,&QTimer::timeout,this,[this,mailbox,generation] {
+        std::optional<ProjectSearchResult> value;
+        {QMutexLocker lock(&mailbox->mutex);value=std::move(mailbox->latest);mailbox->latest.reset();}
+        if(value && generation==generation_)emit searchProgress(*value);
+    });timer->start();
     auto* watcher = new QFutureWatcher<ProjectSearchResult>(this);
     connect(watcher, &QFutureWatcher<ProjectSearchResult>::finished, this,
-            [this, watcher, generation, cancellation] {
+            [this, watcher, generation, cancellation, timer] {
+        timer->stop();timer->deleteLater();
         const auto result = watcher->result();
         watcher->deleteLater();
         if (generation != generation_ || cancellation->load(std::memory_order_relaxed)) return;
         emit searchFinished(result);
     });
-    watcher->setFuture(QtConcurrent::run([options = std::move(options), cancellation] {
-        return runSearch(options, cancellation);
+    watcher->setFuture(QtConcurrent::run(&WorkspaceThreads::search(),[options = std::move(options), cancellation, mailbox] {
+        try {return scanProject(options,cancellation,[mailbox](const ProjectSearchResult& value){QMutexLocker lock(&mailbox->mutex);mailbox->latest=value;});}
+        catch(const std::exception& error){ProjectSearchResult result;result.error=QString::fromUtf8(error.what());return result;}
     }));
 }
 
@@ -214,50 +99,31 @@ void ProjectReplaceService::replace(ProjectReplaceRequest request) {
         if (cancellation_ == cancelled) cancellation_.reset();
         emit replaceFinished(result);
     });
-    watcher->setFuture(QtConcurrent::run([request = std::move(request), cancelled] {
+    watcher->setFuture(QtConcurrent::run(&WorkspaceThreads::search(),[request = std::move(request), cancelled] {
         ProjectReplaceResult result;
         if (!request.selected.isEmpty() && request.selected.size() != request.matches.size()) {
             result.errors.push_back(I18n::text("Invalid selection state"));
             return result;
         }
-        QMap<QString, QVector<qsizetype>> files;
-        for (qsizetype index = 0; index < request.matches.size(); ++index) {
-            if (!request.selected.isEmpty() && !request.selected.testBit(index)) continue;
-            files[request.matches[index].path].push_back(index);
-        }
+        try {
+        auto cursor=request.matches.ordered();qsizetype index{};ProjectSearchMatch match;
+        const auto next=[&] {while(cursor.next(index,match)){if(cancelled->load())return false;if(request.selected.isEmpty() || request.selected.testBit(index))return true;}return false;};
+        bool available=next();
         const QSet<QString> protectedPaths(request.protectedPaths.cbegin(), request.protectedPaths.cend());
-        for (auto it = files.begin(); it != files.end(); ++it) {
-            if (cancelled->load(std::memory_order_relaxed)) {
-                result.cancelled = true;
-                break;
-            }
-            const QString path = it.key();
-            if (protectedPaths.contains(path)) {
-                result.skippedProtected.push_back(path);
-                continue;
-            }
+        while(available) {
+            if(cancelled->load()){result.cancelled=true;break;}
+            const QString path=match.path;
+            const auto skip=[&]{while(available && match.path==path)available=next();};
+            if(protectedPaths.contains(path)){result.skippedProtected<<path;skip();continue;}
             const QFileInfo info(path);
-            if (!info.isFile() || info.isSymLink()) {
-                result.errors.push_back(path + I18n::text(": file is unavailable"));
-                continue;
-            }
+            if(!info.isFile() || info.isSymLink()){result.errors<<path+I18n::text(": file is unavailable");skip();continue;}
             QFile input(path);
-            if (!input.open(QIODevice::ReadOnly)) {
-                result.errors.push_back(path + QStringLiteral(": ") + input.errorString());
-                continue;
-            }
-            if (!request.fileHashes.contains(path)) {
-                result.skippedChanged.push_back(path);
-                continue;
-            }
-            auto indices = it.value();
-            std::sort(indices.begin(), indices.end(), [&request](qsizetype a, qsizetype b) {
-                return request.matches[a].byteOffset < request.matches[b].byteOffset;
-            });
+            if(!input.open(QIODevice::ReadOnly)){result.errors<<path+": "+input.errorString();skip();continue;}
+            if(!request.fileHashes.contains(path)){result.skippedChanged<<path;skip();continue;}
             QSaveFile destination(path);
             if (!destination.open(QIODevice::WriteOnly)) {
                 result.errors.push_back(path + QStringLiteral(": ") + destination.errorString());
-                continue;
+                skip();continue;
             }
             enum class State { Ok, Cancelled, Stale, ReadError, WriteError };
             State state = State::Ok;
@@ -282,21 +148,16 @@ void ProjectReplaceService::replace(ProjectReplaceRequest request) {
                     count -= block.size();
                 }
             };
-            qint64 cursor = 0;
-            for (qsizetype position = 0; position < indices.size(); ++position) {
-                if (state != State::Ok) break;
-                if ((position & 1023) == 0 && cancelled->load(std::memory_order_relaxed)) {
-                    state = State::Cancelled;
-                    break;
-                }
-                const auto index = indices[position];
-                const auto& match = request.matches[index];
+            qint64 byteCursor = 0;
+            int replacedCount=0;
+            while(available && match.path==path) {
+                if(state!=State::Ok || cancelled->load()){state=cancelled->load()?State::Cancelled:state;break;}
                 const QByteArray expected = match.matchedText.toUtf8();
-                if (match.byteOffset < cursor || match.byteLength != expected.size()) {
+                if (match.byteOffset < byteCursor || match.byteLength != expected.size()) {
                     state = State::Stale;
                     break;
                 }
-                copyBytes(match.byteOffset - cursor);
+                copyBytes(match.byteOffset - byteCursor);
                 if (state != State::Ok) break;
                 const QByteArray actual = input.read(match.byteLength);
                 if (actual != expected) {
@@ -310,7 +171,8 @@ void ProjectReplaceService::replace(ProjectReplaceRequest request) {
                     state = State::WriteError;
                     break;
                 }
-                cursor = match.byteOffset + match.byteLength;
+                byteCursor = match.byteOffset + match.byteLength;
+                ++replacedCount;available=next();
             }
             while (state == State::Ok && !input.atEnd()) {
                 if (cancelled->load(std::memory_order_relaxed)) {
@@ -332,6 +194,7 @@ void ProjectReplaceService::replace(ProjectReplaceRequest request) {
             if (state != State::Ok) {
                 destination.cancelWriting();
                 if (state == State::Cancelled) { result.cancelled = true; break; }
+                skip();
                 if (state == State::Stale) result.skippedChanged.push_back(path);
                 else result.errors.push_back(path + QStringLiteral(": ") +
                     (state == State::ReadError ? input.errorString() : destination.errorString()));
@@ -342,9 +205,11 @@ void ProjectReplaceService::replace(ProjectReplaceRequest request) {
                 continue;
             }
             result.filesChanged++;
-            result.matchesReplaced += indices.size();
+            result.matchesReplaced += replacedCount;
             result.changedPaths.push_back(path);
         }
+        }catch(const std::exception& error){result.errors<<QString::fromUtf8(error.what());}
+        if(cancelled->load())result.cancelled=true;
         return result;
     }));
 }

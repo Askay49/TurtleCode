@@ -2,6 +2,7 @@
 #include "GitService.hpp"
 #include <QWidget>
 #include <QMap>
+#include <QElapsedTimer>
 class QComboBox;
 class QLabel;
 class QPlainTextEdit;
@@ -43,6 +44,8 @@ private:
         QPlainTextEdit* message{};
         QPushButton* commit{};
         QTreeWidget* files{};
+        qsizetype firstEntry{};
+        QVector<qsizetype> previousPages;
         GitStatus rendered;
         bool initialized{false}, commitAfterStage{false};
     };
@@ -66,4 +69,7 @@ private:
     QLabel* empty_{};
     QToolButton* refresh_{};
     QTimer* poll_{};
+    QElapsedTimer refreshTime_;
+    int pollDelay_{2500};
+    bool pollChanged_{false};
 };

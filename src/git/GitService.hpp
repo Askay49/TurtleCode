@@ -5,6 +5,8 @@
 #include <QStringList>
 #include <QVector>
 #include <functional>
+#include <atomic>
+#include <memory>
 
 struct GitEntry {
     QString path;
@@ -57,6 +59,7 @@ public:
     void push();
     void switchBranch(const QString& branch);
     void refresh();
+    void refreshBackground();
     void stage(const QStringList& paths);
     void unstage(const QStringList& paths);
     void commit(const QString& message);
@@ -84,7 +87,9 @@ private:
     bool begin();
     void finish();
     void discover(quint64 generation);
-    void readStatus(quint64 generation);
+    void readStatus(quint64 generation, bool all = true);
+    QHash<QString,qint64> lastStatusRead_;
+    std::shared_ptr<std::atomic_bool> discoveryCancel_;
     void mutate(const QStringList& args, const QByteArray& input = {}, bool isCommit = false);
     QStringList roots_;
     QString repository_;

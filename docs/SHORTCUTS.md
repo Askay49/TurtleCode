@@ -73,3 +73,17 @@ Smart editing: **Ctrl+/** toggles line comments, **Ctrl+Shift+A** toggles block
 comments. Command IDs: `editor.toggleLineComment`, `editor.toggleBlockComment`.
 Tab/Shift+Tab indent/unindent selected lines and remain fixed editing keys.
 See `SMART_EDITING.md` for auto-pairs, surrounding selections, Enter and matching brackets.
+
+## Command palette
+
+**Ctrl+Shift+P** or **Go → Command palette** opens a compact command search above
+the editor. Search by translated name, English name or command ID; multiple words
+and abbreviated matches are supported. Up/Down selects a result, Enter runs it,
+Escape cancels, and clicking a result runs it. Focus returns before execution;
+editor commands use the current document and cursor. Disabled commands show a
+reason and cannot run. Toggle commands display their current state. The list
+displays current user-assigned shortcuts, including commands with no shortcut.
+
+An empty query puts recently invoked commands first. Up to 20 command IDs are
+stored locally in QSettings under `commands/recent`. The palette shortcut is
+configurable under Settings → Keyboard shortcuts. Ctrl+P still searches files.

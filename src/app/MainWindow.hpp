@@ -16,6 +16,7 @@
 class OutlinePanel;
 class QLockFile;
 class RecoveryStore;
+class WorkspaceIndex;
 class ProjectExplorer;
 class EditorWidget;
 class QLabel;
@@ -82,6 +83,7 @@ private:
 
     void initializeFileMonitoring();
     void checkExternalFileChanges();
+    bool fileCheckRunning_{false};
     void reloadExternalFile(EditorWidget* editor, const QString& path, const QByteArray& state);
     QFileSystemWatcher* documentWatcher_{nullptr};
     QTimer* documentChangeTimer_{nullptr};
@@ -103,7 +105,9 @@ private:
     QPointer<EditorWidget> outlineEditor_;
     quint64 outlineGeneration_{0};
     void openFile();
+    WorkspaceIndex* workspaceIndex_{nullptr};
     void quickOpen();
+    void commandPalette();
     void goToLine();
     void rememberRecentFile(const QString& path);
     void recordNavigationLocation();

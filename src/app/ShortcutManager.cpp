@@ -46,7 +46,7 @@ bool reserved(const QKeySequence& sequence) {
 ShortcutManager& ShortcutManager::instance() { static ShortcutManager manager; return manager; }
 ShortcutManager::ShortcutManager() {
     auto add = [this](const char* id, const char* name, const char* category, const char* key = "", const char* scope = "Window") {
-        commands_.push_back({id, I18n::text(name), I18n::text(category), I18n::text(scope), QKeySequence(QString::fromLatin1(key), QKeySequence::PortableText)});
+        commands_.push_back({id, I18n::text(name), I18n::text(category), I18n::text(scope), QString::fromLatin1(name), QKeySequence(QString::fromLatin1(key), QKeySequence::PortableText)});
     };
     add("file.open", "Open file", "File", "Ctrl+O");
     add("file.openFolder", "Open folder", "File", "Ctrl+K, Ctrl+O");
@@ -101,6 +101,12 @@ ShortcutManager::ShortcutManager() {
     add("editor.cursorBelow", "Add cursor below", "Editor", "Ctrl+Shift+Down", "Editor");
     add("editor.nextOccurrence", "Select next occurrence", "Editor", "Ctrl+D", "Editor");
 
+    add("navigation.commands", "Command palette", "Navigation", "Ctrl+Shift+P");
+    add("settings.editor", "Editor settings", "Settings");
+    add("view.minimap", "Minimap", "View");
+    add("view.outline", "Outline", "View");
+    add("view.ignored", "Include ignored files", "View");
+
     QSettings settings; settings.beginGroup("shortcuts");
     for (const auto& command : commands_) if (settings.contains(command.id))
         overrides_[command.id] = QKeySequence(settings.value(command.id).toString(), QKeySequence::PortableText);
@@ -119,6 +125,19 @@ void ShortcutManager::bind(const QString& id, QAction* action) {
 }
 void ShortcutManager::bind(const QString& id, QShortcut* shortcut) {
     bindings_.push_back({id, {}, shortcut}); shortcut->setKey(sequence(id));
+}
+QObject* ShortcutManager::target(const QString& id, QWidget* window, QWidget* editor) const {
+    auto belongs = [](QObject* object, QObject* root) {
+        for (; object; object = object->parent()) if (object == root) return true;
+        return false;
+    };
+    for (const auto& binding : bindings_) {
+        if (binding.id != id) continue;
+        if (binding.action && belongs(binding.action, window)) return binding.action;
+        if (binding.shortcut && (binding.shortcut->parent() == window ||
+            (editor && belongs(binding.shortcut, editor)))) return binding.shortcut;
+    }
+    return nullptr;
 }
 bool ShortcutManager::matches(const QString& id, const QKeyEvent* event) const {
     const auto key = sequence(id);

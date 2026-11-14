@@ -74,9 +74,12 @@ int main(int argc, char** argv) {
     ProjectSearchOptions options;
     options.roots = {directory.path()};
     options.query = "blink";
+    options.includeIgnored = true;
     auto result = search(options);
     Q_ASSERT(result.error.isEmpty());
     Q_ASSERT(result.matches.size() == 6);
+    auto filteredOptions=options;filteredOptions.includeIgnored=false;
+    const auto filtered=search(filteredOptions);Q_ASSERT(filtered.matches.size()==5);
     Q_ASSERT(std::none_of(result.matches.cbegin(), result.matches.cend(), [](const auto& match) {
         return match.relativePath.startsWith('.') && match.relativePath != ".gitignore";
     }));
@@ -200,5 +203,10 @@ int main(int argc, char** argv) {
     replaced = replace(largeRequest);
     Q_ASSERT(replaced.matchesReplaced == 1);
     Q_ASSERT(readFile(largePath).endsWith("found\n"));
+    const auto boundaryPath=root.filePath("src/boundary.txt");
+    const QByteArray boundary=QByteArray(65534,'a')+QString::fromUtf8("😀needle\r\n").toUtf8();writeFile(boundaryPath,boundary);
+    auto boundaryOptions=largeOptions;boundaryOptions.query=QString::fromUtf8("😀needle");boundaryOptions.filesToInclude="**/boundary.txt";
+    const auto boundaryResult=search(boundaryOptions);Q_ASSERT(boundaryResult.matches.size()==1);
+    Q_ASSERT(boundaryResult.matches[0].byteOffset==65534 && boundaryResult.matches[0].length==8);
     return 0;
 }

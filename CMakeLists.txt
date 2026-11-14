@@ -32,6 +32,12 @@ if(TURTLE_CODE_BUILD_APP)
     find_package(Qt6 6.2.4 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent Test)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBGIT2 REQUIRED IMPORTED_TARGET libgit2>=1.1)
+    pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
+    pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-16)
+    add_library(turtle-code-workspace STATIC src/project/WorkspaceFiles.cpp src/project/WorkspaceIndex.cpp src/project/DirectoryListing.cpp src/search/SearchMatches.cpp src/search/SearchScanner.cpp)
+    set_target_properties(turtle-code-workspace PROPERTIES AUTOMOC ON)
+    target_include_directories(turtle-code-workspace PUBLIC src)
+    target_link_libraries(turtle-code-workspace PUBLIC Qt6::Core Qt6::Concurrent PkgConfig::SQLITE3 PkgConfig::PCRE2 PkgConfig::LIBGIT2)
     find_path(EDITORCONFIG_INCLUDE_DIR editorconfig/editorconfig.h REQUIRED)
     find_library(EDITORCONFIG_LIBRARY NAMES editorconfig REQUIRED)
     add_library(turtle-code-editorconfig STATIC src/editor/EditorConfig.cpp src/editor/EditorConfig.hpp)
@@ -52,12 +58,12 @@ if(TURTLE_CODE_BUILD_APP)
         PREFIX "/i18n" BASE "${CMAKE_CURRENT_SOURCE_DIR}/translations"
         FILES translations/ru.json)
 
-    add_library(turtle-code-themes STATIC src/app/ThemeManager.cpp src/app/ThemeManager.hpp
+    add_library(turtle-code-themes STATIC src/app/CommandPalette.cpp src/app/CommandPalette.hpp src/app/ThemeManager.cpp src/app/ThemeManager.hpp
         src/app/WorkspaceBackground.cpp src/app/WorkspaceBackground.hpp
         src/app/ShortcutManager.cpp src/app/ShortcutManager.hpp
         src/language/SemanticHighlighting.cpp src/language/SemanticHighlighting.hpp)
     target_include_directories(turtle-code-themes PUBLIC src)
-    target_link_libraries(turtle-code-themes PUBLIC Qt6::Widgets)
+    target_link_libraries(turtle-code-themes PUBLIC Qt6::Widgets turtle-code-workspace)
     add_library(turtle-code-icons STATIC src/app/Codicons.cpp src/app/Codicons.hpp
         src/app/FontIcon.cpp src/app/FontIcon.hpp
         src/app/FileIcons.cpp src/app/FileIcons.hpp)
@@ -76,6 +82,11 @@ if(TURTLE_CODE_BUILD_APP)
         FILES themes/tokyo-night-vscode.json)
 
     if(BUILD_TESTING)
+        add_executable(turtle-code-workspace-scale-tests EXCLUDE_FROM_ALL tests/WorkspaceScaleTests.cpp)
+        target_link_libraries(turtle-code-workspace-scale-tests PRIVATE turtle-code-workspace)
+        target_compile_options(turtle-code-workspace-scale-tests PRIVATE -UNDEBUG)
+        add_test(NAME workspace-scale COMMAND turtle-code-workspace-scale-tests)
+        set_tests_properties(workspace-scale PROPERTIES TIMEOUT 90)
         add_executable(turtle-code-editorconfig-tests EXCLUDE_FROM_ALL tests/EditorConfigTests.cpp)
         target_link_libraries(turtle-code-editorconfig-tests PRIVATE turtle-code-editorconfig)
         target_compile_options(turtle-code-editorconfig-tests PRIVATE -UNDEBUG)
@@ -282,6 +293,10 @@ if(TURTLE_CODE_BUILD_APP)
         set_tests_properties(terminal-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME git-window COMMAND turtle-code-window-tests --git)
         set_tests_properties(git-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
+        add_test(NAME project-scale-window COMMAND turtle-code-window-tests --project-scale)
+        set_tests_properties(project-scale-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+        add_test(NAME command-palette COMMAND turtle-code-window-tests --commands)
+        set_tests_properties(command-palette PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
         add_test(NAME formatting COMMAND turtle-code-window-tests --formatting)
         set_tests_properties(formatting PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME external-file-changes COMMAND turtle-code-window-tests --external-files)
@@ -385,7 +400,7 @@ if(BUILD_TESTING)
             src/search/ProjectSearchService.cpp
             src/search/ProjectSearchService.hpp)
         target_include_directories(turtle-code-project-search-tests PRIVATE src)
-        target_link_libraries(turtle-code-project-search-tests PRIVATE Qt6::Core Qt6::Concurrent Qt6::Test)
+        target_link_libraries(turtle-code-project-search-tests PRIVATE turtle-code-workspace Qt6::Core Qt6::Concurrent Qt6::Test)
         add_test(NAME project-search COMMAND turtle-code-project-search-tests)
 
         add_executable(turtle-code-git-tests EXCLUDE_FROM_ALL tests/GitTests.cpp
@@ -401,7 +416,7 @@ if(BUILD_TESTING)
             src/search/SearchPanel.cpp
             src/search/ProjectSearchService.cpp)
         target_include_directories(turtle-code-search-panel-tests PRIVATE src)
-        target_link_libraries(turtle-code-search-panel-tests PRIVATE
+        target_link_libraries(turtle-code-search-panel-tests PRIVATE turtle-code-workspace
             turtle-code-icons
             Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent Qt6::Test)
         add_test(NAME search-panel COMMAND turtle-code-search-panel-tests)

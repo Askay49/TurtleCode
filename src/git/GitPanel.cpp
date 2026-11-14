@@ -31,7 +31,7 @@
 #include <QAbstractItemView>
 
 namespace {
-constexpr int EntryRole = Qt::UserRole, StagedRole = Qt::UserRole + 1, GroupRole = Qt::UserRole + 2;
+constexpr int EntryRole = Qt::UserRole, StagedRole = Qt::UserRole + 1, GroupRole = Qt::UserRole + 2, PageRole=Qt::UserRole+3;
 QToolButton* tool(QWidget* parent, const char* icon, const QString& tooltip) {
     auto* button = new QToolButton(parent);
     button->setIcon(Codicons::icon(icon)); button->setToolTip(tooltip);
@@ -207,8 +207,17 @@ GitPanel::GitPanel(QWidget* parent) : QWidget(parent), service_(this) {
         for(auto* section:sections_) section->initialized=false;
         rebuild();
     });
-    poll_=new QTimer(this); poll_->setInterval(2500);
-    connect(poll_,&QTimer::timeout,this,[this] { if(!preparing_ && isVisible() && QApplication::applicationState()==Qt::ApplicationActive) refresh(); }); poll_->start();
+    poll_=new QTimer(this);poll_->setSingleShot(true);
+    connect(poll_,&QTimer::timeout,this,[this] {
+        if(!preparing_ && isVisible() && QApplication::applicationState()==Qt::ApplicationActive && !service_.busy())service_.refreshBackground();
+        else poll_->start(pollDelay_);
+    });
+    connect(&service_,&GitService::busyChanged,this,[this](bool busy) {
+        if(busy){pollChanged_=false;poll_->stop();refreshTime_.restart();}
+        else {if(!pollChanged_)pollDelay_=std::min(60000,pollDelay_*2);const auto elapsed=refreshTime_.isValid()?refreshTime_.elapsed():0;pollDelay_=std::clamp(std::max(pollDelay_,int(std::min<qint64>(60000,elapsed*4))),2500,60000);poll_->start(pollDelay_);}
+    });
+    connect(&service_,&GitService::changed,this,[this]{pollChanged_=true;pollDelay_=2500;});
+    poll_->start(pollDelay_);
     connect(qApp,&QGuiApplication::applicationStateChanged,this,[this](Qt::ApplicationState state) { if(state==Qt::ApplicationActive) refresh(); });
     applyFontSettings(); rebuild();
 }
@@ -304,7 +313,7 @@ void GitPanel::setRoots(const QStringList& roots) {
     for(auto* section:sections_) section->commitAfterStage=false;
     service_.setRoots(roots);
 }
-void GitPanel::refresh() { service_.refresh(); }
+void GitPanel::refresh() { pollDelay_=2500;service_.refresh(); }
 void GitPanel::cancelPreparation() {
     ++operationGeneration_; preparing_=false;
     if(auto* section=sections_.value(service_.repository())) section->commitAfterStage=false;
@@ -367,6 +376,7 @@ void GitPanel::rebuild() {
         auto current=section->branches->findData(status.currentBranch);
         if(current<0) { section->branches->insertItem(0,status.valid?I18n::text("Detached HEAD"):I18n::text("Branch"),QString()); current=0; }
         section->branches->setCurrentIndex(current); section->branches->updateGeometry(); section->branches->setToolTip(repository+"\n"+status.branch);
+        section->firstEntry=std::min<qsizetype>(section->firstEntry,std::max<qsizetype>(0,status.entries.size()-1));
         rebuildFiles(section); section->rendered=status; section->initialized=true;
     }
     empty_->setVisible(repositories.isEmpty()); emit countChanged(total); updateActions();
@@ -388,11 +398,14 @@ void GitPanel::rebuildFiles(Section* section) {
     }
     int displayed=0;
     const auto& entries=service_.status(section->repository).entries;
-    for(qsizetype index=0;index<entries.size();++index) {
+    qsizetype nextEntry=section->firstEntry;
+    for(qsizetype index=section->firstEntry;index<entries.size();++index) {
+        if(displayed>=500)break;
+        nextEntry=index+1;
         const auto& entry=entries[index];
         for(int group:{0,1,3}) {
             const bool include=group==0?entry.staged():group==1?entry.unstaged():entry.conflict();
-            if(!include || displayed>=3000) continue;
+            if(!include) continue;
             ++displayed; const char code=group==0?entry.index:entry.untracked()?'U':entry.worktree;
             auto* item=new QTreeWidgetItem(groups[group],{entry.path,{},{},QString(QChar::fromLatin1(code))});
             item->setIcon(0,FileIcons::icon(entry.path)); item->setData(0,EntryRole,int(index)); item->setData(0,StagedRole,group==0);
@@ -414,12 +427,14 @@ void GitPanel::rebuildFiles(Section* section) {
         const bool open=i>=expanded.size() || expanded[i]; group->setExpanded(open);
         if(!group->isHidden()) visible+=1+(open?group->childCount():0);
     }
-    if(displayed>=3000) { auto* limit=new QTreeWidgetItem(files,{I18n::text("File list limited to 3000 rows.")}); limit->setFlags(Qt::NoItemFlags); }
+    if(section->firstEntry>0){auto* previous=new QTreeWidgetItem(files,{I18n::text("Previous page")});previous->setData(0,PageRole,qlonglong(section->previousPages.isEmpty()?0:section->previousPages.back()));++visible;}
+    if(nextEntry<entries.size()){auto* next=new QTreeWidgetItem(files,{I18n::text("Next page")});next->setData(0,PageRole,qlonglong(nextEntry));++visible;}
     files->setFixedHeight(qBound(32,(visible+1)*qMax(22,files->fontMetrics().height()+4),360));
     files->doItemsLayout(); files->verticalScrollBar()->setValue(scroll); files->setUpdatesEnabled(true);
 }
 void GitPanel::activate(Section* section,QTreeWidgetItem* item,int column) {
     if(!item || !select(section)) return;
+    if(item->data(0,PageRole).isValid()){const auto next=item->data(0,PageRole).toLongLong();if(next>section->firstEntry)section->previousPages.push_back(section->firstEntry);else if(!section->previousPages.isEmpty())section->previousPages.pop_back();section->firstEntry=next;rebuildFiles(section);return;}
     if(column==2) { changeIndex(section,item); return; }
     if(!item->data(0,EntryRole).isValid()) {
         if(column==0) item->setExpanded(!item->isExpanded());

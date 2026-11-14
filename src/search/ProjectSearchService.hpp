@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include "SearchMatches.hpp"
 #include <QStringList>
 #include <QList>
 #include <QHash>
@@ -19,26 +20,17 @@ struct ProjectSearchOptions {
     bool wholeWord{false};
     bool regularExpression{false};
     bool showHidden{false};
+    bool includeIgnored{false};
 };
 
-struct ProjectSearchMatch {
-    QString path;
-    QString relativePath;
-    int line{0};
-    int column{0};
-    int length{0};
-    QString preview;
-    qint64 byteOffset{0};
-    qint64 byteLength{0};
-    QString matchedText;
-    QStringList captures;
-};
 
 struct ProjectSearchResult {
-    QList<ProjectSearchMatch> matches;
+    SearchMatches matches;
     int filesSearched{0};
+    int skippedFiles{0};
     QString error;
-    QHash<QString, QByteArray> fileHashes;
+    QStringList warnings;
+    SearchHashes fileHashes;
 };
 
 Q_DECLARE_METATYPE(ProjectSearchResult)
@@ -54,6 +46,7 @@ public:
 
 signals:
     void searchStarted();
+    void searchProgress(const ProjectSearchResult& result);
     void searchFinished(const ProjectSearchResult& result);
 
 private:
@@ -62,9 +55,9 @@ private:
 };
 
 struct ProjectReplaceRequest {
-    QList<ProjectSearchMatch> matches;
+    SearchMatches matches;
     QBitArray selected; // Empty means all matches are selected.
-    QHash<QString, QByteArray> fileHashes;
+    SearchHashes fileHashes;
     QString replacement;
     QStringList selectedPaths;
     QStringList protectedPaths;
