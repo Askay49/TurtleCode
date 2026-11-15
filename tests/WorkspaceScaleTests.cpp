@@ -17,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <thread>
+#include <barrier>
 #include <cassert>
 
 static void write(const QString& path,const QByteArray& bytes) {QFile file(path);assert(file.open(QIODevice::WriteOnly));assert(file.write(bytes)==bytes.size());}
@@ -34,6 +35,13 @@ int main(int argc,char** argv) {
     write(root+"/.gitignore","ignored/\n*.tmp\n!important.tmp\n");write(root+"/nested/.gitignore","private.txt\n");write(root+"/.turtleignore","local.txt\n");
     write(root+"/ignored/no.txt","bad");write(root+"/nested/private.txt","bad");write(root+"/nested/public.txt","ok");write(root+"/ignore.tmp","bad");write(root+"/important.tmp","ok");write(root+"/local.txt","bad");
     WorkspaceFiles filter(root);QStringList accepted;filter.walk([&](const QFileInfo& file){accepted<<QDir(root).relativeFilePath(file.absoluteFilePath());});accepted.sort();assert(accepted==QStringList({"important.tmp","nested/public.txt"}));
+    // Concurrent short-lived scans must not repeatedly destroy/reinitialize
+    // process-global Git/TLS state while other scans are starting.
+    {
+        std::barrier<> start(8);std::vector<std::thread> scanners;
+        for(int worker=0;worker<8;++worker)scanners.emplace_back([&]{for(int round=0;round<32;++round){start.arrive_and_wait();{WorkspaceFiles files(root);QStringList names;files.walk([&](const QFileInfo& file){names<<QDir(root).relativeFilePath(file.absoluteFilePath());});names.sort();assert(names==accepted);}start.arrive_and_wait();}});
+        for(auto& scanner:scanners)scanner.join();
+    }
     WorkspaceFiles overrideFilter(root,{true,true,{}});int all=0;overrideFilter.walk([&](const QFileInfo&){++all;});assert(all==9);
     assert(QProcess::execute("git",{"init","--quiet",root})==0);
     WorkspaceFiles gitFilter(root);QStringList gitAccepted;gitFilter.walk([&](const QFileInfo& file){gitAccepted<<QDir(root).relativeFilePath(file.absoluteFilePath());});gitAccepted.sort();assert(gitAccepted==accepted);

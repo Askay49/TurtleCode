@@ -1,4 +1,5 @@
 #include "GitBackend.hpp"
+#include "GitRuntime.hpp"
 #include <git2.h>
 #include <QDir>
 #include <QFile>
@@ -14,7 +15,7 @@ void check(int code) {
     throw std::runtime_error(error && error->message?error->message:"libgit2 operation failed");
 }
 struct Library {
-    Library() { check(git_libgit2_init()); }
+    Library() { check(GitRuntime::ensureInitialized());check(git_libgit2_init()); }
     ~Library() { git_libgit2_shutdown(); }
 };
 template<class T, void (*Free)(T*)> struct Handle {

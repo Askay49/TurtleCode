@@ -103,6 +103,7 @@ ShortcutManager::ShortcutManager() {
 
     add("navigation.commands", "Command palette", "Navigation", "Ctrl+Shift+P");
     add("settings.editor", "Editor settings", "Settings");
+    add("settings.vimMode", "Vim mode", "Settings");
     add("view.minimap", "Minimap", "View");
     add("view.outline", "Outline", "View");
     add("view.ignored", "Include ignored files", "View");

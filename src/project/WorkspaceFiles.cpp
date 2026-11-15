@@ -5,6 +5,7 @@
 #include <QSettings>
 #include <vector>
 #include <git2.h>
+#include "git/GitRuntime.hpp"
 
 namespace {
 QString globRegex(const QString& glob) {
@@ -30,7 +31,7 @@ QString globRegex(const QString& glob) {
 }
 WorkspaceFiles::WorkspaceFiles(QString root, WorkspaceFileOptions options)
     : root_(QDir::cleanPath(QFileInfo(root).absoluteFilePath())), options_(std::move(options)) {
-    if(git_libgit2_init()>=0) {
+    if(GitRuntime::ensureInitialized()>=0 && git_libgit2_init()>=0) {
         git_repository* repository=nullptr;
         if(git_repository_open_ext(&repository,QFile::encodeName(root_).constData(),0,nullptr)==0 && git_repository_workdir(repository)) {
             gitRoot_=QFile::decodeName(git_repository_workdir(repository));

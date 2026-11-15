@@ -35,20 +35,35 @@ void load(EditorWidget& editor, const char* text) {
     editor.loadBuffer(PieceTreeBuffer(text), QStringLiteral("sample.txt"));
     editor.resize(800, 400);
     editor.show();
+    editor.activateWindow();
     editor.setFocus();
     QApplication::processEvents();
 }
 }
 
 #include "SmartEditingTests.hpp"
+#include "VimTests.hpp"
+#include "VimEditingTests.hpp"
+#include "VimSessionTests.hpp"
+#include "VimExTests.hpp"
+#include "VimSearchEditorTests.hpp"
+#include "VimExExtendedTests.hpp"
+#include "VimNormalTests.hpp"
 
 int main(int argc, char** argv) {
     QTemporaryDir smartSettings;
     QTemporaryDir workingDirectory;Q_ASSERT(workingDirectory.isValid());
     Q_ASSERT(QDir().setCurrent(workingDirectory.path()));
+    const bool vimSession=argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-session";
+    const bool vimEx=argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-ex";
+    const bool vimSearch=argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-search";
+    const bool vimNormal=argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-normal";
+    const bool vimExtended=argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-ex-extended";
+    const bool vim=vimNormal || vimExtended || vimSearch || vimEx || vimSession || (argc>1 && QString::fromLocal8Bit(argv[1])=="--vim");
     const bool smart=argc>1 && QString::fromLocal8Bit(argv[1])=="--smart-editing";
-    if(smart)qputenv("XDG_CONFIG_HOME",smartSettings.path().toUtf8());
+    if(smart || vim)qputenv("XDG_CONFIG_HOME",smartSettings.path().toUtf8());
     QApplication app(argc, argv);
+    if(vim){app.setOrganizationName("TurtleCodeTests");app.setApplicationName("VimTests");if(vimNormal)vimNormalTests();else if(vimExtended)vimExExtendedTests();else if(vimSearch)vimSearchEditorTests();else if(vimEx)vimExTests();else if(vimSession)vimSessionTests();else {vimTests();vimEditingTests();}return 0;}
     if(smart){app.setOrganizationName("TurtleCodeTests");app.setApplicationName("SmartEditing");smartEditingTests();return 0;}
     {
         QTemporaryDir project;Q_ASSERT(project.isValid());

@@ -1,4 +1,5 @@
 #pragma once
+#include "GitRuntime.hpp"
 #include <QByteArray>
 #include <QString>
 #include <QVector>
@@ -34,7 +35,7 @@ inline Model compare(const QByteArray& a, const QByteArray& b, bool displayEol =
     // libgit2's xdiff keeps separated edits precise even beyond the old LCS
     // matrix budget. Force text: raw terminators and invalid UTF-8 remain bytes.
     struct Library {
-        Library() { if(git_libgit2_init()<0) throw std::runtime_error("Cannot initialize libgit2"); }
+        Library() { if(GitRuntime::ensureInitialized()<0 || git_libgit2_init()<0) throw std::runtime_error("Cannot initialize libgit2"); }
         ~Library() { git_libgit2_shutdown(); }
     } library;
     git_diff_options options;

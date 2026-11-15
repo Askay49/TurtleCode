@@ -29,6 +29,35 @@ void testTypingCoalesces() {
     check(buffer.text() == "abc", "redo restores typed text");
 }
 
+void testExplicitGroups() {
+    for(bool disk:{false,true}) {
+        PieceTreeBuffer buffer("old");EditHistory history;
+        if(disk)history.setLimits({1,true,0});
+        history.beginGroup();buffer.erase(0,3);history.record(0,"old",{},0,0,EditKind::Standalone,0);
+        buffer.insert(0,"new\n");history.record(0,{},"new\n",0,4,EditKind::Insert,1000);
+        history.breakCoalescing();buffer.insert(4,"text");history.record(4,{},"text",4,8,EditKind::Insert,2000);history.endGroup();
+        check(history.nextUndoBytes()==11,"explicit group accounts for every payload");
+        if(disk)check(history.undoNeedsBackground(),"disk member routes complete group to worker");
+        check(history.undo(buffer).has_value() && buffer.text()=="old","one undo restores replacement and multiline typing");
+        check(!history.isModified(),"group undo restores save point");
+        check(history.redo(buffer).has_value() && buffer.text()=="new\ntext","one redo restores the complete group");
+        history.beginGroup();history.markSaved();buffer.insert(8,"!");history.record(8,{},"!",8,9,EditKind::Insert,2100);
+        (void)history.undo(buffer);check(buffer.text()=="new\ntext" && !history.isModified(),"saving splits explicit edit groups");
+    }
+    PieceTreeBuffer buffer;EditHistory bounded;bounded.setLimits({2,false,0});bounded.beginGroup();
+    buffer.insert(0,"aa");bounded.record(0,{},"aa",0,2,EditKind::Standalone,0);
+    buffer.insert(2,"bb");bounded.record(2,{},"bb",2,4,EditKind::Standalone,0);
+    check(!bounded.canUndo(),"history limits drop entire groups instead of retaining half an edit");
+}
+
+void testCompoundGroups() {
+    PieceTreeBuffer buffer;EditHistory history;history.beginCompoundGroup();
+    buffer.insert(0,"a");history.record(0,{},"a",0,1,EditKind::Standalone,0);history.endGroup();
+    history.beginGroup();buffer.insert(1,"b");history.record(1,{},"b",1,2,EditKind::Standalone,10);history.endGroup();history.endCompoundGroup();
+    check(history.undo(buffer).has_value() && buffer.text().empty(),"compound macro undo spans internal mode boundaries");
+    check(history.redo(buffer).has_value() && buffer.text()=="ab","compound macro redo restores every internal edit");
+}
+
 void testBackspaceAndForwardDeleteCoalesce() {
     {
         PieceTreeBuffer buffer("abcd");
@@ -194,6 +223,28 @@ void testStoredBatch() {
 }
 
 int main() {
+    {
+        PieceTreeBuffer buffer("abc");EditHistory history;auto limits=history.limits();limits.spillToDisk=false;limits.memoryBytes=3;history.setLimits(limits);
+        history.beginCompoundGroup();
+        for(std::size_t i=0;i<3;++i){const auto old=buffer.slice(i,1);buffer.erase(i,1);buffer.insert(i,"X");history.record(i,old,"X",i,i+1,EditKind::Standalone,0);}
+        history.endCompoundGroup();
+        check(buffer.text()=="XXX" && !history.canUndo(),"an oversized ongoing substitution group cannot retain only its final edits");
+        buffer.insert(0,"Y");history.record(0,{},"Y",0,1,EditKind::Standalone,0);
+        check(history.undo(buffer).has_value() && buffer.text()=="XXX","the next edit gets a fresh history budget after a discarded group");
+    }
+    {
+        PieceTreeBuffer buffer("abc");EditHistory history;auto payload=std::make_shared<ChunkedFile>();
+        history.beginCompoundGroup();payload->append("cCCC");buffer.erase(2,1);buffer.insert(2,"CCC");history.recordDiskBatch({{2,1,3}},payload,{0},{2},0);
+        const auto base=payload->append("aAA");buffer.erase(0,1);buffer.insert(0,"AA");history.recordDiskBatch({{0,1,2}},payload,{2},{0},0,base);history.endCompoundGroup();
+        check(buffer.text()=="AAbCCC","shared payload prepares multiple substitution batches");
+        check(history.undo(buffer).has_value() && buffer.text()=="abc","shared payload offsets undo as one group");
+        check(history.redo(buffer).has_value() && buffer.text()=="AAbCCC","shared payload offsets redo as one group");
+        auto limits=history.limits();limits.spillToDisk=false;history.setLimits(limits);
+        check(history.undo(buffer).has_value() && buffer.text()=="abc","shared payload restores correct spans when disk history is disabled");
+        check(history.redo(buffer).has_value() && buffer.text()=="AAbCCC","restored shared batches retain their redo contents");
+    }
+    testExplicitGroups();
+    testCompoundGroups();
     testAppliedEditNotifications();
     testSinglePayloadAndCompaction();
     testHistoryBudgets();

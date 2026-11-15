@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
         auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
         assert(dialog);
         auto* combo = dialog->findChild<QComboBox*>();
-        assert(combo && combo->count() == 11);
+        assert(combo && combo->count() == 15);
         for (int i = 0; i < combo->count(); ++i) {
             combo->setCurrentIndex(i);
             QMetaObject::invokeMethod(combo, "activated", Qt::DirectConnection, Q_ARG(int, i));
@@ -96,6 +96,7 @@ int main(int argc, char** argv) {
             assert(manager.color("editor.background").isValid());
             QImage image(dialog->size(), QImage::Format_ARGB32);
             dialog->render(&image);
+            if(combo->itemData(i).toString().startsWith("catppuccin-") && qEnvironmentVariableIsSet("TURTLE_CODE_THEME_PREVIEW_DIR"))image.save(QDir(qEnvironmentVariable("TURTLE_CODE_THEME_PREVIEW_DIR")).filePath(combo->itemData(i).toString()+".png"));
             assert(image.pixelColor(2, 2) == manager.color("window.background"));
             assert(QSettings().value("appearance/theme").toString() == combo->itemData(i).toString());
             ++switched;
@@ -103,7 +104,16 @@ int main(int argc, char** argv) {
         dialog->reject();
     });
     manager.showSettings(nullptr);
-    assert(switched == 11);
+    assert(switched == 15);
+    const QMap<QString,QString> catppuccin{{"latte","#eff1f5"},{"frappe","#303446"},{"macchiato","#24273a"},{"mocha","#1e1e2e"}};
+    for(auto it=catppuccin.cbegin();it!=catppuccin.cend();++it) {
+        QSettings().setValue("appearance/theme","catppuccin-"+it.key());manager.initialize();
+        assert(manager.color("editor.background")==QColor(it.value()));
+        assert(manager.color("terminal.background")==QColor(it.value()));
+        assert(manager.color("accent.text")==QColor(it.value()));
+        for(int i=0;i<16;++i)assert(manager.color(QString("terminal.ansi%1").arg(i)).isValid());
+    }
+    QSettings().setValue("appearance/theme","tokyo-night");
     // Loading a saved selection restores the same palette.
     manager.initialize();
     assert(manager.color("editor.background") == QColor("#1a1b26"));
@@ -194,7 +204,7 @@ int main(int argc, char** argv) {
         auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()); assert(dialog);
         auto* combo=dialog->findChild<QComboBox*>();
         auto* remove=dialog->findChild<QPushButton*>("deleteCustomTheme");
-        assert(combo && remove && combo->count()==13 && remove->isEnabled());
+        assert(combo && remove && combo->count()==17 && remove->isEnabled());
         auto select=[&](const QString& id) {
             const auto index=combo->findData(id); assert(index>=0); combo->setCurrentIndex(index);
             QMetaObject::invokeMethod(combo,"activated",Qt::DirectConnection,Q_ARG(int,index));
@@ -209,20 +219,20 @@ int main(int argc, char** argv) {
             else { assert(box->windowTitle()=="Cannot delete theme"); ++errors; box->accept(); }
         }); responder.start(5);
         remove->click();
-        assert(confirmations==1 && QFile::exists(first) && combo->count()==13);
+        assert(confirmations==1 && QFile::exists(first) && combo->count()==17);
         assert(combo->currentData().toString()=="custom-one");
         // A filesystem error must preserve the active theme and catalog.
         assert(QFile::rename(first,first+".backup")); answer=QMessageBox::Yes;
         remove->click();
-        assert(errors==1 && combo->count()==13 && manager.color("editor.background")==QColor("#123456"));
+        assert(errors==1 && combo->count()==17 && manager.color("editor.background")==QColor("#123456"));
         assert(QFile::rename(first+".backup",first));
         remove->click();
-        assert(!QFile::exists(first) && QFile::exists(second) && combo->count()==12);
+        assert(!QFile::exists(first) && QFile::exists(second) && combo->count()==16);
         assert(combo->currentData().toString()=="cpp-dark" && !remove->isEnabled());
         assert(QSettings().value("appearance/theme").toString()=="cpp-dark");
         assert(manager.color("editor.background")==QColor("#1e1e1e"));
         select("custom-two"); remove->click();
-        assert(!QFile::exists(second) && combo->count()==11 && !remove->isEnabled());
+        assert(!QFile::exists(second) && combo->count()==15 && !remove->isEnabled());
         responder.stop(); dialog->reject();
     });
     manager.showSettings(nullptr);

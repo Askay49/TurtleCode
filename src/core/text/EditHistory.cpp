@@ -17,6 +17,7 @@ void applyChange(PieceTreeBuffer& buffer,std::size_t offset,std::string_view rem
 }
 
 void EditHistory::clear() noexcept {
+    compoundDepth_=0; activeGroup_=0; nextGroup_=1; replayingGroup_=discardingGroup_=false;
     undo_.clear();
     redo_.clear(); notice_.clear();
     currentState_ = 0;
@@ -57,7 +58,7 @@ void EditHistory::record(std::size_t offset, std::string removed, std::string in
                          std::size_t cursorBefore, std::size_t cursorAfter,
                          EditKind kind, std::int64_t timestampMs) {
     redo_.clear();
-    if (!coalescingBarrier_ && !undo_.empty() && undo_.back().afterState == currentState_ &&
+    if (!coalescingBarrier_ && !undo_.empty() && undo_.back().afterState == currentState_ && undo_.back().group == activeGroup_ &&
         canCoalesce(undo_.back(), offset, removed, inserted, kind, timestampMs)) {
         Command& previous = undo_.back();
         if (kind == EditKind::Insert) {
@@ -69,6 +70,7 @@ void EditHistory::record(std::size_t offset, std::string removed, std::string in
             previous.removed += removed;
         }
         previous.cursorAfter = cursorAfter;
+        previous.cursorsAfter = {cursorAfter};
         previous.timestampMs = timestampMs;
         previous.afterState = nextState_++;
         currentState_ = previous.afterState;
@@ -76,7 +78,7 @@ void EditHistory::record(std::size_t offset, std::string removed, std::string in
         return;
     }
 
-    Command command;
+    Command command;command.group=activeGroup_;command.redoAtStart=groupRedoAtStart_ && activeGroup_;
     command.offset = offset;
     command.removed = std::move(removed);
     command.inserted = std::move(inserted);
@@ -101,7 +103,7 @@ void EditHistory::recordBatch(std::vector<EditChange> changes,
                               std::int64_t timestampMs) {
     if (changes.empty()) return;
     redo_.clear();
-    Command command;
+    Command command;command.group=activeGroup_;command.redoAtStart=groupRedoAtStart_ && activeGroup_;
     command.offset=changes.front().offset;
     // Single edits use the inline payload; batches own only their changes.
     if(changes.size()==1) {
@@ -125,16 +127,16 @@ void EditHistory::recordBatch(std::vector<EditChange> changes,
 
 namespace {
 void applyStoredCommand(PieceTreeBuffer& buffer,const std::shared_ptr<ChunkedFile>& file,const std::vector<std::size_t>& lengths,
-                        std::size_t offset,const std::vector<EditChange>& changes,bool undo,const std::function<void()>& checkpoint) {
+                        std::size_t offset,const std::vector<EditChange>& changes,bool undo,const std::function<void()>& checkpoint,std::size_t payloadOffset) {
     struct Change {std::size_t at,removed,inserted,oldData,newData;};std::vector<Change> items;
-    std::size_t position=0,index=0;std::ptrdiff_t delta=0;
+    std::size_t position=payloadOffset,index=0;std::ptrdiff_t delta=0;
     auto add=[&](std::size_t at) {
         const auto removed=lengths.at(index++),inserted=lengths.at(index++);
         const auto target=undo ? static_cast<std::size_t>(static_cast<std::ptrdiff_t>(at)+delta) : at;
         items.push_back({target,removed,inserted,position,position+removed});position+=removed+inserted;
         delta+=static_cast<std::ptrdiff_t>(inserted)-static_cast<std::ptrdiff_t>(removed);
     };
-    if(changes.empty())add(offset);else{position=lengths[0]+lengths[1];index=2;for(const auto& change:changes)add(change.offset);}
+    if(changes.empty())add(offset);else{position+=lengths[0]+lengths[1];index=2;for(const auto& change:changes)add(change.offset);}
     for(auto it=items.rbegin();it!=items.rend();++it) {
         if(checkpoint)checkpoint();
         buffer.erase(it->at,undo?it->inserted:it->removed);
@@ -149,10 +151,10 @@ void applyStoredCommand(PieceTreeBuffer& buffer,const std::shared_ptr<ChunkedFil
 }
 }
 
-std::optional<HistoryResult> EditHistory::undo(PieceTreeBuffer& buffer, const EditApplied& applied,const std::function<void()>& checkpoint) {
+std::optional<HistoryResult> EditHistory::undoOne(PieceTreeBuffer& buffer, const EditApplied& applied,const std::function<void()>& checkpoint) {
     if (undo_.empty()) return std::nullopt;
     if(undo_.back().disk && !applied) {
-        auto& command=undo_.back();applyStoredCommand(buffer,command.disk,command.lengths,command.offset,command.changes,true,checkpoint);
+        auto& command=undo_.back();applyStoredCommand(buffer,command.disk,command.lengths,command.offset,command.changes,true,checkpoint,command.diskOffset);
         currentState_=command.beforeState;const HistoryResult result{command.cursorBefore,command.cursorsBefore};
         redo_.push_back(std::move(command));undo_.pop_back();coalescingBarrier_=true;enforceLimits();return result;
     }
@@ -186,10 +188,10 @@ std::optional<HistoryResult> EditHistory::undo(PieceTreeBuffer& buffer, const Ed
     return HistoryResult{cursor, cursors.empty() ? std::vector<std::size_t>{cursor} : cursors};
 }
 
-std::optional<HistoryResult> EditHistory::redo(PieceTreeBuffer& buffer, const EditApplied& applied,const std::function<void()>& checkpoint) {
+std::optional<HistoryResult> EditHistory::redoOne(PieceTreeBuffer& buffer, const EditApplied& applied,const std::function<void()>& checkpoint) {
     if (redo_.empty()) return std::nullopt;
     if(redo_.back().disk && !applied) {
-        auto& command=redo_.back();applyStoredCommand(buffer,command.disk,command.lengths,command.offset,command.changes,false,checkpoint);
+        auto& command=redo_.back();applyStoredCommand(buffer,command.disk,command.lengths,command.offset,command.changes,false,checkpoint,command.diskOffset);
         currentState_=command.afterState;const HistoryResult result{command.cursorAfter,command.cursorsAfter};
         undo_.push_back(std::move(command));redo_.pop_back();coalescingBarrier_=true;enforceLimits();return result;
     }
@@ -212,7 +214,28 @@ std::optional<HistoryResult> EditHistory::redo(PieceTreeBuffer& buffer, const Ed
     return HistoryResult{cursor, cursors.empty() ? std::vector<std::size_t>{cursor} : cursors};
 }
 
-void EditHistory::markSaved() noexcept { savedState_ = currentState_; coalescingBarrier_ = true; }
+std::optional<HistoryResult> EditHistory::undo(PieceTreeBuffer& buffer,const EditApplied& applied,const std::function<void()>& checkpoint) {
+    activeGroup_=0;endGroup();if(undo_.empty())return std::nullopt;
+    const auto group=undo_.back().group;std::optional<HistoryResult> result;
+    replayingGroup_=true;
+    try { do {auto next=undoOne(buffer,applied,checkpoint);if(!next)break;result=std::move(next);}
+        while(group && !undo_.empty() && undo_.back().group==group);
+    } catch(...) {replayingGroup_=false;throw;}
+    replayingGroup_=false;enforceLimits();return result;
+}
+std::optional<HistoryResult> EditHistory::redo(PieceTreeBuffer& buffer,const EditApplied& applied,const std::function<void()>& checkpoint) {
+    activeGroup_=0;endGroup();if(redo_.empty())return std::nullopt;
+    const auto group=redo_.back().group;std::optional<HistoryResult> result;
+    const bool atStart=redo_.back().redoAtStart;
+    const HistoryResult start{redo_.back().cursorBefore,redo_.back().cursorsBefore};
+    replayingGroup_=true;
+    try { do {auto next=redoOne(buffer,applied,checkpoint);if(!next)break;result=std::move(next);}
+        while(group && !redo_.empty() && redo_.back().group==group);
+    } catch(...) {replayingGroup_=false;throw;}
+    replayingGroup_=false;enforceLimits();if(result && atStart)result=start;return result;
+}
+
+void EditHistory::markSaved() noexcept { endGroup(); savedState_ = currentState_; coalescingBarrier_ = true; }
 bool EditHistory::isModified() const noexcept { return currentState_ != savedState_; }
 
 
@@ -231,19 +254,31 @@ std::size_t EditHistory::memoryBytes() const {
 std::size_t EditHistory::diskBytes() const {
     std::size_t total=0;for(const auto* stack:{&undo_,&redo_})for(const auto& command:*stack)if(command.disk)total+=payloadBytes(command);return total;
 }
-std::size_t EditHistory::nextUndoBytes() const { return undo_.empty()?0:payloadBytes(undo_.back()); }
-std::size_t EditHistory::nextRedoBytes() const { return redo_.empty()?0:payloadBytes(redo_.back()); }
+std::size_t EditHistory::nextUndoBytes() const {
+    std::size_t bytes=0;if(undo_.empty())return 0;const auto group=undo_.back().group;
+    for(auto it=undo_.rbegin();it!=undo_.rend();++it){bytes+=payloadBytes(*it);if(!group || std::next(it)==undo_.rend() || std::next(it)->group!=group)break;}return bytes;
+}
+std::size_t EditHistory::nextRedoBytes() const {
+    std::size_t bytes=0;if(redo_.empty())return 0;const auto group=redo_.back().group;
+    for(auto it=redo_.rbegin();it!=redo_.rend();++it){bytes+=payloadBytes(*it);if(!group || std::next(it)==redo_.rend() || std::next(it)->group!=group)break;}return bytes;
+}
 void EditHistory::restore(Command& command) {
     if(!command.disk)return;
-    std::size_t offset=0,index=0;
+    std::size_t offset=command.diskOffset,index=0;
     const auto read=[&](std::string& text) { auto length=command.lengths.at(index++);text=command.disk->read(offset,length);offset+=length; };
     // Decode into a separate command so an I/O failure leaves the stored one intact.
     Command restored=command;read(restored.removed);read(restored.inserted);
     for(auto& change:restored.changes) {read(change.removed);read(change.inserted);}
-    restored.disk.reset();restored.lengths.clear();command=std::move(restored);
+    if(restored.changes.size()==1){auto& change=restored.changes[0];restored.offset=change.offset;restored.removed=std::move(change.removed);restored.inserted=std::move(change.inserted);restored.changes.clear();}
+    restored.disk.reset();restored.diskOffset=0;restored.lengths.clear();command=std::move(restored);
 }
 void EditHistory::setLimits(Limits limits) { limits_=limits;enforceLimits();coalescingBarrier_=true; }
 void EditHistory::enforceLimits() {
+    if(replayingGroup_)return;
+    if(discardingGroup_ && activeGroup_){
+        while(!undo_.empty() && undo_.back().group==activeGroup_)undo_.pop_back();
+        coalescingBarrier_=true;return;
+    }
     const auto spill=[&](Command& command) {
         if(command.disk || !payloadBytes(command))return;
         auto file=std::make_shared<ChunkedFile>();std::vector<std::size_t> lengths;
@@ -270,7 +305,10 @@ void EditHistory::enforceLimits() {
     auto over=[&]{return (!limits_.spillToDisk && retainedTextBytes()>limits_.memoryBytes)
         || (limits_.diskBytes && diskBytes()>limits_.diskBytes);};
     while(over() && (!undo_.empty() || !redo_.empty())) {
-        if(!undo_.empty())undo_.erase(undo_.begin());else redo_.erase(redo_.begin());trimmed=true;
+        auto& stack=!undo_.empty()?undo_:redo_;const auto group=stack.front().group;
+        do {stack.erase(stack.begin());}while(group && !stack.empty() && stack.front().group==group);
+        if(group && group==activeGroup_)discardingGroup_=true;
+        trimmed=true;
     }
     if(!limits_.spillToDisk) {
         try {for(auto* stack:{&undo_,&redo_})for(auto& command:*stack)restore(command);}
@@ -280,7 +318,7 @@ void EditHistory::enforceLimits() {
 }
 void EditHistory::recordOnDisk(std::size_t offset,std::shared_ptr<ChunkedFile> payload,std::size_t removed,std::size_t inserted,
                               std::size_t before,std::size_t after,std::int64_t timestamp) {
-    redo_.clear();Command command;command.offset=offset;command.disk=std::move(payload);command.lengths={removed,inserted};
+    redo_.clear();Command command;command.group=activeGroup_;command.redoAtStart=groupRedoAtStart_ && activeGroup_;command.offset=offset;command.disk=std::move(payload);command.disk->dropCache();command.lengths={removed,inserted};
     command.cursorBefore=before;command.cursorAfter=after;command.cursorsBefore={before};command.cursorsAfter={after};
     command.beforeState=currentState_;command.afterState=nextState_++;command.kind=EditKind::Standalone;command.timestampMs=timestamp;
     currentState_=command.afterState;undo_.push_back(std::move(command));coalescingBarrier_=true;
@@ -288,10 +326,11 @@ void EditHistory::recordOnDisk(std::size_t offset,std::shared_ptr<ChunkedFile> p
 }
 
 void EditHistory::recordDiskBatch(const std::vector<StoredChange>& changes,std::shared_ptr<ChunkedFile> payload,
-                                std::vector<std::size_t> before,std::vector<std::size_t> after,std::int64_t timestamp) {
+                                std::vector<std::size_t> before,std::vector<std::size_t> after,std::int64_t timestamp,std::size_t payloadOffset) {
     if(changes.empty())return;
-    if(changes.size()==1){recordOnDisk(changes[0].offset,std::move(payload),changes[0].removed,changes[0].inserted,before.empty()?0:before[0],after.empty()?0:after[0],timestamp);return;}
-    redo_.clear();Command command;command.disk=std::move(payload);command.lengths={0,0};
+    if(changes.size()==1 && !payloadOffset){recordOnDisk(changes[0].offset,std::move(payload),changes[0].removed,changes[0].inserted,before.empty()?0:before[0],after.empty()?0:after[0],timestamp);return;}
+    redo_.clear();Command command;command.group=activeGroup_;command.redoAtStart=groupRedoAtStart_ && activeGroup_;command.disk=std::move(payload);command.disk->dropCache();command.lengths={0,0};
+    command.diskOffset=payloadOffset;
     command.cursorsBefore=std::move(before);command.cursorsAfter=std::move(after);
     command.cursorBefore=command.cursorsBefore.empty()?0:command.cursorsBefore[0];command.cursorAfter=command.cursorsAfter.empty()?0:command.cursorsAfter[0];
     for(const auto& change:changes){command.changes.push_back({change.offset,{},{}});command.lengths.push_back(change.removed);command.lengths.push_back(change.inserted);}
@@ -300,5 +339,15 @@ void EditHistory::recordDiskBatch(const std::vector<StoredChange>& changes,std::
     enforceLimits();
 }
 
-bool EditHistory::undoNeedsBackground() const {return !undo_.empty() && (undo_.back().disk || undo_.back().changes.size()>256 || nextUndoBytes()>=1024*1024);}
-bool EditHistory::redoNeedsBackground() const {return !redo_.empty() && (redo_.back().disk || redo_.back().changes.size()>256 || nextRedoBytes()>=1024*1024);}
+bool EditHistory::undoNeedsBackground() const {
+    if(undo_.empty())return false;
+    if(nextUndoBytes()>=1024*1024)return true;
+    const auto group=undo_.back().group;
+    for(auto it=undo_.rbegin();it!=undo_.rend();++it){if(it->disk || it->changes.size()>256)return true;if(!group || std::next(it)==undo_.rend() || std::next(it)->group!=group)break;}return false;
+}
+bool EditHistory::redoNeedsBackground() const {
+    if(redo_.empty())return false;
+    if(nextRedoBytes()>=1024*1024)return true;
+    const auto group=redo_.back().group;
+    for(auto it=redo_.rbegin();it!=redo_.rend();++it){if(it->disk || it->changes.size()>256)return true;if(!group || std::next(it)==redo_.rend() || std::next(it)->group!=group)break;}return false;
+}

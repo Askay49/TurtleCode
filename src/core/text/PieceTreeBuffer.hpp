@@ -35,6 +35,7 @@ public:
     void clear();
     // Optional observer is local to this instance and is never copied into snapshots.
     std::function<void(std::size_t,std::size_t,std::size_t,std::size_t)> lineEditObserver;
+    std::function<void(std::size_t,std::size_t,std::size_t)> editObserver;
     void insert(std::size_t byteOffset, std::string_view text);
     void erase(std::size_t byteOffset, std::size_t byteLength);
 

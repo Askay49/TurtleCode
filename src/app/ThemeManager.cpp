@@ -161,6 +161,16 @@ ThemeManager::ThemeManager() {
             colors[QString("terminal.ansi%1").arg(i + 8)] = QColor::fromRgb(bright.rgb());
         }
     }
+    // Official Catppuccin colors adapted to the existing role system.
+    // Load after the legacy ANSI table so each variant keeps its own terminal palette.
+    for(const auto* flavor:{"latte","frappe","macchiato","mocha"}) {
+        QFile file(QStringLiteral(":/highlighting/themes/catppuccin-%1.json").arg(flavor));
+        if(!file.open(QIODevice::ReadOnly))continue;
+        EditorTheme theme;QString error;
+        if(!decode(file.readAll(),themes_.front(),&theme,&error)){qWarning("Invalid Catppuccin theme: %s",qPrintable(error));continue;}
+        theme.id=QStringLiteral("catppuccin-%1").arg(flavor);
+        themes_.push_back(std::move(theme));
+    }
     current_ = themes_.front();
 }
 QColor ThemeManager::color(const QString& role) const {

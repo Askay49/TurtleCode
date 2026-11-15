@@ -9,11 +9,22 @@
 #include <algorithm>
 #include <cstring>
 #include <unistd.h>
+#include <chrono>
 
 namespace {
 int failures = 0;
 void check(bool condition, const char* message) {
     if (!condition) { std::cerr << "FAIL: " << message << '\n'; ++failures; }
+}
+void testByteObservers() {
+    PieceTreeBuffer buffer("abc");int events=0;
+    buffer.editObserver=[&](std::size_t at,std::size_t removed,std::size_t inserted){
+        if(!events)check(at==1 && !removed && inserted==1 && buffer.text()=="abc","insert observer receives pre-edit byte coordinates");
+        else check(at==2 && removed==1 && !inserted && buffer.text()=="aZbc","erase observer sees the original text");
+        ++events;
+    };
+    auto staged=buffer.snapshot();staged.insert(0,"worker");check(events==0,"snapshots do not inherit UI edit observers");
+    buffer.insert(1,"Z");buffer.erase(2,1);check(events==2 && buffer.text()=="aZc","byte observer follows live edits");
 }
 void testBasicEdits() {
     PieceTreeBuffer buffer("alpha\nbeta");
@@ -184,6 +195,17 @@ void testDiskInsertsAndCodePointIndex() {
 
 }
 int main() {
+    {
+        std::string original,expected;for(int n=0;n<20000;++n){original+="foo ";expected+="longer ";}
+        PieceTreeBuffer buffer(original);auto snapshot=buffer.snapshot();const auto start=std::chrono::steady_clock::now();
+        bool ranges=true;
+        for(std::size_t n=20000;n>0;){const auto at=--n*4;ranges&=buffer.slice(at,3)=="foo";buffer.erase(at,3);buffer.insert(at,"longer");}
+        check(ranges,"short range reads remain correct as replacement fragments accumulate");
+        check(buffer.text()==expected && snapshot.text()==original,"dense replacements preserve text and an independent snapshot");
+        check(buffer.lineCount()==1 && buffer.byteAtUtf16(70000)==70000,"fragmented replacement tree keeps line and Unicode indexes");
+        check(std::chrono::steady_clock::now()-start<std::chrono::seconds(5),"dense replacements retain balanced tree performance");
+    }
+    testByteObservers();
     testLiveOnlySnapshotsAndClear();
     testChunkedFiles();
     testDiskInsertsAndCodePointIndex();

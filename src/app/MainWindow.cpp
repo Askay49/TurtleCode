@@ -129,6 +129,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     lsp_ = new LspManager(this);
     lspStatus_ = new QLabel(this);
     statusBar()->addPermanentWidget(lspStatus_);
+    vimStatus_=new QLabel(this);vimStatus_->setObjectName("vimModeIndicator");
+    vimStatus_->setMinimumWidth(std::max({vimStatus_->fontMetrics().horizontalAdvance("NORMAL"),vimStatus_->fontMetrics().horizontalAdvance("INSERT"),vimStatus_->fontMetrics().horizontalAdvance("VISUAL")})+12);
+    vimStatus_->setAlignment(Qt::AlignCenter);
+    vimStatus_->setToolTip(I18n::text("Vim mode for the current editor"));
+    statusBar()->addPermanentWidget(vimStatus_);vimStatus_->hide();
+    connect(qApp,&QApplication::focusChanged,this,[this](QWidget*,QWidget*){updateVimIndicator();});
     connect(lsp_, &LspManager::statusChanged, this, [this](const QString&) {
         auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
         lspStatus_->setText(lsp_->status(editor?editor->filePath():QString{}));
@@ -609,6 +615,7 @@ void MainWindow::createUi() {
     });
     connect(tabs_,&QTabWidget::tabCloseRequested,this,[this](int index){closeTab(index);});
     connect(tabs_, &QTabWidget::currentChanged, this, [this,tabBar](int index) {
+        updateVimIndicator();
         scheduleOutline();
         if(gitDiff_ && gitDiff_->isVisible() && gitDiff_->nativeEditor() && gitDiff_->nativeEditor()!=tabs_->widget(index)) gitDiff_->hide();
         if(tabSwitcher_ && tabSwitcher_->isVisible()) finishTabSwitch(false);
@@ -800,6 +807,16 @@ void MainWindow::createMenus() {
     connect(forwardAction, &QAction::triggered, this, [this] { navigateHistory(1); });
 
     auto* settingsMenu = menuBar()->addMenu(I18n::text("&Settings"));
+    auto* vimAction=settingsMenu->addAction(Codicons::icon("keyboard"),I18n::text("Vim mode"));
+    vimAction->setObjectName("settings.vimMode");vimAction->setCheckable(true);
+    vimAction->setChecked(QSettings().value("editor/vimMode",false).toBool());
+    ShortcutManager::instance().bind("settings.vimMode",vimAction);
+    connect(vimAction,&QAction::toggled,this,[this,vimAction](bool enabled) {
+        QSettings settings;const bool previous=settings.value("editor/vimMode",false).toBool();
+        settings.setValue("editor/vimMode",enabled);settings.sync();
+        if(settings.status()!=QSettings::NoError){settings.setValue("editor/vimMode",previous);const QSignalBlocker blocker(vimAction);vimAction->setChecked(previous);statusBar()->showMessage(I18n::text("Cannot save settings."),6000);return;}
+        applyVimSettings();
+    });
     auto* editorSettings=settingsMenu->addAction(Codicons::icon("settings-gear"), I18n::text("Editor..."));
     ShortcutManager::instance().bind("settings.editor", editorSettings);
     connect(editorSettings,&QAction::triggered,this,&MainWindow::showEditorSettings);
@@ -1120,7 +1137,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     requestClose(editors,true);
 }
 
-void MainWindow::requestClose(QVector<QPointer<EditorWidget>> editors,bool window) {
+void MainWindow::requestClose(QVector<QPointer<EditorWidget>> editors,bool window,bool discard) {
     if(closing_)return;
     if(renameInProgress_ || !replaceLockedEditors_.isEmpty()) {
         statusBar()->showMessage(I18n::text("Wait for the current operation to finish before closing."),6000);return;
@@ -1132,6 +1149,7 @@ void MainWindow::requestClose(QVector<QPointer<EditorWidget>> editors,bool windo
     menuBar()->setEnabled(false);sidebar_->setEnabled(false);
     findChild<QWidget*>("activityBar")->setEnabled(false);
     closingEditors_=std::move(editors);discardedRevisions_.clear();
+    if(discard)for(const auto& editor:closingEditors_)if(editor)discardedRevisions_[editor]=editor->lspRevision();
     for(const auto& editor:closingEditors_)if(editor)editor->setEnabled(false);
     advanceClose();
 }
@@ -1140,6 +1158,7 @@ void MainWindow::advanceClose() {
     while(closingIndex_<closingEditors_.size()) {
         auto editor=closingEditors_[closingIndex_++];
         if(!editor || !editor->isModified())continue;
+        if(discardedRevisions_.contains(editor) && discardedRevisions_.value(editor)==editor->lspRevision())continue;
         tabs_->setCurrentWidget(editor);
         const auto answer=IconDialogs::MessageBox::warning(this,I18n::text("Unsaved changes"),
             I18n::text("Save changes to “%1” before closing?").arg(editor->filePath().isEmpty()?I18n::text("Untitled"):QFileInfo(editor->filePath()).fileName()),
@@ -1377,6 +1396,7 @@ void MainWindow::openFile() {
 void MainWindow::openFile(const QString& inputPath, int line, int column, int length, bool centerTarget) {
     if(closing_)return;
     const QString path = QDir::cleanPath(QFileInfo(inputPath).absoluteFilePath());
+    if(!property("vimRestoringLocation").toBool())if(auto* current=qobject_cast<EditorWidget*>(tabs_->currentWidget());current && (line>0 || current->filePath()!=path))current->recordVimJump();
     for (int i = 0; i < tabs_->count(); ++i) {
         auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
         if (editor && (editor->filePath()==path ||
@@ -1764,18 +1784,18 @@ void MainWindow::saveEditor(EditorWidget* editor,std::function<void(bool)> compl
     });
 }
 
-void MainWindow::writeEditor(EditorWidget* editor,const QString& path,const QByteArray& expected,std::function<void(bool)> completion) {
+void MainWindow::writeEditor(EditorWidget* editor,const QString& path,const QByteArray& expected,std::function<void(bool)> completion,bool reportDialog) {
     const auto previousPath=editor->filePath();
     editor->setBusy(true);
     QPointer<EditorWidget> guard(editor);
     statusBar()->showMessage(I18n::text("Saving…"));
     auto* watcher=new QFutureWatcher<SavedFile>(this);
-    connect(watcher,&QFutureWatcher<SavedFile>::finished,this,[this,watcher,guard,path,previousPath,completion] {
+    connect(watcher,&QFutureWatcher<SavedFile>::finished,this,[this,watcher,guard,path,previousPath,completion,reportDialog] {
         const auto result=watcher->result();watcher->deleteLater();
         if(!guard){if(completion)completion(false);return;}
         guard->setBusy(false);guard->applyHistorySettings();
         if(!result.ok) {
-            if(result.error!="Saving cancelled")IconDialogs::MessageBox::critical(this,I18n::text("Save failed"),result.error);
+            if(reportDialog && result.error!="Saving cancelled")IconDialogs::MessageBox::critical(this,I18n::text("Save failed"),result.error);
             if(completion)completion(false);
             return;
         }
@@ -1807,6 +1827,8 @@ void MainWindow::writeEditor(EditorWidget* editor,const QString& path,const QByt
     progress->setWindowModality(Qt::NonModal);progress->setMinimumDuration(300);
     connect(progress,&QProgressDialog::canceled,progress,[cancelled]{cancelled->store(true);});
     connect(editor,&QObject::destroyed,[cancelled]{cancelled->store(true);});
+    connect(editor,&EditorWidget::vimExInterruptRequested,progress,&QProgressDialog::cancel);
+    connect(editor,&EditorWidget::vimExInterruptRequested,progress,[cancelled]{cancelled->store(true);});
     auto* timer=new QTimer(progress);timer->setInterval(50);
     connect(timer,&QTimer::timeout,progress,[percent,progress,cancelled]{if(progress->wasCanceled())cancelled->store(true);else progress->setValue(percent->load());});timer->start();
     connect(watcher,&QFutureWatcher<SavedFile>::finished,progress,&QProgressDialog::deleteLater);
@@ -2312,6 +2334,20 @@ void MainWindow::showLspProblems() {
 
 EditorWidget* MainWindow::createEditor(const QString& path) {
     auto* editor = new EditorWidget(this, std::make_shared<Document>());
+    editor->setProperty("vimBufferId",qulonglong(vimNextBufferId_++));
+    if(!tabs_->property("vimBufferTracking").toBool()){
+        tabs_->setProperty("vimBufferTracking",true);
+        connect(tabs_,&QTabWidget::currentChanged,this,[this](int index){
+            auto* current=qobject_cast<EditorWidget*>(tabs_->widget(index));if(current && current!=vimLastEditor_){vimAlternateEditor_=vimLastEditor_;vimLastEditor_=current;}
+            if(current)current->setProperty("vimAlternatePath",vimAlternateEditor_?vimAlternateEditor_->filePath():QString{});
+        });
+    }
+    connect(editor,&EditorWidget::vimExRequested,this,[this,editor](const VimEx::Invocation& command,std::function<void(QString)> completed){executeVimEx(editor,command,std::move(completed));});
+    connect(editor,&EditorWidget::vimNavigateRequested,this,[this,editor](const QString& file,int line,int column){
+        setProperty("vimRestoringLocation",true);openFile(file,line,column);setProperty("vimRestoringLocation",false);
+        if(auto* target=qobject_cast<EditorWidget*>(tabs_->currentWidget())){target->resetVimMode();target->setFocus();editor->transferVimReplay(target);}
+    });
+    connect(editor,&EditorWidget::vimModeChanged,this,&MainWindow::updateVimIndicator);
     editor->setDebugBreakpoints(debugPanel_->breakpoints(path),debugPanel_->disabledBreakpoints(path));
     connect(editor,&EditorWidget::debugAnchorsMoved,this,[this,editor](const QMap<int,int>& anchors){debugPanel_->remapBreakpoints(editor->filePath(),anchors);});
     connect(editor,&EditorWidget::debugLinesEdited,this,[this,editor](int row,int column,int removed,int inserted){debugPanel_->moveBreakpoints(editor->filePath(),row,column,removed,inserted);});
@@ -2645,12 +2681,34 @@ void MainWindow::showInterfaceLanguageSettings() {
     dialog.exec();
 }
 
+void MainWindow::applyVimSettings() {
+    const bool enabled=QSettings().value("editor/vimMode",false).toBool();
+    for(auto* widget:QApplication::allWidgets()) {
+        if(auto* editor=qobject_cast<EditorWidget*>(widget))editor->setVimEnabled(enabled);
+        if(auto* window=qobject_cast<MainWindow*>(widget)) {
+            if(auto* action=window->findChild<QAction*>("settings.vimMode")){const QSignalBlocker blocker(action);action->setChecked(enabled);}
+            window->updateVimIndicator();
+        }
+    }
+}
+void MainWindow::updateVimIndicator() {
+    if(!vimStatus_ || !tabs_)return;
+    auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    for(auto* widget=QApplication::focusWidget();widget;widget=widget->parentWidget())
+        if(auto* focused=qobject_cast<EditorWidget*>(widget);focused && isAncestorOf(focused)){editor=focused;break;}
+    const bool visible=editor && editor->vimEnabled();vimStatus_->setVisible(visible);
+    if(visible){vimStatus_->setText(editor->vimModeName());vimStatus_->setEnabled(editor->hasFocus() || editor->vimCommandLineActive());}
+}
+
 void MainWindow::showEditorSettings() {
     QDialog dialog(this);dialog.setWindowTitle(I18n::text("Editor settings"));
     auto* outer=new QVBoxLayout(&dialog);
     auto* scroll=new QScrollArea(&dialog);scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);
     auto* content=new QWidget(scroll);scroll->setWidget(content);outer->addWidget(scroll,1);
     auto* layout=new QVBoxLayout(content);QSettings settings;
+    auto* vim=new QCheckBox(I18n::text("Enable Vim mode"),content);
+    vim->setObjectName("vimModeEnabled");vim->setChecked(settings.value("editor/vimMode",false).toBool());
+    vim->setToolTip(I18n::text("Normal: i/a to insert, v to select. Escape returns to Normal."));layout->addWidget(vim);
     auto* fonts=new QGroupBox(I18n::text("Fonts"),&dialog);
     auto* fontLayout=new QFormLayout(fonts);
     struct FontRow { FontSettings::Area area; QFontComboBox* family; QSpinBox* size; };
@@ -2734,9 +2792,11 @@ void MainWindow::showEditorSettings() {
         settings.setValue("appearance/backgroundOpacity",imageOpacity->value());
         settings.setValue("editor/historyMemoryMiB",memory->value());settings.setValue("editor/historySpillToDisk",spill->isChecked());
         settings.setValue("editor/historyDiskMiB",disk->value());
+        settings.setValue("editor/vimMode",vim->isChecked());
         settings.setValue("editor/autoPairs",autoPairs->isChecked());
         settings.setValue("editor/recoveryEnabled",backups->isChecked());settings.sync();
         if(settings.status()!=QSettings::NoError){IconDialogs::MessageBox::warning(&dialog,I18n::text("Editor settings"),I18n::text("Cannot save settings."));return;}
+        applyVimSettings();
         if (backgroundChanged) ThemeManager::instance().refreshAppearance();
         for(auto* widget:QApplication::allWidgets()) {
             if(auto* window=qobject_cast<MainWindow*>(widget)) {

@@ -8,6 +8,7 @@
 #include "app/ShortcutManager.hpp"
 #include "app/ThemeManager.hpp"
 #include "EditorWidget.hpp"
+#include "StoredClipboard.hpp"
 #include "core/text/LineAnchor.hpp"
 #include <map>
 #include "UnicodeNavigation.hpp"
@@ -36,6 +37,8 @@
 #include <QFontMetricsF>
 #include <QKeyEvent>
 #include <QEvent>
+#include <QFocusEvent>
+#include <QScopeGuard>
 #include <QContextMenuEvent>
 #include <QInputMethodEvent>
 #include <QGuiApplication>
@@ -95,23 +98,11 @@ std::size_t lineBoundary(const PieceTreeBuffer& buffer,std::size_t line,std::siz
 #include <tuple>
 
 namespace {
-class StoredClipboard final : public QMimeData {
-public:
-    std::shared_ptr<ChunkedFile> file;
-    explicit StoredClipboard(std::shared_ptr<ChunkedFile> data):file(std::move(data)){}
-    QStringList formats() const override {return {"text/plain"};}
-    bool hasFormat(const QString& format) const override {return format=="text/plain";}
-protected:
-    QVariant retrieveData(const QString& format,QMetaType type) const override {
-        if(format!="text/plain")return {};
-        if(type==QMetaType::fromType<QByteArray>())return QByteArray::fromStdString(file->read(0,file->size()));
-        QString result;QStringDecoder decoder(QStringDecoder::Utf8);
-        for(std::size_t offset=0;offset<file->size();offset+=64*1024){const auto bytes=file->read(offset,std::min<std::size_t>(64*1024,file->size()-offset));result+=decoder(QByteArrayView(bytes.data(),bytes.size()));}
-        return result;
-    }
-};
 struct BulkResult {
     std::map<int,int> lineAnchors;
+    std::vector<std::size_t> vimAnchors;
+    std::vector<QMap<quint64,std::size_t>> vimLostPositions;
+    std::vector<VimEx::LineMarks> exLineMarks;
     std::shared_ptr<PieceTreeBuffer> buffer;
     std::shared_ptr<EditHistory> history;
     std::shared_ptr<ChunkedFile> clipboard;
@@ -119,6 +110,7 @@ struct BulkResult {
     QString error;
     bool cancelled{false};
     bool changed{false};
+    std::optional<std::size_t> editBegin,editEnd;
 };
 std::size_t mapPositionThroughChanges(std::size_t position,
                                       const std::vector<EditChange>& sortedChanges) {
@@ -247,6 +239,10 @@ EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)
     : QAbstractScrollArea(parent), document_(std::move(document)),
       buffer_(document_->buffer()), filePath_(document_->filePath()), history_(document_->history()) {
     connect(this,&EditorWidget::contentChanged,this,[this] {
+        if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual && vimHistoryState_!=history_.stateId())switchVimMode(VimController::Mode::Normal);
+        vimHistoryState_=history_.stateId();
+        for(const auto& p:VimState::Session::instance().anchors(this))if(p->lostPositions.contains(history_.stateId()))p->offset=std::min(buffer_.size(),p->lostPositions.value(history_.stateId()));
+        normalizeVimCursor();
         // Ordinary edits project the alignment in invalidateSemanticLines().
         // Only bulk replacements without edit details need to discard the map.
         if (!diffRows_.isEmpty() && std::size_t(diffLineRows_.size()) != buffer_.lineCount()) {
@@ -254,6 +250,7 @@ EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)
             setDiffAlignment({});
         }
         viewport()->update();
+        if(vimChangeActive_ && !vim_.acceptsText())QTimer::singleShot(0,this,[this]{if(!busy_ && !vimHandlingKey_ && !vim_.acceptsText())finishVimChange();});
     });
     miniMap_=new EditorMiniMap(this);
     miniMap_->hide();
@@ -290,14 +287,17 @@ EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)
     connect(&highlighter_, &SyntaxHighlighter::highlightingReady, this,
             [this] { viewport()->update(); });
     auto* addCursorAbove = new QShortcut(this);
+    addCursorAbove->setObjectName("editor.vimDisabled.addCursorAbove");
     ShortcutManager::instance().bind("editor.cursorAbove", addCursorAbove);
     addCursorAbove->setContext(Qt::WidgetWithChildrenShortcut);
     connect(addCursorAbove, &QShortcut::activated, this, [this] { if (!busy_) addCursorVertically(-1); });
     auto* addCursorBelow = new QShortcut(this);
+    addCursorBelow->setObjectName("editor.vimDisabled.addCursorBelow");
     ShortcutManager::instance().bind("editor.cursorBelow", addCursorBelow);
     addCursorBelow->setContext(Qt::WidgetWithChildrenShortcut);
     connect(addCursorBelow, &QShortcut::activated, this, [this] { if (!busy_) addCursorVertically(1); });
     auto* nextOccurrence = new QShortcut(this);
+    nextOccurrence->setObjectName("editor.vimDisabled.nextOccurrence");
     nextOccurrence->setContext(Qt::WidgetShortcut);
     ShortcutManager::instance().bind("editor.nextOccurrence", nextOccurrence);
     connect(nextOccurrence, &QShortcut::activated, this, &EditorWidget::selectNextOccurrence);
@@ -406,17 +406,31 @@ EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)
     findReplaceInput_->installEventFilter(this);
     updateScrollBars();
     setMiniMapEnabled(QSettings().value("editor/minimap",true).toBool());
+    setVimEnabled(QSettings().value("editor/vimMode",false).toBool());
+    attachVimAnchors();
 }
 
 void EditorWidget::loadBuffer(PieceTreeBuffer buffer, const QString& path) {
+    vimChanges_.clear();vimPendingChange_.reset();vimChangeIndex_=0;
+    const bool loadingEx=busy_ && property("openingPath").isValid() && vimExExecuting_;
+    if(loadingEx)for(auto& frame:vimExFrames_)if(frame.marks)frame.marks=std::make_shared<VimEx::LineMarks>();
+    invalidateVimSearch();vimSearchHighlights_.clear();vimLastSearchMatch_.reset();vimSubConfirm_=false;vimSubPlan_.reset();
+    closeVimCommandLine();if(!loadingEx){++vimExGeneration_;vimExExecuting_=false;vimExRemaining_.clear();cancelVimExFrames();}
+    const bool loadingReplay=busy_ && property("openingPath").isValid() && !vimReplay_.empty();
+    if(!loadingReplay)cancelVimReplay();
+    vimCommandKeys_.clear();vimChangeKeys_.clear();vimChangeActive_=false;
+    for(const auto& p:VimState::Session::instance().anchors(this))p->lostPositions.clear();
+    if(vim_.enabled())switchVimMode(VimController::Mode::Normal);
     diffHighlights_.clear();
     setDiffAlignment({});
     clearSemanticHighlighting();
     lspPolicy_.reset();
     buffer_ = std::move(buffer);
+    vimFinalNewline_=buffer_.size() && buffer_.byteAt(buffer_.size()-1)=='\n';
     invalidateLineCache();
     horizontalExtentDirty_ = true;
     filePath_ = path;
+    attachVimAnchors();
     refreshEditorConfig();
     document_->diskState = diskFileState(path);
     highlighter_.setLanguageForPath(path);
@@ -429,6 +443,8 @@ void EditorWidget::loadBuffer(PieceTreeBuffer buffer, const QString& path) {
     verticalScrollBar()->setValue(0);
     horizontalScrollBar()->setValue(0);
     history_.clear();
+    if(loadingReplay)history_.beginCompoundGroup();
+    if(loadingEx)history_.beginCompoundGroup();
     history_.markSaved();
     setModified(false);
     updateScrollBars();
@@ -459,6 +475,7 @@ void EditorWidget::reloadBuffer(PieceTreeBuffer buffer, const QString& path) {
 }
 
 void EditorWidget::completeAsyncSave(const QString& path) {
+    renameVimAnchors(path);
     const bool languageChanged = QFileInfo(filePath_).suffix().compare(
         QFileInfo(path).suffix(), Qt::CaseInsensitive) != 0;
     filePath_ = path;
@@ -544,6 +561,7 @@ void EditorWidget::showFindBar(bool replace) {
             findInput_->setText(QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size())));
         }
     }
+    if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual)switchVimMode(VimController::Mode::Normal);
     findInput_->setFocus();
     findInput_->selectAll();
     updateFindMatches();
@@ -668,6 +686,7 @@ void EditorWidget::updateFindMatches() {
 }
 
 void EditorWidget::navigateFind(int direction) {
+    if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual)switchVimMode(VimController::Mode::Normal);
     if (findTimer_->isActive()) { findTimer_->stop(); updateFindMatches(); }
     if (findMatches_.empty()) return;
     int index = activeFindMatch_;
@@ -685,7 +704,9 @@ void EditorWidget::navigateFind(int direction) {
     }
     activeFindMatch_ = index;
     const auto match = findMatches_[index];
-    cursors_ = {match.end}; cursorAnchors_ = {match.begin}; syncPrimaryCursor();
+    if(vim_.enabled() && vim_.mode()==VimController::Mode::Normal){cursors_={match.begin};cursorAnchors_={match.end};}
+    else {cursors_={match.end};cursorAnchors_={match.begin};}
+    syncPrimaryCursor();
     history_.breakCoalescing();
     updateScrollBars(); ensureCursorVisible(true);
     findCount_->setText(QStringLiteral("%1/%2").arg(index + 1).arg(findMatches_.size()));
@@ -822,6 +843,8 @@ void EditorWidget::refreshSyntaxHighlighting() {
 
 
 void EditorWidget::goToLine(int oneBasedLine) {
+    pushVimJump();
+    if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual)switchVimMode(VimController::Mode::Normal);
     const auto line = static_cast<std::size_t>(std::max(1, oneBasedLine) - 1);
     moveCursor(buffer_.lineStart(std::min(line, buffer_.lineCount() - 1)), false);
     ensureCursorVisible(true);
@@ -835,6 +858,8 @@ QPoint EditorWidget::navigationPosition() const {
 }
 
 void EditorWidget::setNavigationPosition(int oneBasedLine, int oneBasedColumn) {
+    pushVimJump();
+    if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual)switchVimMode(VimController::Mode::Normal);
     const auto line = std::min<std::size_t>(
         static_cast<std::size_t>(std::max(1, oneBasedLine) - 1), buffer_.lineCount() - 1);
     const auto lineStart = buffer_.lineStart(line);
@@ -844,19 +869,22 @@ void EditorWidget::setNavigationPosition(int oneBasedLine, int oneBasedColumn) {
     anchor_.reset();
     preferredColumn_ = static_cast<std::size_t>(-1);
     history_.breakCoalescing();
+    normalizeVimCursor();
     ensureCursorVisible();
     viewport()->update();
 }
 
 void EditorWidget::revealMatch(int oneBasedLine, int oneBasedColumn, int utf16Length, bool centerVertically) {
+    if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual)switchVimMode(VimController::Mode::Normal);
     const auto line = std::min<std::size_t>(
         static_cast<std::size_t>(std::max(1, oneBasedLine) - 1), buffer_.lineCount() - 1);
     const auto lineStart = buffer_.lineStart(line);
     const auto units=buffer_.utf16Before(lineStart);
     const auto begin=std::min(buffer_.lineEnd(line),buffer_.byteAtUtf16(units+static_cast<std::size_t>(std::max(0,oneBasedColumn-1))));
     const auto end=std::min(buffer_.lineEnd(line),buffer_.byteAtUtf16(buffer_.utf16Before(begin)+static_cast<std::size_t>(std::max(0,utf16Length))));
-    anchor_ = begin;
-    cursorPosition_ = end;
+    const bool normal=vim_.enabled() && vim_.mode()==VimController::Mode::Normal;
+    anchor_ = normal?end:begin;
+    cursorPosition_ = normal?begin:end;
     cursors_ = {cursorPosition_};
     cursorAnchors_ = {anchor_};
     history_.breakCoalescing();
@@ -866,6 +894,7 @@ void EditorWidget::revealMatch(int oneBasedLine, int oneBasedColumn, int utf16Le
 }
 
 void EditorWidget::updateFilePathAfterRename(const QString& path) {
+    renameVimAnchors(path);
     clearSemanticHighlighting();
     filePath_ = path;
     refreshEditorConfig();
@@ -878,6 +907,9 @@ void EditorWidget::updateFilePathAfterRename(const QString& path) {
 
 void EditorWidget::markFileMissing() {
     // Retain the path and Undo history, but protect this in-memory copy on close.
+    markDiskDiverged();
+}
+void EditorWidget::markDiskDiverged() {
     history_.markUnsaved();
     setModified(true);
 }
@@ -912,6 +944,7 @@ bool EditorWidget::saveFile(const QString& path) {
     if(!buffer_.forEachChunk([&file](std::string_view chunk) {
         return file.write(chunk.data(),static_cast<qint64>(chunk.size()))==static_cast<qint64>(chunk.size());
     }) || !file.commit()) return false;
+    renameVimAnchors(path);
     const bool languageChanged=QFileInfo(filePath_).suffix().compare(QFileInfo(path).suffix(),Qt::CaseInsensitive)!=0;
     filePath_ = path;
     refreshEditorConfig();
@@ -1226,20 +1259,28 @@ void EditorWidget::addCursorVertically(int direction) {
     viewport()->update();
 }
 bool EditorWidget::cursorHasSelection(std::size_t index) const {
+    if(index==0 && vim_.enabled() && vim_.mode()==VimController::Mode::Visual)return hasSelection();
     return index < cursors_.size() && index < cursorAnchors_.size() && cursorAnchors_[index] &&
            *cursorAnchors_[index] != cursors_[index];
 }
 std::pair<std::size_t, std::size_t> EditorWidget::cursorSelectionRange(std::size_t index) const {
+    if(index==0 && vim_.enabled() && vim_.mode()==VimController::Mode::Visual)return selectionRange();
     if (!cursorHasSelection(index)) return {cursors_[index], cursors_[index]};
     return {std::min(*cursorAnchors_[index], cursors_[index]),
             std::max(*cursorAnchors_[index], cursors_[index])};
 }
 std::pair<std::size_t, std::size_t> EditorWidget::selectionRange() const {
     if (!hasSelection()) return {cursorPosition_, cursorPosition_};
-    return {std::min(*anchor_, cursorPosition_), std::max(*anchor_, cursorPosition_)};
+    if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual && vimVisualLine_) {
+        const auto first=buffer_.lineIndexAt(std::min(*anchor_,cursorPosition_)),last=buffer_.lineIndexAt(std::max(*anchor_,cursorPosition_));
+        return {vimLineStart(first),last+1<buffer_.lineCount()?buffer_.lineStart(last+1):buffer_.size()};
+    }
+    const auto last=std::max(*anchor_,cursorPosition_);
+    return {std::min(*anchor_,cursorPosition_),vim_.enabled() && vim_.mode()==VimController::Mode::Visual?vimSelectionEnd(last):last};
 }
 
 QString EditorWidget::selectedText() const {
+    if(vimVisualBlock_ && anchor_){QStringList lines;const auto [left,right]=vimBlockColumns();for(auto row=buffer_.lineIndexAt(std::min(*anchor_,cursorPosition_));row<=buffer_.lineIndexAt(std::max(*anchor_,cursorPosition_));++row){const auto selected=VimBlock::slice(buffer_,row,left,right,tabWidth_);lines<<QString::fromUtf8(selected.text.data(),qsizetype(selected.text.size()));}return lines.join('\n');}
     const auto [begin, end] = selectionRange();
     const auto bytes = buffer_.slice(begin, end - begin);
     return QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()));
@@ -1326,10 +1367,16 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             const auto bytes=buffer_.slice(first,last-first);auto chars=QString::fromUtf8(bytes.data(),bytes.size()).toUcs4();
             const auto before=buffer_.codePointsBefore(first)-base;int x=gutter+12+static_cast<int>(before*cell)-horizontalOffset;
             painter.save();painter.setClipRect(QRect(gutter,y,viewport()->width()-gutter,lh));
+            for(const auto& match:vimSearchHighlights_){
+                if(match.end<first || match.begin>last)continue;
+                const auto begin=std::max(first,match.begin),finish=std::min(last,match.end);
+                const auto column=buffer_.codePointsBefore(begin)-base,length=buffer_.codePointsBefore(finish)-buffer_.codePointsBefore(begin);
+                painter.fillRect(QRect(gutter+12+int(column)*cell-horizontalOffset,y+2,std::max(2,int(length)*cell),lh-4),ThemeManager::instance().color(vimSubConfirm_ || match.begin==cursorPosition_?"search.activeMatch":"search.match"));
+            }
             const auto selectedFirst=selBegin<=first?0:buffer_.codePointsBefore(std::min(selBegin,last))-buffer_.codePointsBefore(first);
             const auto selectedLast=selEnd>=last?static_cast<std::size_t>(chars.size()):buffer_.codePointsBefore(std::max(selEnd,first))-buffer_.codePointsBefore(first);
             for(qsizetype i=0;i<chars.size();++i) {
-                if(hasSelection() && selBegin<last && selEnd>first && static_cast<std::size_t>(i)>=selectedFirst && static_cast<std::size_t>(i)<selectedLast)
+                if(!vimVisualBlock_ && hasSelection() && selBegin<last && selEnd>first && static_cast<std::size_t>(i)>=selectedFirst && static_cast<std::size_t>(i)<selectedLast)
                     painter.fillRect(QRect(x,y,cell,lh),ThemeManager::instance().color("editor.selection"));
                 painter.setPen(ThemeManager::instance().color("text.primary"));
                 painter.drawText(QPoint(x,y+(lh-fontMetrics().height())/2+fontMetrics().ascent()),QString::fromUcs4(reinterpret_cast<const char32_t*>(&chars[i]),1));x+=cell;
@@ -1397,7 +1444,16 @@ void EditorWidget::paintEvent(QPaintEvent*) {
                     index == activeFindMatch_ ? ThemeManager::instance().color("search.activeMatch") : ThemeManager::instance().color("search.match"));
             }
         }
-        if (selBegin < end && selEnd > start) {
+        for(const auto& match:vimSearchHighlights_){
+            if(match.end<start || match.begin>end)continue;
+            const auto a=std::clamp(match.begin,start,end)-start,b=std::clamp(match.end,start,end)-start;
+            const auto before=buffer_.slice(start,a),through=buffer_.slice(start,b);
+            const auto x=gutter+12+textWidth(line.left(QString::fromUtf8(before.data(),qsizetype(before.size())).size()))-horizontalOffset;
+            const auto width=textWidth(line.left(QString::fromUtf8(through.data(),qsizetype(through.size())).size()))-textWidth(line.left(QString::fromUtf8(before.data(),qsizetype(before.size())).size()));
+            const bool active=vimSubConfirm_ || match.begin==cursorPosition_ || (vimLastSearchMatch_ && match.begin==vimLastSearchMatch_->begin);
+            painter.fillRect(QRect(x,y+2,std::max(2,width),lh-4),ThemeManager::instance().color(active?"search.activeMatch":"search.match"));
+        }
+        if (!vimVisualBlock_ && selBegin < end && selEnd > start) {
             const auto a = std::max(selBegin, start) - start;
             const auto b = std::min(selEnd, end) - start;
             const auto prefix = buffer_.slice(start, a);
@@ -1408,7 +1464,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             const int width = textWidth(qPrefix+qSelected)-textWidth(qPrefix);
             painter.fillRect(QRect(x, y + 2, std::max(2, width), lh - 4), ThemeManager::instance().color("editor.selection"));
         }
-        if (selBegin <= end && selEnd > end && end < buffer_.size() && buffer_.byteAt(end) == '\n') {
+        if (!vimVisualBlock_ && selBegin <= end && selEnd > end && end < buffer_.size() && buffer_.byteAt(end) == '\n') {
             const int x = gutter + 12 + textWidth(line) - horizontalOffset;
             painter.fillRect(QRect(x, y + 2, std::max(2, viewport()->width() - x), lh - 4),
                              ThemeManager::instance().color("editor.selection"));
@@ -1542,10 +1598,15 @@ void EditorWidget::paintEvent(QPaintEvent*) {
     const int cursorTop = cursorY + (lh - glyphHeight) / 2 + 1;
     const int cursorHeight = std::max(1, glyphHeight - 2);
 
+    drawVimBlock(painter);
     if (!preeditText_.isEmpty())
         cursorX += textWidth(preeditText_.left(preeditCursor_));
-    if (hasFocus() && cursorY + lh > 0 && cursorY < viewport()->height())
-        painter.fillRect(QRect(cursorX, cursorTop, 2, cursorHeight), ThemeManager::instance().color("editor.cursor"));
+    if (hasFocus() && cursorY + lh > 0 && cursorY < viewport()->height()) {
+        const QRect caret(cursorX,vim_.mode()==VimController::Mode::Replace?cursorTop+cursorHeight-2:cursorTop,vimCaretWidth(),vim_.mode()==VimController::Mode::Replace?2:cursorHeight);
+        auto color=ThemeManager::instance().color("editor.cursor");
+        if(!vim_.acceptsText()){auto fill=color;fill.setAlpha(95);painter.fillRect(caret,fill);painter.setPen(color);painter.drawRect(caret.adjusted(0,0,-1,-1));}
+        else painter.fillRect(caret,color);
+    }
 
     if (hasFocus()) {
         for (const auto position : cursors_) {
@@ -1571,6 +1632,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
 }
 
 void EditorWidget::setModified(bool value) {
+    invalidateVimSearch();
     if(!semanticAdjusted_) { ++semanticGeneration_; setProperty("semanticPending",false); }
     semanticAdjusted_=false;
     ++lspRevision_;
@@ -1605,6 +1667,7 @@ void EditorWidget::hideCompletions() {
     if (completer_) completer_->popup()->hide();
 }
 bool EditorWidget::shouldAutoComplete() const {
+    if(!vim_.acceptsText() || vim_.mode()==VimController::Mode::Replace || isVimReplaying())return false;
     if (busy_ || cursors_.size() != 1 || hasSelection()) return false;
     const auto start = buffer_.lineStart(currentLine());
     const auto bytes = buffer_.slice(start, cursorPosition_ - start);
@@ -1614,6 +1677,7 @@ bool EditorWidget::shouldAutoComplete() const {
     return ch.isLetterOrNumber() || ch == '_' || ch == '.' || text.endsWith("->") || text.endsWith("::");
 }
 void EditorWidget::showCompletions(const QJsonArray& items) {
+    if(!vim_.acceptsText() || vim_.mode()==VimController::Mode::Replace || isVimReplaying())return;
     if (busy_ || !hasFocus() || cursors_.size() > 1) return;
     if (!completer_) {
         completer_ = new QCompleter(this);
@@ -1648,6 +1712,9 @@ void EditorWidget::showCompletions(const QJsonArray& items) {
     completer_->popup()->setCurrentIndex(completer_->completionModel()->index(0, 0));
 }
 void EditorWidget::applyCompletion(const QJsonObject& item) {
+    const auto captureBefore=vimCaptureInsertEdit_;vimCaptureInsertEdit_=vim_.enabled() && vim_.mode()==VimController::Mode::Insert;
+    const auto captureGuard=qScopeGuard([this,captureBefore]{vimCaptureInsertEdit_=captureBefore;});
+    if(!vim_.acceptsText() || vim_.mode()==VimController::Mode::Replace || isVimReplaying())return;
     if (busy_ || item.value("insertTextFormat").toInt(1) == 2 || cursors_.size() > 1) return;
     auto locate = [this](const QJsonObject& point) -> std::optional<std::size_t> {
         const int line = point.value("line").toInt(-1), column = point.value("character").toInt(-1);
@@ -1740,6 +1807,7 @@ void EditorWidget::moveCursor(std::size_t position, bool keepAnchor) {
         cursors_ = {cursorPosition_};
         cursorAnchors_ = {anchor_};
     }
+    normalizeVimCursor();
     preferredColumn_ = static_cast<std::size_t>(-1);
     updateScrollBars();
     ensureCursorVisible();
@@ -1842,6 +1910,13 @@ void EditorWidget::applyBatchEdits(std::vector<EditChange> changes,
     viewport()->update();
 }
 
+std::size_t EditorWidget::lineContentEnd(std::size_t line) const { return lineTextEnd(buffer_,line); }
+std::size_t EditorWidget::graphemeBoundaryAt(std::size_t position,bool forward) const {
+    position=std::min(position,buffer_.size());const auto row=buffer_.lineIndexAt(position);
+    if(forward && position>=lineTextEnd(buffer_,row))return std::min(buffer_.size(),buffer_.lineEnd(row)+1);
+    if(!forward && position==buffer_.lineStart(row))return row?lineTextEnd(buffer_,row-1):0;
+    return lineBoundary(buffer_,row,position,forward,false);
+}
 std::size_t EditorWidget::previousGraphemePosition() const {
     const auto line=currentLine(),start=buffer_.lineStart(line);
     if(cursorPosition_==start)return line?lineTextEnd(buffer_,line-1):0;
@@ -2066,6 +2141,7 @@ void EditorWidget::deleteForward(bool byWord) {
 }
 
 void EditorWidget::undo() {
+    const auto previous=std::exchange(vimApplyingHistory_,true);const auto guard=qScopeGuard([this,previous]{vimApplyingHistory_=previous;});
     if(history_.undoNeedsBackground()){runBulkOperation(I18n::text("Undoing…"),[](PieceTreeBuffer& buffer,EditHistory& history,std::shared_ptr<ChunkedFile>&,const BulkStep& step){step(0);auto result=history.undo(buffer,{},[&]{step(50);});step(100);if(!result)throw std::runtime_error("Undo failed");return *result;});return;}
     const auto result = history_.undo(buffer_,[this](std::size_t offset,std::size_t row,std::size_t column,
                                                           std::string_view removed,std::string_view inserted) {
@@ -2090,6 +2166,7 @@ void EditorWidget::undo() {
 }
 
 void EditorWidget::redo() {
+    const auto previous=std::exchange(vimApplyingHistory_,true);const auto guard=qScopeGuard([this,previous]{vimApplyingHistory_=previous;});
     if(history_.redoNeedsBackground()){runBulkOperation(I18n::text("Redoing…"),[](PieceTreeBuffer& buffer,EditHistory& history,std::shared_ptr<ChunkedFile>&,const BulkStep& step){step(0);auto result=history.redo(buffer,{},[&]{step(50);});step(100);if(!result)throw std::runtime_error("Redo failed");return *result;});return;}
     const auto result = history_.redo(buffer_,[this](std::size_t offset,std::size_t row,std::size_t column,
                                                           std::string_view removed,std::string_view inserted) {
@@ -2114,6 +2191,7 @@ void EditorWidget::redo() {
 }
 
 void EditorWidget::selectNextOccurrence() {
+    if(vim_.enabled())return;
     if (busy_) return;
 
         const auto isWord = OccurrenceMatching::isWord;
@@ -2195,7 +2273,17 @@ void EditorWidget::selectNextOccurrence() {
     }
 
 bool EditorWidget::event(QEvent* event) {
-    if(event->type()==QEvent::FocusIn && !busy_)refreshEditorConfig();
+    if((vimExActive_ || vimSubConfirm_) && event->type()==QEvent::ShortcutOverride){event->accept();return true;}
+    if((vimExActive_ || vimSubConfirm_) && event->type()==QEvent::KeyPress){keyPressEvent(static_cast<QKeyEvent*>(event));event->accept();return true;}
+    if(event->type()==QEvent::FocusIn && !busy_){refreshEditorConfig();QTimer::singleShot(0,this,&EditorWidget::updateVimSearchHighlights);}
+    if(event->type()==QEvent::FocusIn || event->type()==QEvent::FocusOut){if(vim_.enabled()){if(event->type()==QEvent::FocusOut && static_cast<QFocusEvent*>(event)->reason()!=Qt::PopupFocusReason){history_.endGroup();vimInsertCount_=1;if(!busy_)finishVimChange();}vim_.resetPending();}viewport()->update();}
+    if(event->type()==QEvent::ShortcutOverride && hasFocus() && !busy_ && vim_.reserves(*static_cast<QKeyEvent*>(event))) {
+        // Completion menus retain first refusal for Escape/Enter/Tab.
+        const int key=static_cast<QKeyEvent*>(event)->key();
+        if(!completer_ || !completer_->popup()->isVisible() || (key!=Qt::Key_Escape && key!=Qt::Key_Return && key!=Qt::Key_Enter && key!=Qt::Key_Tab && key!=Qt::Key_Backtab)) {
+            event->accept();return true;
+        }
+    }
     // QWidget consumes Tab for focus traversal before calling keyPressEvent.
     // Reserve plain Tab/Backtab only while the code surface itself has focus;
     // find/replace fields retain their normal focus chain.
@@ -2211,6 +2299,10 @@ bool EditorWidget::event(QEvent* event) {
 }
 
 void EditorWidget::keyPressEvent(QKeyEvent* event) {
+    if(vimSubConfirm_ && answerVimSubstitution(event))return;
+    if(vimExActive_){QApplication::sendEvent(vimExInput_,event);return;}
+    if(vimExExecuting_ && (!vimExNormal_ || !vimSendingReplay_)){if(event->key()==Qt::Key_Escape){vimExRemaining_.clear();cancelVimExFrames();emit vimExInterruptRequested();cancelVimReplay();for(auto* progress:findChildren<QProgressDialog*>())progress->cancel();}event->accept();return;}
+    if(vimExBar_)vimExBar_->hide();
     if (completer_ && completer_->popup()->isVisible()) {
         switch (event->key()) {
         case Qt::Key_Enter: case Qt::Key_Return: case Qt::Key_Escape: case Qt::Key_Tab: case Qt::Key_Backtab:
@@ -2220,7 +2312,10 @@ void EditorWidget::keyPressEvent(QKeyEvent* event) {
             break;
         }
     }
-    if (busy_) { event->accept(); return; }
+    if (busy_) {if(!vimSendingReplay_ && event->key()==Qt::Key_Escape){cancelVimReplay();for(auto* progress:findChildren<QProgressDialog*>())progress->cancel();}event->accept(); return; }
+    if(beginVimKey(event))return;
+    const auto vimKeyGuard=qScopeGuard([this]{endVimKey();});
+    if(handleVimKey(event))return;
     if (event->key()==Qt::Key_Escape && event->modifiers()==Qt::NoModifier && (cursors_.size()>1 || hasSelection())) {
         cursors_={cursorPosition_};
         clearAllSelections();
@@ -2401,7 +2496,7 @@ void EditorWidget::keyPressEvent(QKeyEvent* event) {
     case Qt::Key_Backtab: indentSelection(true);return;
     case Qt::Key_Tab: indentSelection(shift);return;
     default:
-        if (!(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier)) && !event->text().isEmpty() && event->text().at(0).isPrint()) {
+        if (vim_.acceptsText() && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier)) && !event->text().isEmpty() && event->text().at(0).isPrint()) {
             if(event->text().size()==1 && event->text()[0].unicode()<128 && smartCharacter(event->text()[0].toLatin1()))return;
             if (cursors_.size() > 1) insertText(event->text().toUtf8().toStdString(), EditKind::Standalone);
             else if (hasSelection()) replaceSelection(event->text().toUtf8().toStdString());
@@ -2452,6 +2547,7 @@ void EditorWidget::contextMenuEvent(QContextMenuEvent* event) {
     event->accept();
 }
 void EditorWidget::mousePressEvent(QMouseEvent* event) {
+    if(vim_.enabled()){history_.endGroup();vimInsertCount_=1;vim_.resetPending();}
     hideCompletions();
     if (busy_) { event->accept(); return; }
     if (event->button() == Qt::LeftButton && event->position().x()<15) {
@@ -2462,6 +2558,7 @@ void EditorWidget::mousePressEvent(QMouseEvent* event) {
         event->accept(); return;
     }
     if (event->button() == Qt::LeftButton) {
+        if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual)switchVimMode(VimController::Mode::Normal);
         draggingWords_ = false;
         draggingLines_ = false;
         const int clickedLine = lineAtY(event->position().toPoint().y());
@@ -2485,7 +2582,7 @@ void EditorWidget::mousePressEvent(QMouseEvent* event) {
             }
             const auto pos = clickedLine >= static_cast<int>(buffer_.lineCount()) ? buffer_.size()
                 : buffer_.lineStart(static_cast<std::size_t>(lineNo)) + byteColumnAtX(event->position().toPoint().x(), lineNo);
-            if (event->modifiers() & Qt::AltModifier) {
+            if ((event->modifiers() & Qt::AltModifier) && !vim_.enabled()) {
                 history_.breakCoalescing();
                 clearAllSelections();
                 if (std::find(cursors_.begin(), cursors_.end(), pos) == cursors_.end())
@@ -2514,6 +2611,7 @@ void EditorWidget::mousePressEvent(QMouseEvent* event) {
     }
 }
 void EditorWidget::mouseDoubleClickEvent(QMouseEvent* event) {
+    if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual)switchVimMode(VimController::Mode::Normal);
     if (busy_) { event->accept(); return; }
     if (event->button() != Qt::LeftButton || (event->modifiers() & Qt::AltModifier)) {
         mousePressEvent(event);
@@ -2599,6 +2697,7 @@ void EditorWidget::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 bool EditorWidget::eventFilter(QObject* watched, QEvent* event) {
+    if(watched==vimExInput_ && filterVimCommandLine(event))return true;
     if(completer_ && watched==completer_->popup() && completer_->popup()->isVisible()
         && (event->type()==QEvent::ShortcutOverride || event->type()==QEvent::KeyPress)) {
         auto* key=static_cast<QKeyEvent*>(event);
@@ -2664,7 +2763,11 @@ bool EditorWidget::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void EditorWidget::inputMethodEvent(QInputMethodEvent* event) {
-    if (busy_) { event->accept(); return; }
+    const auto captureBefore=vimCaptureInsertEdit_;vimCaptureInsertEdit_=vim_.enabled();
+    const auto captureGuard=qScopeGuard([this,captureBefore]{vimCaptureInsertEdit_=captureBefore;});
+    if(vim_.enabled() && vim_.mode()==VimController::Mode::Replace && !event->commitString().isEmpty()){replaceVimText(event->commitString());event->accept();return;}
+    if (busy_ || !vim_.acceptsText()) { event->accept(); return; }
+    if(vim_.enabled() && !event->commitString().isEmpty())history_.beginGroup(true);
     if (!event->commitString().isEmpty()) {
         const std::string committed = event->commitString().toUtf8().toStdString();
         if (event->replacementLength() != 0 || event->replacementStart() != 0) {
@@ -2705,7 +2808,7 @@ QRect EditorWidget::inputCursorRect() const {
     int x=gutterWidth()+12+cursorPixelColumn()-horizontalScrollBar()->value();
     if (!preeditText_.isEmpty()) x += textWidth(preeditText_.left(preeditCursor_));
     const int y = (visualRowForLine(static_cast<int>(lineNo)) - verticalScrollBar()->value()) * lineHeight();
-    return QRect(x, y, 2, lineHeight());
+    return QRect(x, y, vimCaretWidth(), lineHeight());
 }
 
 QVariant EditorWidget::inputMethodQuery(Qt::InputMethodQuery query) const {
@@ -2713,6 +2816,7 @@ QVariant EditorWidget::inputMethodQuery(Qt::InputMethodQuery query) const {
     const auto begin=buffer_.byteAtCodePoint(buffer_.codePointsBefore(cursorPosition_>limit/2?cursorPosition_-limit/2:0));
     const auto end=std::min(buffer_.size(),buffer_.byteAtCodePoint(buffer_.codePointsBefore(std::min(buffer_.size(),cursorPosition_+limit/2))));
     switch (query) {
+    case Qt::ImEnabled: return vim_.acceptsText() && !busy_;
     case Qt::ImCursorRectangle: return inputCursorRect();
     case Qt::ImFont: return font();
     case Qt::ImAbsolutePosition: return static_cast<int>(std::min<std::size_t>(INT_MAX,buffer_.utf16Before(cursorPosition_)));
@@ -2740,12 +2844,14 @@ void EditorWidget::resizeEvent(QResizeEvent* event) {
     QAbstractScrollArea::resizeEvent(event);
     layoutMiniMap();
     positionFindBar();
+    positionVimCommandLine();
     updateScrollBars();
     ensureCursorVisible();
     emit semanticViewportChanged();
 }
 
 void EditorWidget::scrollContentsBy(int, int) {
+    updateVimSearchHighlights();
     emit semanticViewportChanged();
     // The viewport is painted from the current logical scroll offsets; scrolling
     // pixels from the previous frame would leave stale glyphs behind.
@@ -2786,6 +2892,7 @@ int EditorWidget::semanticTokenCount() const {
     int count=0; for(const auto& row:semanticLines_) count+=row.size(); return count;
 }
 void EditorWidget::invalidateSemanticLines(std::size_t firstLine,std::size_t byteColumn,std::string_view removed,std::string_view inserted) {
+    captureVimEdit(buffer_.lineStart(firstLine)+byteColumn,removed,inserted);
     const int removedLines = static_cast<int>(std::count(removed.begin(),removed.end(),'\n'));
     const int insertedLines = static_cast<int>(std::count(inserted.begin(),inserted.end(),'\n'));
     adjustDiffAlignment(firstLine, removedLines, insertedLines);
@@ -2873,6 +2980,7 @@ void EditorWidget::prepareEditorConfigSave(const QString& path,std::function<voi
 void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modifies,std::function<void()> committed,
                                     std::function<void(bool)> completed) {
     if(busy_)return;
+    const bool historyReplay=vimApplyingHistory_;
     setBusy(true);const auto revision=lspRevision_;const auto doc=document_;QPointer<EditorWidget> guard(this);
     auto cancelled=std::make_shared<std::atomic<bool>>(false);auto percent=std::make_shared<std::atomic<int>>(0);
     connect(this,&QObject::destroyed,[cancelled]{cancelled->store(true);});
@@ -2880,19 +2988,26 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
     connect(progress,&QProgressDialog::canceled,progress,[cancelled]{cancelled->store(true);});
     auto* tick=new QTimer(progress);tick->setInterval(50);connect(tick,&QTimer::timeout,progress,[progress,percent,cancelled]{if(progress->wasCanceled())cancelled->store(true);else progress->setValue(percent->load());});tick->start();
     auto* watcher=new QFutureWatcher<std::shared_ptr<BulkResult>>(this);
-    connect(watcher,&QFutureWatcher<std::shared_ptr<BulkResult>>::finished,this,[this,guard,watcher,progress,revision,modifies,cancelled,committed,completed] {
+    const auto trackedVimAnchors=VimState::Session::instance().anchors(this);
+    std::vector<std::shared_ptr<VimEx::LineMarks>> trackedExLines;for(const auto& frame:vimExFrames_)if(frame.marks)trackedExLines.push_back(frame.marks);
+    connect(watcher,&QFutureWatcher<std::shared_ptr<BulkResult>>::finished,this,[this,guard,watcher,progress,revision,modifies,cancelled,committed,completed,trackedVimAnchors,trackedExLines,historyReplay] {
         const auto result=watcher->result();
         if(progress->wasCanceled())cancelled->store(true);
         watcher->deleteLater();progress->deleteLater();if(!guard)return;
         setBusy(false);
-        if(result->cancelled || cancelled->load() || lspRevision_!=revision){applyHistorySettings();if(completed)completed(false);return;}
-        if(!result->error.isEmpty()){emit highlightingStatusChanged(result->error);if(completed)completed(false);return;}
+        if(result->cancelled || cancelled->load() || lspRevision_!=revision){applyHistorySettings();if(completed)completed(false);if(vimExExecuting_)finishVimEx(I18n::text("Vim: command cancelled"),true);return;}
+        if(!result->error.isEmpty()){if(!vimExSilent())emit highlightingStatusChanged(result->error);if(completed)completed(false);if(vimExExecuting_)finishVimEx(result->error);return;}
         if(modifies && result->changed) {
+            for(std::size_t i=0;i<trackedExLines.size() && i<result->exLineMarks.size();++i)*trackedExLines[i]=result->exLineMarks[i];
             QMap<int,int> anchors;
             for(const auto& [original,mapped]:result->lineAnchors) anchors.insert(original,mapped);
             if(!anchors.isEmpty()) emit debugAnchorsMoved(anchors);
+            for(qsizetype i=0;i<trackedVimAnchors.size() && std::size_t(i)<result->vimAnchors.size();++i){trackedVimAnchors[i]->offset=result->vimAnchors[std::size_t(i)];
+                if(std::size_t(i)<result->vimLostPositions.size())for(auto it=result->vimLostPositions[std::size_t(i)].cbegin();it!=result->vimLostPositions[std::size_t(i)].cend();++it)if(!trackedVimAnchors[i]->lostPositions.contains(it.key()))trackedVimAnchors[i]->lostPositions.insert(it.key(),it.value());
+                while(trackedVimAnchors[i]->lostPositions.size()>256)trackedVimAnchors[i]->lostPositions.erase(trackedVimAnchors[i]->lostPositions.begin());}
             diffHighlights_.clear();
             const auto top=verticalScrollBar()->value();buffer_=std::move(*result->buffer);history_=std::move(*result->history);
+            if(!historyReplay && result->editBegin)noteVimEdit(*result->editBegin,result->editEnd.value_or(*result->editBegin)-*result->editBegin);
             cursorPosition_=std::min(result->cursor.cursorPosition,buffer_.size());cursors_=result->cursor.cursorPositions.empty()?std::vector<std::size_t>{cursorPosition_}:result->cursor.cursorPositions;
             cursorAnchors_.assign(cursors_.size(),std::nullopt);clearAllSelections();invalidateLineCache();horizontalExtentDirty_=true;
             clearSemanticHighlighting();highlighter_.setDocumentText(buffer_);setModified(history_.isModified());updateScrollBars();verticalScrollBar()->setValue(top);ensureCursorVisible();viewport()->update();
@@ -2902,31 +3017,43 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
         applyHistorySettings();
         if(completed)completed(true);
     });
-    watcher->setFuture(QtConcurrent::run([doc,task=std::move(task),cancelled,percent,anchors=debugBreakpoints_.values()] {
+    const auto vimAnchors=VimState::Session::instance().anchors(this);
+    std::vector<std::size_t> vimPositions;for(const auto& p:vimAnchors)vimPositions.push_back(p->offset);
+    std::vector<VimEx::LineMarks> exLines;for(const auto& marks:trackedExLines)exLines.push_back(*marks);
+    watcher->setFuture(QtConcurrent::run([vimPositions,exLines=std::move(exLines),doc,task=std::move(task),cancelled,percent,anchors=debugBreakpoints_.values()] {
         auto result=std::make_shared<BulkResult>();
         const auto step=[&](int progress){if(cancelled->load())throw std::runtime_error("Operation cancelled");percent->store(progress);};
         try {
             step(0);result->buffer=std::make_shared<PieceTreeBuffer>(doc->buffer().snapshot());result->history=std::make_shared<EditHistory>(doc->history());step(0);
+            result->vimAnchors=vimPositions;result->vimLostPositions.resize(vimPositions.size());
+            result->exLineMarks=exLines;
+            result->buffer->editObserver=[&](std::size_t at,std::size_t removed,std::size_t inserted){
+                if(result->editBegin){*result->editBegin=VimState::Session::project(*result->editBegin,at,removed,inserted);*result->editEnd=VimState::Session::project(*result->editEnd,at,removed,inserted);}
+                result->editBegin=std::min(result->editBegin.value_or(at),at);result->editEnd=std::max(result->editEnd.value_or(at+inserted),at+inserted);
+                for(std::size_t i=0;i<result->vimAnchors.size();++i){auto& p=result->vimAnchors[i];if(removed && p>=at && p<=at+removed && !result->vimLostPositions[i].contains(result->history->stateId())){result->vimLostPositions[i].insert(result->history->stateId(),p);if(result->vimLostPositions[i].size()>256)result->vimLostPositions[i].erase(result->vimLostPositions[i].begin());}p=VimState::Session::project(p,at,removed,inserted);}};
             for(int line:anchors) result->lineAnchors.emplace(line,line);
-            if(!anchors.isEmpty()) result->buffer->lineEditObserver=[&](std::size_t row,std::size_t column,std::size_t removed,std::size_t inserted){
+            if(!anchors.isEmpty() || !exLines.empty()) result->buffer->lineEditObserver=[&](std::size_t row,std::size_t column,std::size_t removed,std::size_t inserted){
                 if(!removed && !inserted) return;
+                for(auto& marks:result->exLineMarks)marks.edit(qint64(row),qint64(column),qint64(removed),qint64(inserted));
                 for(auto& [original,line]:result->lineAnchors) { (void)original; line=projectLineAnchor(line,static_cast<int>(row),static_cast<int>(column),static_cast<int>(removed),static_cast<int>(inserted)); }
             };
             const auto state=result->history->stateId();
             result->cursor=task(*result->buffer,*result->history,result->clipboard,step);
             result->changed=result->history->stateId()!=state;
-            result->buffer->lineEditObserver={};step(100);
+            result->buffer->lineEditObserver={};result->buffer->editObserver={};step(100);
         } catch(const std::exception& error){result->cancelled=cancelled->load();result->error=QString::fromUtf8(error.what());}
         return result;
     }));
 }
 void EditorWidget::pasteClipboard() {
+    if(!vim_.acceptsText())return;
     const auto* stored=dynamic_cast<const StoredClipboard*>(QApplication::clipboard()->mimeData());
     const auto source=stored?stored->file:std::shared_ptr<ChunkedFile>{};
     const QString text=source?QString{}:QApplication::clipboard()->text();
     if(!source && text.size()<512*1024){replaceSelection(text.toUtf8().toStdString());return;}
     replaceSelectionsInBackground(text,source);
 }
+
 bool EditorWidget::selectionsNeedBackground() const {
     std::size_t size=0;for(std::size_t i=0;i<cursors_.size();++i){const auto [a,b]=cursorSelectionRange(i);size+=b-a;if(size>=1024*1024)return true;}
     return false;
@@ -2959,6 +3086,7 @@ void EditorWidget::replaceSelectionsInBackground(const QString& text,std::shared
 }
 void EditorWidget::copySelection(bool cut) {
     if(busy_)return;
+    if(vimVisualBlock_){vimRegister_='+';editVimBlock(cut?VimController::Command::Delete:VimController::Command::Yank);return;}
     std::vector<std::pair<std::size_t,std::size_t>> ranges;
     for(std::size_t i=0;i<cursors_.size();++i)if(cursorHasSelection(i))ranges.push_back(cursorSelectionRange(i));
     if(ranges.empty())return;
@@ -3016,7 +3144,7 @@ void EditorWidget::replaceAllInBackground(const QString& replacement) {
     });
 }
 
-EditorWidget::~EditorWidget() {if(findCancelled_)findCancelled_->store(true);}
+EditorWidget::~EditorWidget() {if(vimSearchCancelled_)vimSearchCancelled_->store(true);if(VimState::Session::instance().recordingOwner==this)toggleVimRecording();persistVimAnchors();buffer_.editObserver={};buffer_.lineEditObserver={};if(findCancelled_)findCancelled_->store(true);}
 
 void EditorWidget::copyLines(int direction) { editLines(direction,true); }
 void EditorWidget::moveLines(int direction) { editLines(direction,false); }

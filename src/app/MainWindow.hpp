@@ -19,6 +19,7 @@ class RecoveryStore;
 class WorkspaceIndex;
 class ProjectExplorer;
 class EditorWidget;
+namespace VimEx {struct Invocation;}
 class QLabel;
 class QTabWidget;
 class EditorTabs;
@@ -58,7 +59,7 @@ protected:
 
 private:
     void createUi();
-    void requestClose(QVector<QPointer<EditorWidget>> editors, bool window);
+    void requestClose(QVector<QPointer<EditorWidget>> editors, bool window, bool discard = false);
     void advanceClose();
     void finishClose(bool accepted);
     void checkpointRecovery();
@@ -98,6 +99,9 @@ private:
     QSet<EditorWidget*> externallyReloading_;
 
     void createMenus();
+    void applyVimSettings();
+    void updateVimIndicator();
+    QLabel* vimStatus_{nullptr};
     void scheduleOutline();
     void refreshOutline();
     OutlinePanel* outline_{nullptr};
@@ -129,6 +133,8 @@ private:
     void openFile(const QString& path, int line = 0, int column = 0, int length = 0,
                   bool centerTarget = true);
     EditorWidget* createEditor(const QString& path);
+    quint64 vimNextBufferId_{1};
+    QPointer<EditorWidget> vimLastEditor_,vimAlternateEditor_;
     void formatDocument();
     void renameSymbol();
     void navigateSymbol(const QString& method);
@@ -141,7 +147,8 @@ private:
     void stageGitPaths(const QString& repository, const QStringList& paths, quint64 generation);
     void saveCurrentFile();
     void saveEditor(EditorWidget* editor, std::function<void(bool)> completion = {}, bool saveAs = false);
-    void writeEditor(EditorWidget* editor,const QString& path,const QByteArray& expected,std::function<void(bool)> completion);
+    void writeEditor(EditorWidget* editor,const QString& path,const QByteArray& expected,std::function<void(bool)> completion,bool reportDialog=true);
+    void executeVimEx(EditorWidget* editor,const VimEx::Invocation& command,std::function<void(QString)> completed);
     void saveAllFiles();
     void saveCurrentFileAs();
     void updateWindowTitle();

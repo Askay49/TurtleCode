@@ -18,6 +18,12 @@
 #include "SyntaxHighlighter.hpp"
 #include "SmartEditing.hpp"
 #include "EditorConfig.hpp"
+#include "VimController.hpp"
+#include "VimMotions.hpp"
+#include "VimState.hpp"
+#include "VimBlock.hpp"
+#include "VimEx.hpp"
+#include <deque>
 #include "language/SemanticHighlighting.hpp"
 #include "language/LspAdaptivePolicy.hpp"
 #include "document/Document.hpp"
@@ -51,6 +57,21 @@ public:
     void loadBuffer(PieceTreeBuffer buffer, const QString& path);
     void restoreBuffer(PieceTreeBuffer buffer, const QString& path);
     void reloadBuffer(PieceTreeBuffer buffer, const QString& path);
+    void setVimEnabled(bool enabled);
+    bool vimEnabled() const { return vim_.enabled(); }
+    VimController::Mode vimMode() const { return vim_.mode(); }
+    QString vimModeName() const;
+    bool vimCommandLineActive() const {return vimExActive_;}
+    bool vimCommandExecuting() const {return vimExExecuting_;}
+    bool vimSearchRunning() const {return vimSearchRunning_;}
+    bool vimSubstitutionConfirming() const {return vimSubConfirm_;}
+    void stopVimExecution() {vimExRemaining_.clear();cancelVimExFrames();cancelVimReplay();}
+    bool isVimReplaying() const {return !vimReplay_.empty() || vimReplayScheduled_;}
+    void recordVimJump() {pushVimJump();}
+    void resetVimMode() {if(vim_.enabled()){switchVimMode(VimController::Mode::Normal);finishVimChange();}}
+    void transferVimReplay(EditorWidget* target);
+    void transferVimEx(EditorWidget* target);
+    void reportVimExMessage(const QString& message){vimExMessage(message);}
     void applyHistorySettings();
     void applyFontSettings();
     void refreshEditorConfig();
@@ -97,6 +118,7 @@ public:
     void updateFilePathAfterRename(const QString& path);
     void detachDeletedFile();
     void markFileMissing();
+    void markDiskDiverged();
     void refreshSyntaxHighlighting();
     void goToLine(int oneBasedLine);
     [[nodiscard]] QPoint navigationPosition() const;
@@ -135,6 +157,10 @@ public:
     void applyWorkspaceEdits(std::vector<EditChange> changes);
 
 signals:
+    void vimExInterruptRequested();
+    void vimExRequested(const VimEx::Invocation& command, std::function<void(QString)> completed);
+    void vimNavigateRequested(const QString& path,int line,int column);
+    void vimModeChanged();
     void debugAnchorsMoved(const QMap<int,int>& anchors);
     void debugLinesEdited(int row,int column,int removed,int inserted);
     void breakpointToggled(int oneBasedLine);
@@ -163,6 +189,177 @@ protected:
 
 private:
     friend class EditorMiniMap;
+    struct ExScope {
+        bool silent{},ignoreErrors{},keepJumps{},keepPatterns{};
+        QString pattern,offset,subPattern;QStringList searchHistory;bool direction{};
+    };
+    struct ExFrame {
+        enum Kind {Global,Normal,Register,ResumeNormal} kind{Global};
+        std::shared_ptr<VimEx::LineMarks> marks;
+        QString body,after;QStringList lines;int index{};bool preserveColumn{};
+        std::optional<ExScope> scope;
+    };
+    std::vector<ExFrame> vimExFrames_;
+    std::optional<ExScope> vimExScope_;
+    std::optional<ExScope> vimExParseState_;
+    bool vimExNormal_{false};int vimExSteps_{};
+    bool vimExSilent() const;
+    bool vimExIgnoreErrors() const;
+    void restoreVimExScope(std::optional<ExScope>& scope);
+    void vimExMessage(const QString& message);
+    void beginVimGlobal(const VimEx::Invocation& command);
+    void beginVimNormal(const VimEx::Invocation& command);
+    bool nextVimExFrame();
+    void editVimExLines(const VimEx::Invocation& command,bool normal=false);
+    void readVimExFile(const VimEx::Invocation& command);
+    void executeVimExRegister(const VimEx::Invocation& command);
+    void projectVimExLines(std::size_t row,std::size_t column,std::size_t removed,std::size_t inserted);
+    void cancelVimExFrames();
+    void renameVimAnchors(const QString& path);
+    QFrame* vimExBar_{nullptr};
+    QLineEdit* vimExInput_{nullptr};
+    QLabel* vimExHints_{nullptr};
+    QLabel* vimExPrompt_{nullptr};
+    QChar vimCommandPrompt_{':'};
+    VimController::Action vimSearchAction_;
+    std::size_t vimSearchOrigin_{},vimLastSearchCursor_{},vimLastSearchPosition_{};
+    std::optional<std::size_t> vimSearchOriginAnchor_;
+    int vimSearchOriginTop_{},vimSearchOriginLeft_{};
+    std::optional<VimSearch::Match> vimLastSearchMatch_;
+    std::shared_ptr<VimSearch::Subject> vimSearchSubject_;
+    quint64 vimSearchSubjectRevision_{},vimSearchGeneration_{};
+    std::shared_ptr<std::atomic<bool>> vimSearchCancelled_;
+    QTimer* vimSearchTimer_{nullptr};
+    struct VimSearchHighlight {std::size_t begin,end;};
+    std::vector<VimSearchHighlight> vimSearchHighlights_;
+    bool vimSearchRunning_{false},vimHighlightHidden_{false};
+    std::shared_ptr<VimSearch::Plan> vimSubPlan_;
+    std::optional<std::size_t> vimSubGlobalLast_;
+    bool vimSubConfirm_{false};
+    std::size_t vimSubIndex_{},vimSubAccepted_{};
+    std::ptrdiff_t vimSubDelta_{};
+    quint64 vimSubRevision_{};
+    QString vimSubPrintFlags_;
+    void startVimSearch(const VimController::Action& action);
+    void previewVimSearch();
+    void commitVimSearch(const QString& input);
+    void navigateVimSearch(const QString& pattern,bool forward,const VimController::Action& action,const QString& offset={},bool repeat=false,std::optional<std::size_t> anchor={});
+    void updateVimSearchHighlights();
+    void invalidateVimSearch();
+    void applyVimSearchMatch(const VimSearch::Match&,const QString& offset,const VimController::Action&,bool forward);
+    void beginVimSubstitute(const VimEx::Invocation& command,std::shared_ptr<VimEx::LineMarks> selected={});
+    void applyVimSubstitutionPlan(std::size_t from=0,std::ptrdiff_t delta=0);
+    void nextVimSubstitution();
+    bool answerVimSubstitution(QKeyEvent*);
+    void finishVimSubstitution(bool interrupted=false);
+    bool vimExActive_{false},vimExExecuting_{false},vimExRegisterPending_{false};
+    quint64 vimExGeneration_{};
+    QString vimExRemaining_,vimExDraft_,vimExHistoryPrefix_,vimExCompletionBase_;
+    QStringList vimExCompletions_;
+    int vimExHistoryIndex_{},vimExCompletionIndex_{-1};
+    void showVimCommandLine(int count=0,QChar prompt=':');
+    void closeVimCommandLine();
+    void positionVimCommandLine();
+    bool filterVimCommandLine(QEvent* event);
+    void executeVimCommandLine(const QString& line);
+    void continueVimEx();
+    void executeVimExParsed(const VimEx::Parsed&);
+    void scheduleVimEx(int delay=0);
+    void finishVimEx(const QString& error={},bool fatal=false);
+    void completeVimEx(int direction);
+    void updateVimExHints();
+    bool vimOwnsFocus() const;
+    VimController vim_;
+    QChar vimRegister_;
+    bool vimForceNumbered_{false};
+    std::optional<VimState::Register> vimPutValue_;
+    bool vimVisualBlock_{false},vimBlockInsert_{false},vimBlockChange_{false};
+    int vimBlockAnchorColumn_{},vimBlockVirtualColumn_{-1};
+    int vimBlockAnchorEnd_{};
+    std::size_t vimBlockExitPosition_{};
+    bool vimBlockToEnd_{false};
+    bool vimCaptureInsertEdit_{false},vimHandlingKey_{false},vimSendingReplay_{false};
+    bool vimRepeatingDot_{false};
+    QVector<VimState::Input> vimCommandKeys_,vimChangeKeys_;
+    std::shared_ptr<ChunkedFile> vimEditPayload_;
+    bool vimChangeActive_{false};std::uint64_t vimChangeBefore_{};
+    bool vimChangeTooLarge_{false};
+    bool vimChangeInserted_{false};std::string vimInsertedText_;
+    struct ReplayFrame {QVector<VimState::Input> inputs;qsizetype index{};int remaining{1};bool exNormal{false};};
+    std::vector<ReplayFrame> vimReplay_;
+    int vimReplaySteps_{};bool vimReplayCancel_{false},vimReplayScheduled_{false};
+    QChar vimReplayRegister_;
+    struct ReplaceStep {std::size_t begin;std::string before,after;};
+    std::vector<ReplaceStep> vimReplaced_;
+    bool beginVimKey(QKeyEvent*);
+    void endVimKey();
+    void finishVimChange();
+    void editVimNormal(const VimController::Action&);
+    void transformVimRange(std::size_t begin,std::size_t end,VimController::Command,bool linewise=false);
+    void noteVimEdit(std::size_t begin,std::size_t length);
+    void setVimEditMarks(std::size_t begin,std::size_t end);
+    void commitVimChangeLocation();
+    void jumpVimChange(int direction,int count);
+    QVector<VimState::Anchor> vimChanges_;int vimChangeIndex_{};
+    VimState::Anchor vimPendingChange_;
+    bool vimApplyingHistory_{false};
+    void beginVimChange();
+    void captureVimEdit(std::size_t at,std::string_view removed,std::string_view inserted);
+    void replayVim(QVector<VimState::Input> inputs,int count=1);
+    void continueVimReplay();
+    void cancelVimReplay();
+    void playVimMacro(QChar name,int count);
+    void toggleVimRecording(QChar name={});
+    void repeatVimChange(int count,bool explicitCount);
+    void applyVimInput(const VimState::Input&);
+    void putVimRegister(QChar name,bool before,int count,bool insert=false);
+    void storeVimRegister(QChar name,const VimState::Register&,bool yank,bool smallDelete,bool forceNumbered=false,const VimState::Register* appended=nullptr);
+    void replaceVimText(const QString& text,bool single=false,int count=1);
+    void replaceVimPayload(std::shared_ptr<ChunkedFile> source,int count=1,bool leaveReplace=false);
+    void backspaceVimReplace();
+    QString vimMarkKey() const;
+    VimState::Anchor vimLocation();
+    void attachVimAnchors();
+    void projectVimAnchors(std::size_t at,std::size_t removed,std::size_t inserted);
+    void saveVimMark(QChar name);
+    void jumpVimMark(QChar name,bool linewise,VimController::Command operation=VimController::Command::Consume,bool keepJumps=false);
+    void applyVimMark(const VimState::Anchor&,bool linewise,VimController::Command,bool keepJumps);
+    void pushVimJump();
+    void jumpVimHistory(int direction,int count);
+    void restoreVimLocation(const VimState::Anchor&,bool linewise=false);
+    void persistVimAnchors();
+    std::vector<std::pair<std::size_t,std::size_t>> vimBlockRanges() const;
+    std::pair<int,int> vimBlockColumns() const;
+    void editVimBlock(VimController::Command command,int count=1,const QString& text={});
+    void putVimBlock(const VimState::Register&,bool before,int count);
+    void drawVimBlock(QPainter&) const;
+    std::uint64_t vimHistoryState_{0};
+    int vimPreferredX_{-1};
+    bool vimVisualLine_{false};
+    // A file terminator and an empty logical last line share the same bytes.
+    // Keep the loaded Vim EOL convention while edits add/remove blank lines.
+    bool vimFinalNewline_{false};
+    VimController::Command vimLastFind_{VimController::Command::Consume};
+    QChar vimFindCharacter_;
+    int vimInsertCount_{1};
+    std::size_t vimInsertStart_{};
+    std::string vimInsertPrefix_;
+    bool repeatVimInsert();
+    void replayVimHistory(bool redoEdit,int count);
+    void resolveVimAction(VimController::Action action);
+    void applyVimAction(const VimController::Action&,const VimMotions::Range&);
+    void editVimRange(std::size_t begin,std::size_t end,VimController::Command operation,bool linewise);
+    void pasteVim(bool before,int count,bool ex=false);
+    void indentVim(std::size_t first,std::size_t last,bool unindent,int count=1);
+    bool handleVimKey(QKeyEvent* event);
+    void switchVimMode(VimController::Mode mode,bool fromEscape=false);
+    void normalizeVimCursor();
+    void refreshVimPresentation();
+    int vimCaretWidth() const;
+    std::size_t vimLineStart(std::size_t line) const;
+    std::size_t lineContentEnd(std::size_t line) const;
+    std::size_t graphemeBoundaryAt(std::size_t position,bool forward) const;
+    std::size_t vimSelectionEnd(std::size_t position) const;
     void layoutMiniMap();
     EditorMiniMap* miniMap_{nullptr};
     bool miniMapEnabled_{false};
@@ -246,7 +443,7 @@ private:
     void addCursorVertically(int direction);
     [[nodiscard]] bool cursorHasSelection(std::size_t index) const;
     [[nodiscard]] std::pair<std::size_t, std::size_t> cursorSelectionRange(std::size_t index) const;
-    [[nodiscard]] bool hasSelection() const { return anchor_.has_value() && *anchor_ != cursorPosition_; }
+    [[nodiscard]] bool hasSelection() const { return anchor_.has_value() && (*anchor_ != cursorPosition_ || (vim_.enabled() && vim_.mode()==VimController::Mode::Visual && cursorPosition_<buffer_.size())); }
     [[nodiscard]] std::pair<std::size_t, std::size_t> selectionRange() const;
 
     QVector<int> diffRows_, diffLineRows_;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(TurtleCode VERSION 0.9.8 LANGUAGES C CXX)
+project(TurtleCode VERSION 0.9.9 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -30,7 +30,12 @@ target_compile_options(turtle-code-text-core PRIVATE
 if(TURTLE_CODE_BUILD_APP)
     configure_file(src/app/Version.hpp.in generated/app/Version.hpp @ONLY)
     find_package(Qt6 6.2.4 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent Test)
+    add_library(turtle-code-vim STATIC src/editor/VimController.cpp src/editor/VimState.cpp src/editor/VimBlock.cpp src/editor/VimMotions.cpp src/editor/VimNormal.cpp src/editor/VimEx.cpp src/editor/VimSearch.cpp src/editor/UnicodeNavigation.cpp)
+    target_include_directories(turtle-code-vim PUBLIC src)
+    target_link_libraries(turtle-code-vim PUBLIC turtle-code-text-core Qt6::Core Qt6::Gui)
     find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PCRE2_VIM REQUIRED IMPORTED_TARGET libpcre2-8>=10.34)
+    target_link_libraries(turtle-code-vim PUBLIC PkgConfig::PCRE2_VIM)
     pkg_check_modules(LIBGIT2 REQUIRED IMPORTED_TARGET libgit2>=1.1)
     pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
     pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-16)
@@ -79,9 +84,16 @@ if(TURTLE_CODE_BUILD_APP)
               third_party/seti/language-associations.json)
     qt_add_resources(turtle-code-themes turtle_code_highlighting
         PREFIX "/highlighting" BASE "${CMAKE_CURRENT_SOURCE_DIR}"
-        FILES themes/tokyo-night-vscode.json)
+        FILES themes/tokyo-night-vscode.json
+              themes/catppuccin-latte.json themes/catppuccin-frappe.json
+              themes/catppuccin-macchiato.json themes/catppuccin-mocha.json)
 
     if(BUILD_TESTING)
+        add_executable(turtle-code-vim-search-tests EXCLUDE_FROM_ALL tests/VimSearchTests.cpp)
+        target_link_libraries(turtle-code-vim-search-tests PRIVATE turtle-code-vim Qt6::Core)
+        target_compile_options(turtle-code-vim-search-tests PRIVATE -UNDEBUG)
+        add_test(NAME vim-search-core COMMAND turtle-code-vim-search-tests)
+        set_tests_properties(vim-search-core PROPERTIES TIMEOUT 90)
         add_executable(turtle-code-workspace-scale-tests EXCLUDE_FROM_ALL tests/WorkspaceScaleTests.cpp)
         target_link_libraries(turtle-code-workspace-scale-tests PRIVATE turtle-code-workspace)
         target_compile_options(turtle-code-workspace-scale-tests PRIVATE -UNDEBUG)
@@ -147,6 +159,7 @@ if(TURTLE_CODE_BUILD_APP)
         src/document/Document.cpp
         src/document/Document.hpp
         src/app/MainWindow.cpp
+        src/app/MainWindowVim.cpp
         src/app/MainWindow.hpp
         src/debug/DapClient.cpp
         src/debug/DapClient.hpp
@@ -295,6 +308,8 @@ if(TURTLE_CODE_BUILD_APP)
         set_tests_properties(git-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME project-scale-window COMMAND turtle-code-window-tests --project-scale)
         set_tests_properties(project-scale-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+        add_test(NAME vim-window COMMAND turtle-code-window-tests --vim)
+        set_tests_properties(vim-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME command-palette COMMAND turtle-code-window-tests --commands)
         set_tests_properties(command-palette PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
         add_test(NAME formatting COMMAND turtle-code-window-tests --formatting)
@@ -326,6 +341,18 @@ if(TURTLE_CODE_BUILD_APP)
             turtle-code-icons
             turtle-code-themes
             turtle-code-text-core Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Concurrent Qt6::Test)
+        add_test(NAME vim-editor COMMAND turtle-code-editor-tests --vim)
+        add_test(NAME vim-session COMMAND turtle-code-editor-tests --vim-session)
+        add_test(NAME vim-ex COMMAND turtle-code-editor-tests --vim-ex)
+        add_test(NAME vim-normal COMMAND turtle-code-editor-tests --vim-normal)
+        set_tests_properties(vim-normal PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
+        add_test(NAME vim-ex-extended COMMAND turtle-code-editor-tests --vim-ex-extended)
+        set_tests_properties(vim-ex-extended PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+        add_test(NAME vim-search COMMAND turtle-code-editor-tests --vim-search)
+        set_tests_properties(vim-search PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+        set_tests_properties(vim-ex PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+        set_tests_properties(vim-session PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+        set_tests_properties(vim-editor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME smart-editing COMMAND turtle-code-editor-tests --smart-editing)
         set_tests_properties(smart-editing PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME editor-widget COMMAND turtle-code-editor-tests)
@@ -480,12 +507,14 @@ if(TURTLE_CODE_BUILD_APP)
         FILES_MATCHING PATTERN "*.svg" PATTERN "*.png")
     install(FILES LICENSE DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/turtle-code")
     install(FILES third_party/libgit2/COPYING DESTINATION share/licenses/turtle-code RENAME libgit2.COPYING)
+    install(FILES third_party/catppuccin/LICENSE DESTINATION share/licenses/turtle-code RENAME catppuccin.LICENSE)
     install(FILES third_party/libvterm/LICENSE DESTINATION share/licenses/turtle-code RENAME libvterm.LICENSE)
 endif()
 
 foreach(editor_target turtle-code turtle-code-editor-tests turtle-code-window-tests)
     if(TARGET ${editor_target})
-        target_link_libraries(${editor_target} PRIVATE turtle-code-editorconfig)
+        target_link_libraries(${editor_target} PRIVATE turtle-code-editorconfig turtle-code-vim)
+        target_sources(${editor_target} PRIVATE src/editor/EditorVim.cpp src/editor/EditorVimEdits.cpp src/editor/EditorVimSession.cpp src/editor/EditorVimBlock.cpp src/editor/EditorVimEx.cpp src/editor/EditorVimSearch.cpp src/editor/EditorVimSubstitute.cpp src/editor/EditorVimExRuntime.cpp src/editor/EditorVimExLines.cpp src/editor/EditorVimNormal.cpp)
     endif()
 endforeach()
 # Tests are opt-in build targets, never part of the default application build.

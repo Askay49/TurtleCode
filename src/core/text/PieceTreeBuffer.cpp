@@ -73,15 +73,13 @@ PieceTreeBuffer::split(NodePtr root, std::size_t offset) {
     const std::size_t leftBytes = bytes(root->left);
     if (offset < leftBytes) {
         auto parts = split(std::move(root->left), offset);
-        root->left = std::move(parts.second);
         refresh(*root);
-        return {std::move(parts.first), std::move(root)};
+        return {std::move(parts.first), merge(std::move(parts.second),std::move(root))};
     }
     if (offset > leftBytes + root->length) {
         auto parts = split(std::move(root->right), offset - leftBytes - root->length);
-        root->right = std::move(parts.first);
         refresh(*root);
-        return {std::move(root), std::move(parts.second)};
+        return {merge(std::move(root),std::move(parts.first)), std::move(parts.second)};
     }
     if (offset == leftBytes) {
         auto left = std::move(root->left);
@@ -104,9 +102,12 @@ PieceTreeBuffer::split(NodePtr root, std::size_t offset) {
     const auto data=sourceView(source,start,root->length);
     const auto firstNewlines=static_cast<std::size_t>(std::count(data.bytes.begin(),data.bytes.begin()+firstLength,'\n'));
     const auto secondNewlines=static_cast<std::size_t>(std::count(data.bytes.begin()+firstLength,data.bytes.end(),'\n'));
-    NodePtr first(new Node(source, start, firstLength, root->priority, firstNewlines,codePoints(data.bytes.substr(0,firstLength)),utf16Units(data.bytes.substr(0,firstLength))));
+    // Fragments need independent priorities. Reusing/toggling the old priority
+    // makes repeated short replacements form a linear tree. Recursive callers
+    // re-merge their path because these new roots may outrank an ancestor.
+    NodePtr first(new Node(source, start, firstLength, nextPriority(), firstNewlines,codePoints(data.bytes.substr(0,firstLength)),utf16Units(data.bytes.substr(0,firstLength))));
     NodePtr second(new Node(source, start + firstLength, root->length - firstLength,
-                            root->priority ^ 0x85ebca6bu, secondNewlines,codePoints(data.bytes.substr(firstLength)),utf16Units(data.bytes.substr(firstLength))));
+                            nextPriority(), secondNewlines,codePoints(data.bytes.substr(firstLength)),utf16Units(data.bytes.substr(firstLength))));
     return {merge(std::move(leftSubtree), std::move(first)),
             merge(std::move(second), std::move(rightSubtree))};
 }
@@ -141,6 +142,7 @@ void PieceTreeBuffer::insert(std::size_t offset, std::string_view value) {
     std::lock_guard lock(*mutex_);
     if (value.empty()) return;
     offset = std::min(offset, size());
+    if(editObserver)editObserver(offset,0,value.size());
     if(lineEditObserver) { const auto row=lineIndexAt(offset); lineEditObserver(row,offset-lineStart(row),0,std::count(value.begin(),value.end(),'\n')); }
     Source source=Source::Add;std::size_t start;
     if(value.size()>=1024u*1024u) {
@@ -168,6 +170,7 @@ void PieceTreeBuffer::erase(std::size_t offset, std::size_t length) {
     std::lock_guard lock(*mutex_);
     if (length == 0 || offset >= size()) return;
     length = std::min(length, size() - offset);
+    if(editObserver)editObserver(offset,length,0);
     if(lineEditObserver) {const auto row=lineIndexAt(offset); lineEditObserver(row,offset-lineStart(row),lineIndexAt(offset+length)-row,0);}
     auto first = split(std::move(root_), offset);
     auto second = split(std::move(first.second), length);
@@ -206,7 +209,7 @@ std::size_t PieceTreeBuffer::lineIndexAt(std::size_t offset) const noexcept {
 
 void PieceTreeBuffer::appendRange(const Node* node, std::size_t begin, std::size_t end,
                                   std::size_t base,std::string& out) const {
-    if (!node || begin >= end) return;
+    if (!node || begin >= end || end<=base || begin>=base+node->subtreeBytes) return;
     const std::size_t leftSize = node->left ? node->left->subtreeBytes : 0;
     const std::size_t pieceBase = base + leftSize;
     appendRange(node->left.get(), begin, end, base, out);

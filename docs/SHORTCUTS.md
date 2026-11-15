@@ -1,5 +1,8 @@
 # Keyboard shortcuts
 
+The optional [Vim mode](VIM.md) changes editor typing, selection and Escape
+handling. Dialogs, search fields and terminal retain their ordinary shortcuts.
+
 Open **Settings → Keyboard shortcuts / Горячие клавиши…**. Search by command name, category or ID. Select a row, focus the shortcut field and press the desired combination (up to four strokes), then click **Assign**. **Clear** disables the command shortcut. **Reset selected** and **Reset all** restore defaults. Click **Save** to apply all changes immediately; **Cancel** discards the draft.
 
 Conflicting shortcuts and shared chord prefixes are rejected. Window commands and editor commands overlap while the editor is focused, so they cannot reuse a shortcut. Text input, clipboard, undo/redo, normal cursor movement, selection and Ctrl+L line selection are fixed. Escape/Enter and navigation inside dialogs remain fixed. Advanced editor commands (extra cursors, select next occurrence, line copying and line movement) are configurable.

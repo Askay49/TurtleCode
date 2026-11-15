@@ -47,7 +47,7 @@ public:
     std::string takeNotice() { return std::exchange(notice_,{}); }
     struct StoredChange {std::size_t offset,removed,inserted;};
     void recordDiskBatch(const std::vector<StoredChange>& changes,std::shared_ptr<ChunkedFile> payload,
-                        std::vector<std::size_t> before,std::vector<std::size_t> after,std::int64_t timestampMs);
+                        std::vector<std::size_t> before,std::vector<std::size_t> after,std::int64_t timestampMs,std::size_t payloadOffset=0);
     void recordOnDisk(std::size_t offset,std::shared_ptr<ChunkedFile> payload,std::size_t removed,std::size_t inserted,
                       std::size_t cursorBefore,std::size_t cursorAfter,std::int64_t timestampMs);
     void clear() noexcept;
@@ -64,6 +64,11 @@ public:
     void markSaved() noexcept;
     void markUnsaved() noexcept { savedState_ = UINT64_MAX; }
     void breakCoalescing() noexcept { coalescingBarrier_ = true; }
+    // Explicit modal edit blocks can contain replacements, newlines and typing.
+    void beginGroup(bool redoAtStart=false) noexcept { if(!activeGroup_) { activeGroup_=nextGroup_++; discardingGroup_=false;groupRedoAtStart_=redoAtStart; breakCoalescing(); } }
+    void endGroup() noexcept { if(!compoundDepth_){activeGroup_=0;discardingGroup_=false;} breakCoalescing(); }
+    void beginCompoundGroup() noexcept { beginGroup(true);++compoundDepth_; }
+    void endCompoundGroup() noexcept { if(compoundDepth_)--compoundDepth_;endGroup(); }
     [[nodiscard]] bool isModified() const noexcept;
     [[nodiscard]] std::uint64_t stateId() const noexcept { return currentState_; }
     [[nodiscard]] bool canUndo() const noexcept { return !undo_.empty(); }
@@ -72,6 +77,7 @@ public:
 private:
     struct Command {
         std::shared_ptr<ChunkedFile> disk;
+        std::size_t diskOffset{};
         std::vector<std::size_t> lengths;
         std::size_t offset{};
         std::string removed;
@@ -85,6 +91,8 @@ private:
         std::uint64_t afterState{};
         EditKind kind{EditKind::Standalone};
         std::int64_t timestampMs{};
+        std::uint64_t group{};
+        bool redoAtStart{false};
     };
 
     Limits limits_;
@@ -103,4 +111,11 @@ private:
     std::uint64_t savedState_{0};
     std::uint64_t nextState_{1};
     bool coalescingBarrier_{true};
+    std::uint64_t activeGroup_{0}, nextGroup_{1};
+    bool replayingGroup_{false};
+    bool discardingGroup_{false};
+    bool groupRedoAtStart_{false};
+    unsigned compoundDepth_{};
+    std::optional<HistoryResult> undoOne(PieceTreeBuffer&,const EditApplied&,const std::function<void()>&);
+    std::optional<HistoryResult> redoOne(PieceTreeBuffer&,const EditApplied&,const std::function<void()>&);
 };
