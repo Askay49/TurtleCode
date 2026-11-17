@@ -48,20 +48,32 @@ ProjectExplorer::ProjectExplorer(QWidget* parent) : QTreeWidget(parent) {
     connect(this, &QWidget::customContextMenuRequested,
             this, &ProjectExplorer::showContextMenu);
 
-    connect(this,&QTreeWidget::itemClicked,this,[this](QTreeWidgetItem* item,int){
-        if(!item || !item->parent() || !item->data(0,Qt::UserRole+10).isValid())return;
-        auto* parent=item->parent();const auto path=parent->data(0,Qt::UserRole).toString();
-        pageOffsets_[path]=item->data(0,Qt::UserRole+10).toLongLong();loadDirectory(parent,true,true);
-    });
-    connect(this, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) {
-        loadDirectory(item);
-    });
-    connect(this, &QTreeWidget::itemDoubleClicked, this,
-            [this](QTreeWidgetItem* item, int) {
+    connect(this, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int){
+        if (!item) return;
+
+        if (item->parent() && item->data(0, Qt::UserRole + 10).isValid()) {
+            auto* parent = item->parent();
+            const auto path = parent->data(0, Qt::UserRole).toString();
+            pageOffsets_[path] = item->data(0, Qt::UserRole + 10).toLongLong();
+            loadDirectory(parent, true, true);
+            return;
+        }
+
         const QString path = item->data(0, Qt::UserRole).toString();
+
+        if (QFileInfo(path).isDir()) {
+            item->setExpanded(!item->isExpanded());
+            return;
+        }
+
         if (QFileInfo(path).isFile())
             emit fileActivated(path);
     });
+
+    connect(this, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) {
+        loadDirectory(item);
+    });
+
     connect(&watcher_, &QFileSystemWatcher::directoryChanged, this,
             [this](const QString& path) { dirtyDirectories_.insert(path); refreshTimer_.start(); emit filesChanged(); });
     refreshTimer_.setSingleShot(true);refreshTimer_.setInterval(250);
