@@ -55,6 +55,7 @@ public:
     bool incrementalSearch{true},wrapSearch{true},globalSubstitute{false};
     QStringList searchHistory;
     VimSearch::Options searchOptions;
+    QString dictionary,thesaurus;QString tags{"./tags,tags"};
     QString numberFormats{"bin,hex"};int textWidth{};bool joinSpaces{false};
     Anchor anchor(QObject* owner,const QString& path,std::size_t offset,QPoint position);
     QHash<QChar,Anchor>& marks(const QString& key);

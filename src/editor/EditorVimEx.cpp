@@ -214,7 +214,7 @@ void EditorWidget::finishVimEx(const QString& error,bool fatal){
     vimExFrames_.clear();vimExNormal_=false;
     ++vimExGeneration_;
     if(vimExExecuting_)history_.endCompoundGroup();
-    vimExExecuting_=false;vimExRemaining_.clear();commitVimChangeLocation();
+    vimExExecuting_=false;vimExRemaining_.clear();commitVimChangeLocation();resumeVimInsertNormal();
     vimSubConfirm_=false;vimSubPlan_.reset();vimSubGlobalLast_.reset();
     if(!error.isEmpty()){
         if(isVimReplaying())vimReplayCancel_=true;
@@ -295,6 +295,11 @@ void EditorWidget::executeVimExParsed(const VimEx::Parsed& parsed){
         for(auto option:command.arguments.split(' ',Qt::SkipEmptyParts)){
             bool value=true,toggle=option.endsWith('!'),report=option.endsWith('?');if(toggle || report)option.chop(1);
             if(option.startsWith("no")){value=false;option.remove(0,2);}
+            QString* source=nullptr;const auto optionName=option.section('=',0,0);
+            if(optionName=="dictionary" || optionName=="dict")source=&state.dictionary;
+            else if(optionName=="thesaurus" || optionName=="tsr")source=&state.thesaurus;
+            else if(optionName=="tags" || optionName=="tag")source=&state.tags;
+            if(source){if(option.contains('='))*source=option.mid(option.indexOf('=')+1);else vimExMessage(optionName+"="+*source);continue;}
             if(option.startsWith("nrformats=") || option.startsWith("nf=")){
                 const auto formats=option.mid(option.indexOf('=')+1).split(',',Qt::SkipEmptyParts);for(const auto& format:formats)if(!QStringList{"bin","hex","octal","alpha","unsigned"}.contains(format)){finishVimEx("E474: Invalid argument");return;}state.numberFormats=formats.join(',');continue;
             }

@@ -7,9 +7,10 @@
 void EditorWidget::editVimRange(std::size_t begin,std::size_t end,VimController::Command operation,bool linewise) {
     using C=VimController::Command;using Mode=VimController::Mode;
     if(operation==C::ToggleCase || operation==C::LowerCase || operation==C::UpperCase || operation==C::AutoIndent || operation==C::Format){transformVimRange(begin,end,operation,linewise);return;}
+    if(vim_.mode()==Mode::Visual){vimPreviousVisualRows_=buffer_.lineIndexAt(end>begin?end-1:end)-buffer_.lineIndexAt(begin)+1;vimPreviousVisualWidth_=std::max<std::size_t>(1,buffer_.codePointsBefore(end)-buffer_.codePointsBefore(begin));}
     const bool forceNumbered=std::exchange(vimForceNumbered_,false);
     begin=std::min(begin,buffer_.size());end=std::clamp(end,begin,buffer_.size());
-    if(begin==end && operation!=C::Change && !linewise)return;
+    if(begin==end && operation!=C::Change && !linewise){moveCursor(begin,false);return;}
     const auto selected=vimRegister_;auto captured=std::make_shared<VimState::Register>();captured->kind=linewise?VimState::Register::Line:VimState::Register::Character;
     const auto appendTo=selected.isUpper()?VimState::Session::instance().read(selected.toLower()):VimState::Register{};
     auto appended=std::make_shared<VimState::Register>();

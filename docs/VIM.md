@@ -1,4 +1,4 @@
-# Vim mode — stages 1–7
+# Vim mode — stages 1–8
 
 Enable **Settings → Vim mode / Настройки → Режим Vim**, or search for `Vim`
 in the command palette (**Ctrl+Shift+P**, command ID `settings.vimMode`).
@@ -251,6 +251,87 @@ plain keys in Normal/Visual do not insert text. Paste/cut typing shortcuts are
 blocked there; use Insert for text input. Multiple cursors are disabled while
 Vim is enabled outside block editing. Modal keys currently use the Latin layout.
 
+## Additional Insert and Visual commands
+
+**`is/as`** select a sentence or its surrounding whitespace. Counts, operators
+and repeated Visual objects work across lines and paragraphs. **`it/at`** select
+inside/around matching HTML/XML tag blocks; repeated Visual objects expand to
+tags and then enclosing blocks. Tag names ignore case, self-closing tags are
+skipped, and unmatched tags are tolerated, following Vim's text-object rules.
+This is a text scanner rather than an HTML parser. Nesting is bounded to 100,000
+pending tags. Visual word/sentence objects extend at the active end; paragraph
+objects remain linewise.
+
+**`gv`** restores the previous Visual selection, including line/block mode and
+orientation. In Visual it exchanges the current and previous selection. Saved
+endpoints follow edits and Undo. **`gn/gN`** select the current or next/previous
+match of the last search pattern, independently of its search direction; repeat
+in Visual to extend the selection. Counts and operators work, for example
+`cgn`, `2dgn`, then `.`. Search offsets do not apply to these match objects.
+
+**`gi`** starts Insert at the last Insert-exit mark; **`gI`** starts at column 1.
+Additional Insert/Replace bindings:
+
+| Keys | Action |
+| --- | --- |
+| `Ctrl+H`, `Ctrl+W`, `Ctrl+U` | Backspace, delete a word, delete entered text to the start of the line; repeat `Ctrl+U` to remove earlier text |
+| `Ctrl+T/D` | Increase/decrease indentation to the next/previous indentation boundary, using EditorConfig |
+| `0 Ctrl+D`, `^ Ctrl+D` | Remove indentation; `^` restores it on the next entered line |
+| `Ctrl+O` | Execute one Normal command, then return to Insert/Replace; operators, searches, Ex and macros can complete asynchronously |
+| `Ctrl+G u`, `Ctrl+G U` | Break the Undo group, or keep the next same-line left/right movement in it |
+| `Ctrl+Y/E` | Insert the character at the same logical column from the preceding/following line |
+| `Ctrl+A`, `Ctrl+@` / `Ctrl+Space` | Insert the last inserted text; the latter also leaves Insert |
+| `Ctrl+I`, `Ctrl+J/M` | Tab, newline with the editor's smart indentation |
+| `Ctrl+V/Q` | Literal input: next character, decimal (3 digits), `o` octal (3), `x` hex (2), `u` Unicode (4), `U` Unicode (8) |
+| `Ctrl+K {two characters}` | Built-in Vim digraph, e.g. `a:` → ä, `Eu` → € |
+| `Ctrl+C` | Leave Insert/Replace |
+
+Escape cancels a partial digraph. Literal Escape/Tab/Return are stored as
+characters when entered after `Ctrl+V`. A non-digit terminates a numeric literal
+and is then processed normally. IME commits retain the editor's normal Unicode
+input and clear an unfinished literal/digraph prefix. Replace backspacing
+restores directly overwritten text. These commands use the shared registers,
+history, dot-repeat and macro machinery.
+
+## Insert completion
+
+**`Ctrl+N/P`** cycle forward/backward through matching keywords in the current
+buffer. **`Ctrl+X`** selects a source:
+
+| Following key | Source |
+| --- | --- |
+| `Ctrl+N/P` | Current-buffer keywords |
+| `Ctrl+L` | Whole lines, initially searching backward; indentation is ignored |
+| `Ctrl+F` | Files/directories relative to the current file |
+| `Ctrl+K` | Files configured with `:set dictionary=words.txt,other.txt` (`dict`) |
+| `Ctrl+T` | Synonym lines in `:set thesaurus=synonyms.txt` (`tsr`) |
+| `Ctrl+I` | Current buffer and recursively included local files |
+| `Ctrl+D` | `#define` names in the buffer and those included files |
+| `Ctrl+]` | Names in ctags files configured with `:set tags=./tags,tags` (`tag`) |
+| `Ctrl+V` | Supported Ex command names |
+| `Ctrl+O/U` | Turtle Code's existing language-server completion |
+| `Ctrl+Z` | Stop the completion prefix |
+| `Ctrl+E/Y` | Scroll one screen row down/up |
+
+`Ctrl+N/P` cycle a source; repeating its source key also cycles it (`Ctrl+L`
+backward, others forward). The original prefix participates in the cycle.
+`Ctrl+Y` accepts, `Ctrl+E` restores the original prefix. Typing continues with the
+selected text. Built-in completion does not open a second popup; the existing
+language-server popup retains its Enter/Tab/Escape behavior. Dot repeats the
+accepted text; macros replay their completion keys. One Insert session remains
+one Undo group unless explicitly broken. Matching honors `ignorecase/smartcase`.
+
+Providers run in cancellable workers and never write their source files.
+Each scan reads up to 16 MiB, skips lines over 64 KiB and retains at most 2,000
+unique candidates. File completion visits at most 20,000 directory entries;
+include scans visit at most 256 distinct files and resolve paths relative to
+the including file. Dictionary/thesaurus/tags accept explicit comma-separated
+paths. Keywords come from the current buffer; Vim's `complete`, `path`, wildcard
+option expansion, continuation completion, custom Vimscript functions and
+`infercase` are not implemented. `Ctrl+X Ctrl+O/U` use the editor's language
+service instead of Vimscript `omnifunc/completefunc`. Spelling completion belongs
+to the later spelling stage. These settings are session-local.
+
 ## Ex command line
 
 Press **`:`** in Normal or Visual. The command line has its own focus and IME;
@@ -499,14 +580,15 @@ Build `turtle-code`, `turtle-code-editor-tests` and `turtle-code-window-tests`,
 then run:
 
 ```sh
-ctest --test-dir build -R '^vim-(editor|normal|session|ex|ex-extended|search|search-core|window)$' --output-on-failure
+ctest --test-dir build -R '^vim-(editor|insert|insert-window|normal|session|ex|ex-extended|search|search-core|window)$' --output-on-failure
 ```
 
 Tests cover mode transitions, inclusive selections, Unicode/CRLF, input methods,
 completion, large-line navigation, settings persistence, several windows, focus,
 the command palette and terminal, operators, counts, text objects, grouped Undo,
 disk history, registers, dot-repeat, macros, marks/jumps, block editing, Replace
-and large range edits, search/Ex addresses, regex translation, substitutions,
+and large range edits, Insert controls/literals/digraphs, completion providers,
+Visual reselect/match objects, search/Ex addresses, regex translation, substitutions,
 confirmation, mark preservation and history budgets. If `nvim` is installed, edit/motion/register
 sequences are also compared with clean headless Neovim. Neovim is a test oracle,
 not a runtime dependency. Window checks use Qt's offscreen platform; desktop

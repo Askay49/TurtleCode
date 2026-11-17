@@ -2362,6 +2362,7 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
     };
     connect(editor,&EditorWidget::gutterWidthChanged,this,alignTitle);
     connect(editor,&EditorWidget::semanticViewportChanged,this,alignTitle);
+    connect(editor,&EditorWidget::vimCompletionRequested,this,[this,editor]{requestCompletion(editor,false);});
     connect(editor, &EditorWidget::codeContextMenuRequested, this, [this, editor](const QPoint& global) {
         tabs_->setCurrentWidget(editor);
         auto* menu = new QMenu(editor);

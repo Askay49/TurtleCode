@@ -16,6 +16,9 @@ VimController::Command VimController::command(const QKeyEvent& event) const {
     if((event.key()==Qt::Key_Escape && modifiers==Qt::NoModifier) ||
        (event.key()==Qt::Key_BracketLeft && modifiers==Qt::ControlModifier))return Command::Normal;
     if(acceptsText()) {
+        if(event.key()==Qt::Key_C && modifiers==Qt::ControlModifier)return Command::Normal;
+        if((event.key()==Qt::Key_At || event.key()==Qt::Key_Space) && modifiers==Qt::ControlModifier)return Command::Key;
+        if(modifiers==Qt::ControlModifier && event.key()>=Qt::Key_A && event.key()<=Qt::Key_Z && QStringLiteral("GHIJKMWUDTONPYEVQXLA").contains(QChar(event.key())))return Command::Key;
         if(event.key()==Qt::Key_R && modifiers==Qt::ControlModifier)return Command::InsertRegister;
         if(event.key()==Qt::Key_Insert && modifiers==Qt::NoModifier)return mode_==Mode::Replace?Command::Insert:Command::ReplaceMode;
         return Command::Pass;
@@ -45,7 +48,7 @@ VimController::Command VimController::command(const QKeyEvent& event) const {
     case Qt::Key_L: return Command::Right;
     case Qt::Key_K: return Command::Up;
     case Qt::Key_J: return Command::Down;
-    case Qt::Key_V: return mode_==Mode::Visual?Command::Normal:Command::Visual;
+    case Qt::Key_V: return prefixG_?Command::Key:mode_==Mode::Visual?Command::Normal:Command::Visual;
     case Qt::Key_I: return mode_==Mode::Normal?Command::Insert:Command::Consume;
     case Qt::Key_A: return mode_==Mode::Normal?Command::Append:Command::Consume;
     default: break;
@@ -112,6 +115,10 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
     }
     if(prefixG_){
         prefixG_=false;
+        if(character=='v')return finish(C::RestoreVisual);
+        if(character=='i')return finish(C::InsertPrevious);
+        if(character=='I')return finish(C::InsertZero);
+        if(character=='n' || character=='N'){auto a=finish(C::SelectMatch);a.around=character=='N';return a;}
         if(character=='u' || character=='U' || character=='~' || character=='q')return operatorKey(character=='u'?C::LowerCase:character=='U'?C::UpperCase:character=='~'?C::ToggleCase:C::Format);
         if(character=='J'){auto action=finish(C::Join);action.around=true;return action;}
         auto action=finish(character=='g'?C::FirstLine:character=='e'?C::WordEndBack:character=='E'?C::BigWordEndBack:character==';'?C::ChangeBack:character==','?C::ChangeForward:character=='_'?C::LastText:character=='*'?C::SearchWord:character=='#'?C::SearchWordBack:character=='&'?C::RepeatSubstitute:C::Consume);action.around=true;return action;

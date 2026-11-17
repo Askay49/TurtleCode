@@ -55,6 +55,10 @@ void EditorWidget::startVimSearch(const VimController::Action& action){
         if(state.searchPattern.isEmpty()){emit highlightingStatusChanged("E35: No previous regular expression");if(isVimReplaying())vimReplayCancel_=true;return;}
         navigateVimSearch(state.searchPattern,action.command==C::SearchPrevious?!state.searchForward:state.searchForward,action,state.searchOffset,true);return;
     }
+    if(action.command==C::SelectMatch) {
+        if(state.searchPattern.isEmpty()){emit highlightingStatusChanged("E35: No previous regular expression");return;}
+        navigateVimSearch(state.searchPattern,!action.around,action,{},false);return;
+    }
     const auto original=cursorPosition_;auto word=std::make_shared<VimMotions::Range>();auto pattern=std::make_shared<QString>();
     runBulkOperation(I18n::text("Searching…"),[original,word,pattern,action](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
         auto at=original;const auto blank=[&](std::size_t p){return p<buffer.size() && (buffer.byteAt(p)==' ' || buffer.byteAt(p)=='\t');};
@@ -138,13 +142,24 @@ void EditorWidget::navigateVimSearch(const QString& pattern,bool forward,const V
     ++vimSearchGeneration_;
     if(action.operation!=VimController::Command::Consume)beginVimChange();
     const auto original=cursorPosition_;
+    const auto selected=vim_.mode()==VimController::Mode::Visual?std::optional{selectionRange()}:std::nullopt;
     const auto searchFrom=anchor.value_or(repeat && vimLastSearchMatch_ && original==vimLastSearchCursor_?vimLastSearchPosition_:original);
     const auto revision=lspRevision_;const auto finalNewline=vimFinalNewline_;const auto options=state.searchOptions;
     const auto old=vimSearchSubjectRevision_==revision?vimSearchSubject_:nullptr;auto result=std::make_shared<SearchResult>();
-    runBulkOperation(I18n::text("Searching…"),[result,old,pattern,options,searchFrom,original,forward,action,finalNewline,offset](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
+    runBulkOperation(I18n::text("Searching…"),[result,old,pattern,options,searchFrom,original,forward,action,finalNewline,offset,selected](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
         VimSearch::Pattern expression(pattern,options);if(!expression.error().isEmpty())throw std::runtime_error(expression.error().toStdString());
         result->subject=old?old:std::make_shared<VimSearch::Subject>(buffer,finalNewline,[&]{step(10);});
-        result->navigation=VimSearch::navigate(*result->subject,expression,searchFrom,forward,action.count,[&]{step(50);},offset.startsWith('e'),characterOffset(offset));
+        if(action.command==VimController::Command::SelectMatch) {
+            std::optional<VimSearch::Match> containing;
+            for(auto at=result->subject->begin();at<=searchFrom;) {
+                const auto found=expression.find(*result->subject,at,[&]{step(40);});if(!found || found->begin>searchFrom)break;
+                if(found->begin<=searchFrom && (searchFrom<found->end || found->begin==found->end))containing=found;
+                at=found->end>found->begin?found->end:result->subject->next(found->rawBegin);
+            }
+            const bool advance=forward && containing && selected && selected->first<=containing->begin && selected->second>=containing->end;
+            if(containing && action.count==1 && !advance)result->navigation.match=containing;
+            else result->navigation=VimSearch::navigate(*result->subject,expression,searchFrom,forward,action.count-(containing && !advance?1:0),[&]{step(50);});
+        }else result->navigation=VimSearch::navigate(*result->subject,expression,searchFrom,forward,action.count,[&]{step(50);},offset.startsWith('e'),characterOffset(offset));
         if(result->navigation.match){const auto row=buffer.lineIndexAt(result->navigation.match->begin);collect(*result,buffer,expression,row>3?row-3:0,std::min(buffer.lineCount()-1,row+40),[&]{step(80);});}
         return HistoryResult{original,{original}};
     },false,{},[this,result,revision,action,offset,forward](bool ok){
@@ -158,6 +173,15 @@ void EditorWidget::navigateVimSearch(const QString& pattern,bool forward,const V
     });
 }
 void EditorWidget::applyVimSearchMatch(const VimSearch::Match& match,const QString& offset,const VimController::Action& action,bool){
+    if(action.command==VimController::Command::SelectMatch) {
+        if(action.operation!=VimController::Command::Consume){
+            if(match.begin==match.end && match.begin>=lineContentEnd(buffer_.lineIndexAt(std::min(match.begin,buffer_.size())))){cursorPosition_=std::min(match.begin,buffer_.size());cursors_={cursorPosition_};clearAllSelections();ensureCursorVisible();viewport()->update();return;}
+            editVimRange(match.begin,match.end>match.begin?match.end:graphemeBoundaryAt(match.begin,true),action.operation,false);return;
+        }
+        if(vim_.mode()!=VimController::Mode::Visual){switchVimMode(VimController::Mode::Visual);anchor_=action.around && match.end>match.begin?graphemeBoundaryAt(match.end,false):match.begin;}
+        cursorPosition_=action.around?match.begin:match.end>match.begin?graphemeBoundaryAt(match.end,false):match.begin;
+        cursors_={cursorPosition_};cursorAnchors_={anchor_};ensureCursorVisible();viewport()->update();return;
+    }
     const auto handling=vimHandlingKey_;vimHandlingKey_=true;
     const auto guard=qScopeGuard([this,handling]{vimHandlingKey_=handling;if(!vimHandlingKey_ && !busy_ && !vim_.acceptsText())finishVimChange();});
     const auto original=cursorPosition_;auto target=match.begin;bool inclusive=false,linewise=false;

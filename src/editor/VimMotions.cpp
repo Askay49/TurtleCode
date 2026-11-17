@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <QChar>
 #include <optional>
+#include <cctype>
 #include <QTextBoundaryFinder>
 
 namespace VimMotions {
@@ -191,6 +192,66 @@ Range resolve(const PieceTreeBuffer& b,std::size_t cursor,const VimController::A
         while(forward?q<b.size():q>lineStart(b,0)){q=forward?s.next(q):s.prev(q);if(s.skipQuote(q,forward))continue;if(s.at(q)==ch)++depth;else if(s.at(q)==opposite && --depth==0){p=q;break;}}
         if(depth)return r;inclusive=true;break;}
     case C::Object:{r.object=true;const char object=a.character.toLatin1();
+        if(object=='s') {
+            const auto bounds=[&](std::size_t at) {
+                VimController::Action motion;motion.command=C::SentenceBack;
+                auto begin=resolve(b,std::min(b.size(),s.next(at)),motion,checkpoint,finalNewline).target;
+                motion.command=C::SentenceNext;
+                auto end=resolve(b,begin,motion,checkpoint,finalNewline).target;
+                if(end<=begin)end=b.size();
+                while(end>begin && !s.kind(s.prev(end)))end=s.prev(end);
+                return std::pair{begin,end};
+            };
+            const auto whitespace=[&](std::size_t q) {
+                const auto initialRow=b.lineIndexAt(q);const bool blank=isBlank(initialRow);
+                while(q<b.size() && !s.kind(q)){
+                    q=s.next(q);
+                    if(!blank && q<b.size() && q==lineStart(b,b.lineIndexAt(q)) && isBlank(b.lineIndexAt(q)))break;
+                }
+                return q;
+            };
+            auto [begin,last]=bounds(p);
+            const bool white=!s.kind(p);
+            if(white) {
+                const bool blank=isBlank(b.lineIndexAt(p));
+                begin=p;while(begin>lineStart(b,b.lineIndexAt(p)) && !s.kind(s.prev(begin)))begin=s.prev(begin);
+                last=whitespace(p);
+                if(a.around && !blank && last<b.size() && s.kind(last))last=bounds(last).second;
+            } else if(a.around) {
+                const auto tail=whitespace(last);
+                if(tail>last)last=tail;else while(begin>lineStart(b,b.lineIndexAt(begin)) && !s.kind(s.prev(begin)))begin=s.prev(begin);
+            }
+            for(std::size_t n=1;n<count && last<b.size();++n) {
+                if(!s.kind(last)) {
+                    const bool blank=isBlank(b.lineIndexAt(last));last=whitespace(last);
+                    if(a.around && !blank && last<b.size() && s.kind(last))last=bounds(last).second;
+                }else last=bounds(last).second;
+                if(a.around && last<b.size() && !s.kind(last) && !isBlank(b.lineIndexAt(last)))last=whitespace(last);
+            }
+            // A change keeps the last line break, as other characterwise c motions do.
+            if(a.operation==C::Change && last>begin && s.at(last-1)=='\n'){--last;if(last>begin && s.at(last-1)=='\r')--last;}
+            r.begin=begin;r.end=last;r.target=begin;r.valid=last>begin;return r;
+        }
+        if(object=='t') {
+            struct Tag {std::string name;std::size_t begin,end;};
+            struct Pair {std::size_t begin,inside,end,after;};
+            std::vector<Tag> stack;std::vector<Pair> pairs;
+            for(std::size_t q=lineStart(b,0);q<b.size();) {
+                if(s.at(q)!='<'){q=s.next(q);continue;}
+                const auto first=q++;bool closing=s.at(q)=='/';if(closing)++q;
+                if(s.at(q)=='!' || s.at(q)=='?'){while(q<b.size() && s.at(q)!='>')++q;if(q<b.size())++q;continue;}
+                std::string name;while(q<b.size() && (std::isalnum(static_cast<unsigned char>(s.at(q))) || s.at(q)=='_' || s.at(q)=='-' || s.at(q)==':')){name+=char(std::tolower(static_cast<unsigned char>(s.at(q++))));if(name.size()>4096)break;}
+                if(name.empty())continue;
+                // Vim's tag text object terminates a tag at the first '>'.
+                bool self=false;while(q<b.size()){if(s.at(q++)=='>'){self=q>1 && s.at(q-2)=='/';break;}}
+                if(closing){
+                    for(auto i=stack.size();i>0;--i)if(stack[i-1].name==name){const auto open=stack[i-1];if(open.begin<=p && p<q)pairs.push_back({open.begin,open.end,first,q});stack.resize(i-1);break;}
+                }else if(!self){if(stack.size()>=100000)return r;stack.push_back({name,first,q});}
+            }
+            std::sort(pairs.begin(),pairs.end(),[](const auto& x,const auto& y){return x.after-x.begin<y.after-y.begin;});
+            if(std::size_t(a.count)>pairs.size())return r;
+            const auto pair=pairs[std::size_t(a.count)-1];r.begin=a.around?pair.begin:pair.inside;r.end=a.around?pair.after:pair.end;if(!a.around && pair.inside==pair.end && a.operation==C::Consume){r.begin=pair.begin;r.end=pair.inside;}r.target=r.begin;r.valid=true;return r;
+        }
         if(object=='w' || object=='W') {
             if(p>=b.size())return r;
             const bool big=object=='W';auto begin=p;const auto kind=s.kind(p,big);
@@ -251,4 +312,25 @@ Range resolve(const PieceTreeBuffer& b,std::size_t cursor,const VimController::A
     }
     return r;
 }
+Range resolveSelection(const PieceTreeBuffer& buffer,std::size_t cursor,const VimController::Action& action,
+                       std::optional<std::pair<std::size_t,std::size_t>> selection,const std::function<void()>& checkpoint,bool finalNewline) {
+    auto range=resolve(buffer,cursor,action,checkpoint,finalNewline);
+    if(action.command!=C::Object || !selection || !range.valid)return range;
+    const auto [first,last]=*selection;
+    if(QStringLiteral("wWs").contains(action.character) || (range.begin>=first && range.end<=last)) {
+        auto extended=action;const auto object=action.character;
+        if(QStringLiteral("wWsp").contains(object)) {
+            auto focus=last;
+            if(cursor<last-1 && cursor<=first){focus=grapheme(buffer,first,false);if(action.around){Scan scan(buffer,checkpoint);while(focus && !scan.kind(focus))focus=scan.prev(focus);}}
+            range=resolve(buffer,focus,extended,checkpoint,finalNewline);
+        }
+        else {if(object=='t' && !action.around)extended.around=true;else ++extended.count;range=resolve(buffer,first,extended,checkpoint,finalNewline);}
+    }
+    if(range.valid && action.character=='t' && range.begin>=first && range.end<=last) {
+        auto extended=action;++extended.count;range=resolve(buffer,first,extended,checkpoint,finalNewline);
+    }
+    if(range.valid && QStringLiteral("wWsp").contains(action.character)){range.begin=std::min(range.begin,first);range.end=std::max(range.end,last);}
+    return range;
+}
+
 }

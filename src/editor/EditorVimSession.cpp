@@ -35,7 +35,8 @@ bool EditorWidget::beginVimKey(QKeyEvent* event) {
     }
     if(vimExActive_ || vimSubConfirm_){if(vimExActive_ && vimCommandPrompt_!=':' && vimSearchAction_.operation!=VimController::Command::Consume)vimCommandKeys_.append(input);return false;}
     const bool movement=event->key()==Qt::Key_Left || event->key()==Qt::Key_Right || event->key()==Qt::Key_Up || event->key()==Qt::Key_Down || event->key()==Qt::Key_Home || event->key()==Qt::Key_End;
-    if(vim_.acceptsText() && movement){finishVimChange();vimCommandKeys_.clear();}
+    vimInsertJoinedMovement_=vimInsertJoinMovement_ && ((event->key()==Qt::Key_Left && cursorPosition_>vimLineStart(currentLine())) || (event->key()==Qt::Key_Right && cursorPosition_<lineContentEnd(currentLine())));
+    if(vim_.acceptsText() && movement && !vimInsertJoinedMovement_){finishVimChange();vimCommandKeys_.clear();}
     else if(vim_.acceptsText() && !vimChangeActive_) {
         vimCommandKeys_=textKeys(vim_.mode()==VimController::Mode::Replace?"R":"i");beginVimChange();
     }
@@ -44,10 +45,22 @@ bool EditorWidget::beginVimKey(QKeyEvent* event) {
     return false;
 }
 void EditorWidget::endVimKey() {
+    if(vimInsertNormalArmed_)vimInsertNormalArmed_=false;
+    else resumeVimInsertNormal();
+    if(vimInsertJoinedMovement_){vimInsertJoinedMovement_=vimInsertJoinMovement_=false;}
     vimHandlingKey_=false;vimCaptureInsertEdit_=false;
     if(!vim_.enabled())return;
     if(vimChangeActive_ && !busy_ && !vim_.acceptsText())finishVimChange();
     if(!vimChangeActive_ && !vim_.hasPending() && !vimExActive_ && vim_.mode()!=VimController::Mode::Visual)vimCommandKeys_.clear();
+}
+void EditorWidget::resumeVimInsertNormal() {
+    if(!vimInsertNormal_ || vimInsertNormalArmed_ || busy_ || vim_.hasPending() || vimExActive_ || vimExExecuting_ || vim_.mode()==VimController::Mode::Visual || vimReplay_.size()>vimInsertNormalReplayDepth_)return;
+    vimInsertNormal_=false;
+    if(!vim_.acceptsText()) {
+        finishVimChange();
+        if(cursorPosition_==graphemeBoundaryAt(lineContentEnd(currentLine()),false) && vimInsertNormalEnd_)cursorPosition_=lineContentEnd(currentLine());
+        vim_.setMode(vimInsertReturn_);cursors_={cursorPosition_};clearAllSelections();history_.beginGroup(true);refreshVimPresentation();
+    }
 }
 void EditorWidget::beginVimChange(){
     if(vimChangeActive_ || vimRepeatingDot_)return;
@@ -204,7 +217,7 @@ void EditorWidget::continueVimReplay() {
     for(int batch=0;batch<128 && !vimReplay_.empty() && !busy_ && (!vimExExecuting_ || vimSubConfirm_ || vimExNormal_);++batch) {
         if(++vimReplaySteps_>100000){vimReplay_.clear();if(vimExNormal_)finishVimEx(I18n::text("Vim: replay step limit reached"),true);else emit highlightingStatusChanged(I18n::text("Vim: replay step limit reached"));break;}
         auto& frame=vimReplay_.back();
-        if(frame.index==frame.inputs.size()){if(--frame.remaining>0)frame.index=0;else{const bool normal=frame.exNormal;vimReplay_.pop_back();if(normal){vimExNormal_=false;resetVimMode();scheduleVimEx();break;}continue;}}
+        if(frame.index==frame.inputs.size()){if(--frame.remaining>0)frame.index=0;else{const bool normal=frame.exNormal;vimReplay_.pop_back();resumeVimInsertNormal();if(normal){vimExNormal_=false;resetVimMode();scheduleVimEx();break;}continue;}}
         const auto input=frame.inputs[frame.index++];history_.beginGroup(true);
         vimSendingReplay_=true;applyVimInput(input);vimSendingReplay_=false;
         if(vimReplayCancel_ || !vimOwnsFocus())break;

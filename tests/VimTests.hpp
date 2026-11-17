@@ -16,7 +16,7 @@ static void vimKeys(EditorWidget& editor,const QString& keys) {
         else if(keys.mid(i,5)=="<C-v>"){QTest::keyClick(&editor,Qt::Key_V,Qt::ControlModifier);i+=5;}
         else if(keys.mid(i,5)=="<C-o>"){QTest::keyClick(&editor,Qt::Key_O,Qt::ControlModifier);i+=5;}
         else if(keys.mid(i,5)=="<C-i>"){QTest::keyClick(&editor,Qt::Key_I,Qt::ControlModifier);i+=5;}
-        else if(keys.mid(i,3)=="<C-" && i+4<keys.size() && keys[i+4]=='>'){QTest::keyClick(&editor,Qt::Key(Qt::Key_A+keys[i+3].toLower().unicode()-'a'),Qt::ControlModifier);i+=5;}
+        else if(keys.mid(i,3)=="<C-" && i+4<keys.size() && keys[i+4]=='>'){QTest::keyClick(&editor,Qt::Key(keys[i+3].toUpper().unicode()),Qt::ControlModifier);i+=5;}
         else if(keys.mid(i,6)=="<Left>"){QTest::keyClick(&editor,Qt::Key_Left);i+=6;}
         else if(keys.mid(i,7)=="<Right>"){QTest::keyClick(&editor,Qt::Key_Right);i+=7;}
         else if(keys[i].unicode()>127){auto size=keys[i].isHighSurrogate() && i+1<keys.size() && keys[i+1].isLowSurrogate()?2:1;QKeyEvent event(QEvent::KeyPress,Qt::Key_unknown,Qt::NoModifier,keys.mid(i,size));QApplication::sendEvent(&editor,&event);i+=size;}

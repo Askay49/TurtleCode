@@ -48,6 +48,7 @@ void EditorWidget::setVimEnabled(bool enabled) {
     // Preserve the exact selected bytes when returning to ordinary editing.
     const auto selection=selectionRange();const bool selected=hasSelection();const bool reversed=anchor_ && cursorPosition_<*anchor_;
     if(!enabled){cancelVimReplay();finishVimChange();if(VimState::Session::instance().recordingOwner==this)toggleVimRecording();}
+    vimInsertExitAfterPut_=vimInsertNormal_=vimInsertNormalArmed_=vimInsertCtrlX_=vimInsertCtrlG_=vimInsertJoinMovement_=false;vimInsertSavedIndent_.clear();vimLiteral_.clear();vimDigraph_.clear();vimInsertCandidates_.clear();
     vimVisualLine_=vimVisualBlock_=false;vim_.setEnabled(enabled);vimPreferredX_=-1;vimHistoryState_=history_.stateId();
     cursors_={cursorPosition_};clearAllSelections();
     if(enabled)normalizeVimCursor();
@@ -62,11 +63,16 @@ void EditorWidget::switchVimMode(VimController::Mode mode,bool fromEscape) {
     vimInsertCount_=1;vimInsertPrefix_.clear();
     history_.endGroup();hideCompletions();vimPreferredX_=-1;
     if(previous==VimController::Mode::Visual && anchor_) {
-        const auto [a,b]=selectionRange();auto& marks=VimState::Session::instance().marks(vimMarkKey());
+        vimPreviousVisualAnchor_=VimState::Session::instance().anchor(this,filePath_,*anchor_,navigationPosition());
+        vimPreviousVisualHead_=vimLocation();vimPreviousVisualLine_=vimVisualLine_;vimPreviousVisualBlock_=vimVisualBlock_;
+        vimPreviousBlockAnchor_=vimBlockAnchorColumn_;vimPreviousBlockAnchorEnd_=vimBlockAnchorEnd_;vimPreviousBlockHead_=vimBlockVirtualColumn_;vimPreviousVisualToEnd_=vimBlockToEnd_;
+        const auto [a,b]=selectionRange();
+        auto& marks=VimState::Session::instance().marks(vimMarkKey());
         marks['<']=VimState::Session::instance().anchor(this,filePath_,a,QPoint(1,1));marks['>']=VimState::Session::instance().anchor(this,filePath_,b>a?graphemeBoundaryAt(b,false):b,QPoint(1,1));
     }
     vimVisualLine_=false;vimVisualBlock_=false;
     if(mode==VimController::Mode::Normal) {
+        vimInsertCtrlX_=vimInsertCtrlG_=vimInsertJoinMovement_=false;vimInsertSavedIndent_.clear();vimLiteral_.clear();vimDigraph_.clear();vimInsertCandidates_.clear();
         clearAllSelections();
         if(fromEscape && vimBlockInsert_ && !vimBlockChange_)cursorPosition_=vimBlockExitPosition_;
         else if(fromEscape && (previous==VimController::Mode::Insert || previous==VimController::Mode::Replace) && cursorPosition_>vimLineStart(currentLine()))cursorPosition_=graphemeBoundaryAt(cursorPosition_,false);
@@ -83,6 +89,7 @@ void EditorWidget::switchVimMode(VimController::Mode mode,bool fromEscape) {
 }
 bool EditorWidget::handleVimKey(QKeyEvent* event) {
     using C=VimController::Command;using Mode=VimController::Mode;
+    if(handleVimInsertKey(event))return true;
     const auto action=vim_.feed(*event);const auto command=action.command;
     if(!action.registerName.isNull())vimRegister_=action.registerName;
     else if(command!=C::Pending && command!=C::Pass)vimRegister_={};
@@ -102,7 +109,7 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
         if(vim_.enabled()) {
             if(vim_.mode()==Mode::Insert) {
                 const bool motion=event->key()==Qt::Key_Left || event->key()==Qt::Key_Right || event->key()==Qt::Key_Up || event->key()==Qt::Key_Down || event->key()==Qt::Key_Home || event->key()==Qt::Key_End;
-                if(motion || event->matches(QKeySequence::Undo) || event->matches(QKeySequence::Redo)){history_.endGroup();vimInsertCount_=1;}
+                if((motion && !vimInsertJoinedMovement_) || event->matches(QKeySequence::Undo) || event->matches(QKeySequence::Redo)){history_.endGroup();vimInsertCount_=1;}
                 else {if(event->key()==Qt::Key_Backspace && cursorPosition_<=vimInsertStart_)vimInsertCount_=1;history_.beginGroup(true);}
             }
             if(vim_.mode()==Mode::Visual && (event->matches(QKeySequence::Undo) || event->matches(QKeySequence::Redo)))switchVimMode(Mode::Normal);
@@ -111,6 +118,25 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
     }
     event->accept();
     if(command==C::Consume || command==C::Pending)return true;
+    if(vimInsertNormal_)vimInsertNormalEnd_=command==C::End || command==C::LastText || ((command==C::Up || command==C::Down) && vimPreferredX_<0 && cursorPosition_==graphemeBoundaryAt(lineContentEnd(currentLine()),false));
+    if(command==C::RestoreVisual) {
+        if(vimPreviousVisualAnchor_ && vimPreviousVisualHead_) {
+            const auto a=vimPreviousVisualAnchor_->offset,h=vimPreviousVisualHead_->offset;
+            const bool line=vimPreviousVisualLine_,block=vimPreviousVisualBlock_,toEnd=vimPreviousVisualToEnd_;
+            const int column=vimPreviousBlockAnchor_,anchorEnd=vimPreviousBlockAnchorEnd_,head=vimPreviousBlockHead_;
+            if(vim_.mode()==Mode::Visual)switchVimMode(Mode::Normal);
+            switchVimMode(Mode::Visual);anchor_=std::min(a,buffer_.size());cursorPosition_=std::min(h,buffer_.size());
+            vimVisualLine_=line;vimVisualBlock_=block;cursors_={cursorPosition_};cursorAnchors_={anchor_};
+            vimBlockAnchorColumn_=column;vimBlockAnchorEnd_=anchorEnd;vimBlockVirtualColumn_=head;vimBlockToEnd_=toEnd;
+            ensureCursorVisible();refreshVimPresentation();
+        }return true;
+    }
+    if(command==C::InsertPrevious) {
+        const auto mark=VimState::Session::instance().marks(vimMarkKey()).value('^');
+        if(mark)cursorPosition_=std::min(mark->offset,buffer_.size());
+        beginVimChange();switchVimMode(Mode::Insert);return true;
+    }
+    if(command==C::SelectMatch){startVimSearch(action);return true;}
     if(command==C::CommandLine){showVimCommandLine(action.explicitCount?action.count:0);return true;}
     if(command==C::RepeatSubstitute){showVimCommandLine();closeVimCommandLine();executeVimCommandLine(action.around?"%s&":"s");return true;}
     if(!action.registerName.isNull() && QStringLiteral(".%#/: ").contains(action.registerName) && (action.operation!=C::Consume || command==C::Delete || command==C::Change || command==C::Yank || command==C::DeleteChar || command==C::DeleteBefore || command==C::Substitute || command==C::DeleteEnd || command==C::ChangeEnd || command==C::ChangeLine || command==C::YankLine)){
@@ -120,7 +146,7 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
     if(command==C::SearchForward || command==C::SearchBackward || command==C::SearchNext || command==C::SearchPrevious || command==C::SearchWord || command==C::SearchWordBack){startVimSearch(action);return true;}
     const auto transform=[](C command){return command==C::ToggleCase || command==C::LowerCase || command==C::UpperCase || command==C::AutoIndent || command==C::Format;};
     const bool mutating=transform(action.operation) || transform(command) || command==C::Join || command==C::Increment || command==C::Decrement ||action.operation==C::Delete || action.operation==C::Change || action.operation==C::Indent || action.operation==C::Unindent ||
-        command==C::Insert || command==C::Append || command==C::InsertFirst || command==C::InsertLast || command==C::OpenAbove || command==C::OpenBelow || command==C::Delete || command==C::Change || command==C::Indent || command==C::Unindent || command==C::DeleteChar || command==C::DeleteBefore || command==C::Substitute || command==C::ChangeLine || command==C::ChangeEnd || command==C::DeleteEnd || command==C::PasteBefore || command==C::PasteAfter || command==C::ReplaceMode || command==C::ReplaceCharacter;
+        command==C::InsertZero || command==C::Insert || command==C::Append || command==C::InsertFirst || command==C::InsertLast || command==C::OpenAbove || command==C::OpenBelow || command==C::Delete || command==C::Change || command==C::Indent || command==C::Unindent || command==C::DeleteChar || command==C::DeleteBefore || command==C::Substitute || command==C::ChangeLine || command==C::ChangeEnd || command==C::DeleteEnd || command==C::PasteBefore || command==C::PasteAfter || command==C::ReplaceMode || command==C::ReplaceCharacter;
     if(mutating)beginVimChange();
     if(command==C::ChangeBack || command==C::ChangeForward){if(action.operation==C::Consume)jumpVimChange(command==C::ChangeBack?-1:1,action.count);return true;}
     if(command==C::Join || command==C::Increment || command==C::Decrement || (transform(command) && command!=C::AutoIndent && command!=C::Format)){editVimNormal(action);return true;}
@@ -156,7 +182,13 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
     if(command==C::Visual || command==C::VisualLine) {
         if(command==C::VisualLine && vim_.mode()==Mode::Visual && vimVisualLine_){switchVimMode(Mode::Normal);return true;}
         if(vim_.mode()!=Mode::Visual)switchVimMode(Mode::Visual);
-        vimVisualBlock_=false;vimVisualLine_=command==C::VisualLine;emit vimModeChanged();viewport()->update();return true;
+        vimVisualBlock_=false;vimVisualLine_=command==C::VisualLine;
+        if(action.explicitCount && !vimRepeatingDot_){
+            VimController::Action motion;motion.command=vimVisualLine_ || vimPreviousVisualRows_>1?C::Down:C::Right;
+            motion.count=int(std::min<std::size_t>(10000,action.count*(motion.command==C::Down?vimPreviousVisualRows_:vimPreviousVisualWidth_))-1);
+            if(motion.count>0)moveCursor(VimMotions::resolve(buffer_,cursorPosition_,motion,{},vimFinalNewline_).target,true);
+        }
+        emit vimModeChanged();viewport()->update();return true;
     }
     if(command==C::Undo || command==C::Redo) {
         switchVimMode(Mode::Normal);
@@ -180,9 +212,10 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
         const auto [begin,end]=selectionRange();const auto first=buffer_.lineIndexAt(begin),last=buffer_.lineIndexAt(end>begin?end-1:begin);
         editVimRange(vimLineStart(first),last+1<buffer_.lineCount()?buffer_.lineStart(last+1):buffer_.size(),command==C::YankLine?C::Yank:command==C::ChangeEnd || command==C::ChangeLine?C::Change:C::Delete,true);return true;
     }
-    if(command==C::Insert || command==C::Append || command==C::InsertFirst || command==C::InsertLast || command==C::OpenAbove || command==C::OpenBelow) {
+    if(command==C::InsertZero || command==C::Insert || command==C::Append || command==C::InsertFirst || command==C::InsertLast || command==C::OpenAbove || command==C::OpenBelow) {
         const auto row=currentLine();
         if(command==C::Append)cursorPosition_=std::min(lineContentEnd(row),graphemeBoundaryAt(cursorPosition_,true));
+        if(command==C::InsertZero)cursorPosition_=vimLineStart(row);
         if(command==C::InsertFirst)cursorPosition_=VimMotions::firstText(buffer_,row);
         if(command==C::InsertLast)cursorPosition_=lineContentEnd(row);
         switchVimMode(Mode::Insert);
@@ -277,12 +310,13 @@ void EditorWidget::resolveVimAction(VimController::Action action) {
         moveCursor(target,vim_.mode()==VimController::Mode::Visual);return;
     }
     vimPreferredX_=-1;
+    const auto selection=vim_.mode()==VimController::Mode::Visual && anchor_ && *anchor_!=cursorPosition_?std::optional{selectionRange()}:std::nullopt;
     if(buffer_.size()>=1024*1024 && action.command!=C::Left && action.command!=C::Right && action.command!=C::Start && action.command!=C::End && action.command!=C::Line) {
         auto result=std::make_shared<VimMotions::Range>();const auto cursor=cursorPosition_;const auto finalNewline=vimFinalNewline_;
-        runBulkOperation(QStringLiteral("Vim…"),[result,action,cursor,finalNewline](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
-            *result=VimMotions::resolve(buffer,cursor,action,[&]{step(50);},finalNewline);return HistoryResult{cursor,{cursor}};
+        runBulkOperation(QStringLiteral("Vim…"),[result,action,cursor,selection,finalNewline](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
+            *result=VimMotions::resolveSelection(buffer,cursor,action,selection,[&]{step(50);},finalNewline);return HistoryResult{cursor,{cursor}};
         },false,{},[this,result,action](bool success){if(success)applyVimAction(action,*result);});
-    } else applyVimAction(action,VimMotions::resolve(buffer_,cursorPosition_,action,{},vimFinalNewline_));
+    } else applyVimAction(action,VimMotions::resolveSelection(buffer_,cursorPosition_,action,selection,{},vimFinalNewline_));
 }
 void EditorWidget::applyVimAction(const VimController::Action& action,const VimMotions::Range& range) {
     using C=VimController::Command;using Mode=VimController::Mode;
@@ -292,7 +326,9 @@ void EditorWidget::applyVimAction(const VimController::Action& action,const VimM
     if(action.operation!=C::Consume){editVimRange(range.begin,range.end,action.operation,range.linewise);return;}
     if(range.object) {
         if(vim_.mode()!=Mode::Visual)switchVimMode(Mode::Visual);
-        vimVisualLine_=range.linewise;anchor_=range.begin;cursorPosition_=range.end>range.begin?graphemeBoundaryAt(range.end,false):range.begin;
+        const bool reversed=anchor_ && cursorPosition_<*anchor_;
+        const auto last=range.end>range.begin?graphemeBoundaryAt(range.end,false):range.begin;
+        vimVisualBlock_=false;vimVisualLine_=range.linewise;anchor_=reversed?last:range.begin;cursorPosition_=reversed?range.begin:last;
         cursors_={cursorPosition_};cursorAnchors_={anchor_};emit vimModeChanged();viewport()->update();ensureCursorVisible();return;
     }
     moveCursor(range.target,vim_.mode()==Mode::Visual);

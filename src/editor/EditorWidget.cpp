@@ -411,7 +411,7 @@ EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)
 }
 
 void EditorWidget::loadBuffer(PieceTreeBuffer buffer, const QString& path) {
-    vimChanges_.clear();vimPendingChange_.reset();vimChangeIndex_=0;
+    vimChanges_.clear();vimPendingChange_.reset();vimChangeIndex_=0;vimPreviousVisualRows_=vimPreviousVisualWidth_=1;
     const bool loadingEx=busy_ && property("openingPath").isValid() && vimExExecuting_;
     if(loadingEx)for(auto& frame:vimExFrames_)if(frame.marks)frame.marks=std::make_shared<VimEx::LineMarks>();
     invalidateVimSearch();vimSearchHighlights_.clear();vimLastSearchMatch_.reset();vimSubConfirm_=false;vimSubPlan_.reset();
@@ -419,8 +419,10 @@ void EditorWidget::loadBuffer(PieceTreeBuffer buffer, const QString& path) {
     const bool loadingReplay=busy_ && property("openingPath").isValid() && !vimReplay_.empty();
     if(!loadingReplay)cancelVimReplay();
     vimCommandKeys_.clear();vimChangeKeys_.clear();vimChangeActive_=false;
+    vimInsertExitAfterPut_=vimInsertNormal_=vimInsertNormalArmed_=vimInsertCtrlX_=vimInsertCtrlG_=vimInsertJoinMovement_=false;vimInsertSavedIndent_.clear();vimLiteral_.clear();vimDigraph_.clear();vimInsertCandidates_.clear();
     for(const auto& p:VimState::Session::instance().anchors(this))p->lostPositions.clear();
     if(vim_.enabled())switchVimMode(VimController::Mode::Normal);
+    vimPreviousVisualAnchor_.reset();vimPreviousVisualHead_.reset();
     diffHighlights_.clear();
     setDiffAlignment({});
     clearSemanticHighlighting();
@@ -2277,7 +2279,7 @@ bool EditorWidget::event(QEvent* event) {
     if((vimExActive_ || vimSubConfirm_) && event->type()==QEvent::KeyPress){keyPressEvent(static_cast<QKeyEvent*>(event));event->accept();return true;}
     if(event->type()==QEvent::FocusIn && !busy_){refreshEditorConfig();QTimer::singleShot(0,this,&EditorWidget::updateVimSearchHighlights);}
     if(event->type()==QEvent::FocusIn || event->type()==QEvent::FocusOut){if(vim_.enabled()){if(event->type()==QEvent::FocusOut && static_cast<QFocusEvent*>(event)->reason()!=Qt::PopupFocusReason){history_.endGroup();vimInsertCount_=1;if(!busy_)finishVimChange();}vim_.resetPending();}viewport()->update();}
-    if(event->type()==QEvent::ShortcutOverride && hasFocus() && !busy_ && vim_.reserves(*static_cast<QKeyEvent*>(event))) {
+    if(event->type()==QEvent::ShortcutOverride && hasFocus() && !busy_ && (vim_.reserves(*static_cast<QKeyEvent*>(event)) || (vim_.enabled() && (!vimLiteral_.isEmpty() || !vimDigraph_.isEmpty() || vimInsertCtrlX_ || vimInsertCtrlG_)))) {
         // Completion menus retain first refusal for Escape/Enter/Tab.
         const int key=static_cast<QKeyEvent*>(event)->key();
         if(!completer_ || !completer_->popup()->isVisible() || (key!=Qt::Key_Escape && key!=Qt::Key_Return && key!=Qt::Key_Enter && key!=Qt::Key_Tab && key!=Qt::Key_Backtab)) {
@@ -2763,6 +2765,7 @@ bool EditorWidget::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void EditorWidget::inputMethodEvent(QInputMethodEvent* event) {
+    if(vim_.enabled() && !event->commitString().isEmpty()){vimLiteral_.clear();vimDigraph_.clear();vimInsertCtrlX_=vimInsertCtrlG_=vimInsertJoinMovement_=false;vimInsertCandidates_.clear();}
     const auto captureBefore=vimCaptureInsertEdit_;vimCaptureInsertEdit_=vim_.enabled();
     const auto captureGuard=qScopeGuard([this,captureBefore]{vimCaptureInsertEdit_=captureBefore;});
     if(vim_.enabled() && vim_.mode()==VimController::Mode::Replace && !event->commitString().isEmpty()){replaceVimText(event->commitString());event->accept();return;}
@@ -2995,6 +2998,7 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
         if(progress->wasCanceled())cancelled->store(true);
         watcher->deleteLater();progress->deleteLater();if(!guard)return;
         setBusy(false);
+        const auto vimReturn=qScopeGuard([this]{resumeVimInsertNormal();if(!busy_ && std::exchange(vimInsertExitAfterPut_,false))switchVimMode(VimController::Mode::Normal,true);});
         if(result->cancelled || cancelled->load() || lspRevision_!=revision){applyHistorySettings();if(completed)completed(false);if(vimExExecuting_)finishVimEx(I18n::text("Vim: command cancelled"),true);return;}
         if(!result->error.isEmpty()){if(!vimExSilent())emit highlightingStatusChanged(result->error);if(completed)completed(false);if(vimExExecuting_)finishVimEx(result->error);return;}
         if(modifies && result->changed) {
