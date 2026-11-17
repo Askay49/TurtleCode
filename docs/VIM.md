@@ -123,9 +123,10 @@ discards staged changes. Navigation reads bounded text windows.
 Case operations, joins, numbers and formatting support counts, Visual selections,
 dot-repeat, macros and grouped Undo. Visual Block case/number changes respect
 the rectangle. Case conversion retains local marks and the pending global line
-selection, including when UTF-8 character lengths change. Edit records and Undo
-payloads are batched on disk. Large operations are cancellable; Escape discards
-the current staged operation.
+selection, including when UTF-8 character lengths change. Explicit uppercasing
+converts `ß` to `SS`; toggling case leaves `ß` unchanged, matching Vim. `ẞ`
+lowercases to `ß`. Edit records and Undo payloads are batched on disk. Large
+operations are cancellable; Escape discards the current staged operation.
 
 `Ctrl+A/X` use 64-bit arithmetic, decimal signs and leading-zero padding.
 `:set nrformats=bin,hex` is the default; `octal`, `alpha` and `unsigned` are also

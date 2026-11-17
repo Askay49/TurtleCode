@@ -1,5 +1,6 @@
 #pragma once
 #include <QInputMethodEvent>
+#include <QInputMethodQueryEvent>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QJsonDocument>
@@ -37,6 +38,19 @@ static void vimTests() {
     QSettings().setValue("editor/vimMode",true);QSettings().setValue("editor/minimap",false);QSettings().setValue("editor/autoPairs",false);
     EditorWidget editor;load(editor,"abc\nxy");
     Q_ASSERT(editor.vimEnabled() && editor.vimMode()==Mode::Normal && !editor.isModified());
+    // Disabled IME input must still report the real caret and surrounding text.
+    const auto queryCaret=[&](bool enabled,int minimumWidth){
+        QInputMethodQueryEvent query(Qt::ImEnabled|Qt::ImCursorRectangle|Qt::ImCursorPosition|Qt::ImSurroundingText);
+        QApplication::sendEvent(&editor,&query);
+        Q_ASSERT(query.isAccepted() && query.value(Qt::ImEnabled).toBool()==enabled);
+        const auto rect=query.value(Qt::ImCursorRectangle).toRect();
+        Q_ASSERT(rect.width()>=minimumWidth && rect.height()>0);
+        Q_ASSERT(editor.viewport()->mapToGlobal(rect.bottomLeft())==editor.cursorScreenPosition());
+        Q_ASSERT(query.value(Qt::ImCursorPosition).toInt()==0 && query.value(Qt::ImSurroundingText).toString()=="abc\nxy");
+    };
+    queryCaret(false,3);vimKeys(editor,"i");queryCaret(true,2);
+    editor.setBusy(true);queryCaret(false,2);editor.setBusy(false);
+    vimKeys(editor,"<Esc>R");queryCaret(true,3);vimKeys(editor,"<Esc>v");queryCaret(false,3);vimKeys(editor,"<Esc>");
     vimKeys(editor,"z123<Esc>");Q_ASSERT(editor.document()->buffer().text()=="abc\nxy");
     QTest::keyClick(&editor,Qt::Key_Delete,Qt::ControlModifier);
     QTest::keyClick(&editor,Qt::Key_Backspace,Qt::AltModifier);

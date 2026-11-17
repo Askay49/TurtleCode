@@ -44,6 +44,19 @@ static void smartEditingTests() {
         auto* popup=editor->findChild<QCompleter*>()->popup();assert(popup->isVisible());
         QTest::keyClick(popup->windowHandle(),Qt::Key_Tab);
         assert(text(*editor)=="call" && !popup->isVisible());
+        QApplication::processEvents();
+        undo(*editor);assert(text(*editor)=="ca");
+        // Replacing a live model must keep Tab acceptance and the selected row.
+        editor->showCompletions(QJsonArray{QJsonObject{{"label","cancel"}}});
+        editor->showCompletions(QJsonArray{QJsonObject{{"label","call"}},QJsonObject{{"label","cat"}}});
+        assert(popup->isVisible() && popup->model()->rowCount()==2);
+        popup->setCurrentIndex(popup->model()->index(1,0));
+        QTest::keyClick(popup->windowHandle(),Qt::Key_Tab);
+        assert(text(*editor)=="cat");assert(!popup->isVisible());
+        // Offscreen does not reactivate the parent after closing a popup.
+        window.activateWindow();assert(QTest::qWaitForWindowActive(window.windowHandle()));
+        assert(QApplication::focusWidget()==editor);
+        undo(*editor);assert(text(*editor)=="ca");
     }
     QSettings().setValue("editor/autoPairs",true);
     for(const auto opening:std::string("([{\"'")) {

@@ -1686,11 +1686,11 @@ void EditorWidget::showCompletions(const QJsonArray& items) {
         completer_->setWidget(this);
         completer_->setCompletionMode(QCompleter::UnfilteredPopupCompletion);
         completer_->setMaxVisibleItems(12);
-        completer_->popup()->installEventFilter(this);
         connect(completer_, qOverload<const QModelIndex&>(&QCompleter::activated), this, [this](const QModelIndex& index) {
             const auto item = index.data(Qt::UserRole).toJsonObject();
             hideCompletions();
             if (completionRevision_ == lspRevision_ && completionPosition_ == lspPosition()) applyCompletion(item);
+            setFocus(Qt::PopupFocusReason);
         });
     }
     completionRevision_ = lspRevision_; completionPosition_ = lspPosition();
@@ -1707,6 +1707,9 @@ void EditorWidget::showCompletions(const QJsonArray& items) {
     }
     // QCompleter owns and deletes its previous child model in setModel().
     completer_->setModel(model);
+    // setModel() reinstalls QCompleter's popup filter. Keep our Tab handler
+    // first in the filter chain after every completion refresh.
+    completer_->popup()->installEventFilter(this);
     if (!count) { hideCompletions(); return; }
     completer_->setCompletionPrefix({});
     auto rect = inputCursorRect(); rect.setWidth(480); rect.moveTop(rect.bottom());
@@ -2275,6 +2278,16 @@ void EditorWidget::selectNextOccurrence() {
     }
 
 bool EditorWidget::event(QEvent* event) {
+    if(event->type()==QEvent::InputMethodQuery) {
+        // Qt 6.2 skips these queries when WA_InputMethodEnabled is false.
+        // Normal/Visual still expose their caret while rejecting IME input.
+        auto* query=static_cast<QInputMethodQueryEvent*>(event);
+        for(unsigned bit=0;bit<32;++bit) {
+            const auto requested=static_cast<Qt::InputMethodQuery>(quint32(1)<<bit);
+            if(query->queries().testFlag(requested))query->setValue(requested,inputMethodQuery(requested));
+        }
+        event->accept();return true;
+    }
     if((vimExActive_ || vimSubConfirm_) && event->type()==QEvent::ShortcutOverride){event->accept();return true;}
     if((vimExActive_ || vimSubConfirm_) && event->type()==QEvent::KeyPress){keyPressEvent(static_cast<QKeyEvent*>(event));event->accept();return true;}
     if(event->type()==QEvent::FocusIn && !busy_){refreshEditorConfig();QTimer::singleShot(0,this,&EditorWidget::updateVimSearchHighlights);}

@@ -11,6 +11,9 @@ static void vimNormalTests(){
     if(nvim.isEmpty()){qInfo("Neovim Normal oracle skipped");return;}
     struct Case{QString input,keys;};
     const QVector<Case> cases={
+        {"straße ßẞ","gU$"},{"straße ßẞ","gU$u<C-r>"},{"ßẞa","gU$gu$"},
+        {"ßẞa","3~"},{"straße ßẞ","g~$"},{"straße ßẞ","V~"},{"straße ßẞ","VU"},
+        {"ßẞa","gU$gg`]"},{"ßẞa","gu$gg`]"},
         {"foo\n\nbar","Gge"},{"foo\n\n\nbar","G2ge"},{"foo\n\nbar","GgE"},
         {QString::fromUtf8("界界 界界 界界"),":set tw=9<CR>gqq"},
         {"\tabc","5|"},{QString::fromUtf8("界abc"),"3|"},
