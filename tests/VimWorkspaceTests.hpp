@@ -16,8 +16,10 @@ static void vimWorkspaceTests(QTemporaryDir& directory) {
         assert(file.write(text) == text.size());
         return path;
     };
-    const auto firstPath = write("split-first.txt", "start\nleft\nsame\nend\n");
-    const auto secondPath = write("split-second.txt", "start\nright\nextra\nsame\nlast\n");
+    assert(QDir(directory.path()).mkpath("left"));
+    assert(QDir(directory.path()).mkpath("right"));
+    const auto firstPath = write("left/split.txt", "start\nleft\nsame\nend\n");
+    const auto secondPath = write("right/split.txt", "start\nright\nextra\nsame\nlast\n");
     MainWindow window;
     window.resize(1100, 740);
     window.show();
@@ -27,6 +29,11 @@ static void vimWorkspaceTests(QTemporaryDir& directory) {
     auto* workspace = dynamic_cast<EditorPaneWorkspace*>(window.findChild<QStackedWidget*>("editorPaneWorkspace"));
     assert(primary && workspace && waitFor([&] { return !primary->isBusy(); }));
     const auto active = [&] { return workspace->activeEditor(); };
+    const auto title = [](EditorPane* pane) { return pane->header()->findChild<QToolButton*>("editorPaneTitle"); };
+    const auto hasAccent = [](EditorPane* pane) {
+        const auto image = pane->header()->grab().toImage();
+        return image.pixelColor(image.width() / 2, 0) == pane->header()->palette().color(QPalette::Link);
+    };
     const auto text = [](const EditorWidget* view) { return QByteArray::fromStdString(view->snapshotBuffer().text()); };
     const auto ready = [&] {
         for (auto* editor : window.findChildren<EditorWidget*>())
@@ -67,9 +74,10 @@ static void vimWorkspaceTests(QTemporaryDir& directory) {
     });
     QTest::keyClick(primary, Qt::Key_P, Qt::ControlModifier | Qt::ShiftModifier);
     assert(workspace->panes().size() == 2);
+    assert(!tabs->isVisible() && !window.findChild<QTabBar*>("vimPageTabs")->isVisible());
     auto* left = workspace->panes().front()->editor();
     auto* right = active();
-    auto* splitter = qobject_cast<QSplitter*>(right->parentWidget()->parentWidget());
+    auto* splitter = qobject_cast<QSplitter*>(workspace->activePane()->parentWidget());
     assert(splitter && splitter->orientation() == Qt::Horizontal);
     assertEvenSplit(splitter);
     assert(left != right && left->document() == right->document() && right->document() == primary->document());
@@ -79,12 +87,13 @@ static void vimWorkspaceTests(QTemporaryDir& directory) {
     right->setNavigationPosition(1, 1);
     QTest::keyClicks(right, "X");
     assert(text(left).startsWith("Xstart") && primary->isModified() && left->isModified());
+    for (auto* pane : workspace->panes()) assert(title(pane)->accessibleName() == "split.txt •");
     assert(left->navigationPosition() == QPoint(3, 2) && right->navigationPosition() == QPoint(1, 2));
     left->setFocus();
     QTest::keyClick(left, Qt::Key_Z, Qt::ControlModifier);
     assert(text(right).startsWith("start") && !right->isModified());
     assert(window.findChild<QAction*>("editor.closePane")->isEnabled());
-    window.findChild<QAction*>("editor.closePane")->trigger();
+    workspace->activePane()->header()->findChild<QToolButton*>("editorPaneClose")->click();
     assert(workspace->panes().size() == 1 && active() == right);
 
     window.findChild<QAction*>("settings.vimMode")->trigger();
@@ -94,8 +103,33 @@ static void vimWorkspaceTests(QTemporaryDir& directory) {
     auto* second = active();
     auto* secondDocument = qobject_cast<EditorWidget*>(tabs->currentWidget());
     const auto secondId = secondDocument->property("vimBufferId").toULongLong();
-    auto* sideBySide = qobject_cast<QSplitter*>(second->parentWidget()->parentWidget());
+    auto* sideBySide = qobject_cast<QSplitter*>(workspace->activePane()->parentWidget());
     assertEvenSplit(sideBySide);
+    auto* leftPane = workspace->panes().front();
+    auto* rightPane = workspace->panes().back();
+    assert(title(leftPane)->isVisible() && title(leftPane)->text() == "left/split.txt");
+    assert(title(rightPane)->isVisible() && title(rightPane)->text() == "right/split.txt");
+    assert(title(rightPane)->toolTip() == secondPath && hasAccent(rightPane) && !hasAccent(leftPane));
+    const auto pickBuffer = [&](EditorPane* pane, const QString& name) {
+        QTimer::singleShot(0, [&] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            assert(menu && menu->objectName() == "editorPaneBuffers");
+            for (auto* action : menu->actions()) if (action->text() == name) {
+                menu->setActiveAction(action);
+                QTest::keyClick(menu, Qt::Key_Return);
+                return;
+            }
+            assert(false);
+        });
+        title(pane)->click();
+    };
+    pickBuffer(leftPane, "right/split.txt");
+    assert(active() == leftPane->editor() && active()->filePath() == secondPath && rightPane->editor() == second);
+    pickBuffer(leftPane, "left/split.txt");
+    assert(active()->filePath() == firstPath && hasAccent(leftPane) && !hasAccent(rightPane));
+    window.activateWindow();
+    rightPane->editor()->setFocus();
+    assert(waitFor([&] { return active() == second && second->hasFocus(); }));
     const int originalWidth = sideBySide->sizes().last();
     windowKey(Qt::Key_Greater);
     assert(sideBySide->sizes().last() > originalWidth);
@@ -134,7 +168,7 @@ static void vimWorkspaceTests(QTemporaryDir& directory) {
 
     windowKey(Qt::Key_S);
     assert(workspace->panes().size() == 2 && active()->filePath() == firstPath);
-    auto* stacked = qobject_cast<QSplitter*>(active()->parentWidget()->parentWidget());
+    auto* stacked = qobject_cast<QSplitter*>(workspace->activePane()->parentWidget());
     assert(stacked && stacked->orientation() == Qt::Vertical);
     assertEvenSplit(stacked);
     ex("tabnew " + secondPath + " | 1delete | 1delete");
@@ -148,6 +182,8 @@ static void vimWorkspaceTests(QTemporaryDir& directory) {
     assert(active()->navigationPosition().x() == 4);
     auto* pages = window.findChild<QTabBar*>("vimPageTabs");
     assert(pages && pages->isVisible() && pages->count() == 2 && pages->currentIndex() == 1);
+    assert(pages->tabText(0) == "split.txt +1");
+    assert(pages->tabToolTip(0).split('\n') == QStringList({firstPath, firstPath}));
     ex("tabmove 0");
     assert(pages->currentIndex() == 0 && active()->filePath() == secondPath);
     ex("tabmove $");
@@ -197,12 +233,23 @@ static void vimWorkspaceTests(QTemporaryDir& directory) {
     assert(text(source) == "start\nleft\nsame\nend\n");
     ex("diffoff!");
     assert(source->visualRowForLine(2) == 2 && tabs->currentWidget()->property("vimBufferId").toULongLong() == firstId);
-    auto* diffSplitter = qobject_cast<QSplitter*>(source->parentWidget()->parentWidget());
+    auto* diffSplitter = qobject_cast<QSplitter*>(workspace->activePane()->parentWidget());
     assertEvenSplit(diffSplitter);
     const int otherPaneWidth = diffSplitter->sizes().last();
     windowKey(Qt::Key_V);
     const auto widths = diffSplitter->sizes();
     assert(widths.size() == 3 && widths[0] > 0 && std::abs(widths[0] - widths[1]) <= 1);
     assert(std::abs(widths[2] - otherPaneWidth) <= 1);
+    auto* keep = workspace->panes().back();
+    QTimer::singleShot(0, [&] {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        assert(menu);
+        auto* action = menu->findChild<QAction*>("keepOnlyEditorPane");
+        assert(action);
+        menu->setActiveAction(action);
+        QTest::keyClick(menu, Qt::Key_Return);
+    });
+    keep->header()->findChild<QToolButton*>("editorPaneActions")->click();
+    assert(workspace->panes().size() == 1 && workspace->activePane() == keep && tabs->count() == 2);
     closeDiscard(window);
 }

@@ -23,8 +23,8 @@ namespace VimEx {struct Invocation;}
 class QLabel;
 class QTabWidget;
 class QTabBar;
-class EditorTabs;
 class EditorPane;
+class EditorPaneHeader;
 class EditorPaneWorkspace;
 class Document;
 class VimDiffSession;
@@ -125,7 +125,6 @@ private:
     void switchRecentTab(int direction);
     void finishTabSwitch(bool accept);
     void positionTabSwitcher();
-    void alignCurrentTabTitle();
     bool closeTab(int index);
     void closeAllTabs();
     void updateTabMru(QWidget* current);
@@ -148,7 +147,12 @@ private:
     EditorWidget* showBufferInPane(EditorPane* pane, EditorWidget* source);
     void updateWorkspaceFocus(bool focus);
     void updateEditorPaneActions();
-    void updateVimPageTabs();
+    void updateEditorHeaders();
+    void connectEditorHeader(EditorPaneHeader* header, EditorPane* pane = nullptr);
+    void showPaneBuffers(EditorPane* pane, const QPoint& position);
+    void showPaneActions(EditorPane* pane, const QPoint& position);
+    QString paneBufferPath(const EditorWidget* editor) const;
+    bool keepOnlyEditorPane(EditorWidget* editor);
     void viewFocused(EditorWidget* editor);
     void initializePaneWorkspace();
     EditorWidget* splitEditor(Qt::Orientation orientation);
@@ -223,7 +227,8 @@ private:
     QToolButton* searchActivity_{nullptr};
     QStringList projectRoots_;
     bool explicitProject_{false};
-    EditorTabs* tabs_{nullptr};
+    QTabWidget* tabs_{nullptr};
+    EditorPaneHeader* singleEditorHeader_{nullptr};
     GrammarManager* grammarManager_{nullptr};
     LspManager* lsp_{nullptr};
     QList<QPointer<QWidget>> replaceLockedEditors_;

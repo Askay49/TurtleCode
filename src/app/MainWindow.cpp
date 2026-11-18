@@ -93,7 +93,6 @@
 
 #include "editor/EditorWidget.hpp"
 #include "editor/OutlinePanel.hpp"
-#include "editor/EditorTabs.hpp"
 #include "editor/EditorPaneWorkspace.hpp"
 #include "project/ProjectExplorer.hpp"
 #include "project/WorkspaceIndex.hpp"
@@ -573,6 +572,7 @@ void MainWindow::createUi() {
             if (path != deletedPath && !path.startsWith(prefix)) continue;
             if (lsp_) lsp_->close(path);
             if (editor->isModified()) {
+                editor->document()->setProperty("detachedDeletedFile", true);
                 editor->detachDeletedFile();
                 tabs_->setTabText(i, I18n::text("Untitled (deleted) •"));
                 tabs_->setTabToolTip(i, I18n::text("Original file was deleted. Use Save As to keep this buffer."));
@@ -597,8 +597,17 @@ void MainWindow::createUi() {
     auto* documentLayout = new QVBoxLayout(documentArea);
     documentLayout->setContentsMargins(0, 0, 0, 0);
     documentLayout->setSpacing(0);
-    tabs_ = new EditorTabs(documentArea);
+    tabs_ = new QTabWidget(documentArea);
+    tabs_->setObjectName("editorTabs");
+    tabs_->tabBar()->hide();
+    tabs_->setDocumentMode(true);
+    singleEditorHeader_ = new EditorPaneHeader(documentArea);
+    singleEditorHeader_->hide();
+    connectEditorHeader(singleEditorHeader_);
     paneWorkspace_ = new EditorPaneWorkspace(documentArea);
+    connect(paneWorkspace_, &EditorPaneWorkspace::paneCreated, this, [this](EditorPane* pane) {
+        connectEditorHeader(pane->header(), pane);
+    });
     vimPageTabs_ = new QTabBar(documentArea);
     vimPageTabs_->setObjectName("vimPageTabs");
     vimPageTabs_->setAccessibleName(I18n::text("Vim tab pages"));
@@ -612,58 +621,31 @@ void MainWindow::createUi() {
     });
     paneWorkspace_->hide();
     documentLayout->addWidget(vimPageTabs_);
+    documentLayout->addWidget(singleEditorHeader_);
     documentLayout->addWidget(tabs_, 1);
     documentLayout->addWidget(paneWorkspace_, 1);
     editorArea_->setCentralWidget(documentArea);
-    tabs_->setTabsClosable(false);
-    tabs_->setMovable(false);
-    tabs_->setDocumentMode(true);
-    auto* tabBar=tabs_->tabBar();
-    tabBar->setExpanding(false);
-    tabBar->setDrawBase(false);
-    tabBar->setElideMode(Qt::ElideMiddle);
-    tabBar->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(tabBar,&QWidget::customContextMenuRequested,this,[this,tabBar](const QPoint& position) {
-        const int index=tabBar->tabAt(position);
-        if(index<0 || index!=tabs_->currentIndex()) return;
-        QPointer<QWidget> page=tabs_->widget(index);
-        QMenu menu(this);menu.setObjectName("currentTabMenu");
-        auto* close=menu.addAction(Codicons::icon("close"), I18n::text("Close"));close->setObjectName("closeCurrentTab");
-        auto* closeAll=menu.addAction(Codicons::icon("close-all"), I18n::text("Close All"));closeAll->setObjectName("closeAllTabs");
-        auto* selected=menu.exec(tabBar->mapToGlobal(position));
-        if(selected==close && page) closeTab(tabs_->indexOf(page));
-        else if(selected==closeAll) closeAllTabs();
-    });
-    connect(tabs_,&QTabWidget::tabCloseRequested,this,[this](int index){closeTab(index);});
-    connect(tabs_, &QTabWidget::currentChanged, this, [this,tabBar](int index) {
+    connect(tabs_, &QTabWidget::tabCloseRequested, this, [this](int index) { closeTab(index); });
+    connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
         updateVimIndicator();
         scheduleOutline();
         if(gitDiff_ && gitDiff_->isVisible() && gitDiff_->nativeEditor() && gitDiff_->nativeEditor()!=activeEditor()) gitDiff_->hide();
         if(tabSwitcher_ && tabSwitcher_->isVisible()) finishTabSwitch(false);
-        if(index<0 && tabs_->count()>0) {
-            tabs_->setTabVisible(0,true);tabs_->setCurrentIndex(0);return;
-        }
-        // Reveal the new current tab before hiding the others, so hiding a tab
-        // never asks QTabWidget to select an unrelated document.
-        if(index>=0 && !tabBar->isTabVisible(index)) tabs_->setTabVisible(index,true);
-        for(int i=0;i<tabs_->count();++i)
-            if(i!=index && tabBar->isTabVisible(i)) tabs_->setTabVisible(i,false);
         if(lsp_ && lspStatus_) {
             auto* editor=activeEditor();
             lspStatus_->setText(lsp_->status(editor?editor->filePath():QString{}));
         }
         if (index >= 0) {
-            alignCurrentTabTitle();
-            QTimer::singleShot(0,this,&MainWindow::alignCurrentTabTitle);
             updateTabMru(tabs_->widget(index));
             requestSemanticHighlighting(activeEditor());
-        } else tabs_->findChild<QWidget*>("tabGutter")->hide();
+        }
         if (!paneWorkspace_->count()) {
             auto* current = activeEditor();
             if (current && current != vimLastEditor_) { vimAlternateEditor_ = vimLastEditor_; vimLastEditor_ = current; }
             if (current) current->setProperty("vimAlternatePath", vimAlternateEditor_ ? vimAlternateEditor_->filePath() : QString{});
         }
         updateEditorPaneActions();
+        if (!paneWorkspace_->count()) updateEditorHeaders();
     });
 
     splitter->addWidget(sidebar_);
@@ -1221,7 +1203,7 @@ void MainWindow::finishClose(bool accepted) {
     vimPageTabs_->setEnabled(true);
     findChild<QWidget*>("activityBar")->setEnabled(true);
     for(const auto& editor:closingEditors_)if(editor)editor->setEnabled(true);
-    if(!accepted){closing_=false;closingEditors_.clear();closingVimBuffer_.clear();updateEditorPaneActions();updateVimPageTabs();return;}
+    if(!accepted){closing_=false;closingEditors_.clear();closingVimBuffer_.clear();updateEditorPaneActions();updateEditorHeaders();return;}
     finishTabSwitch(false);
     if(closingWindow_) {
         // Modified documents explicitly discarded by the user are reopened from disk.
@@ -1265,18 +1247,6 @@ void MainWindow::finishClose(bool accepted) {
     if(auto* current=activeEditor())current->setFocus();
     updateEditorPaneActions();
     updateWindowTitle();checkpointRecovery();
-}
-
-void MainWindow::alignCurrentTabTitle() {
-    if(!tabs_) return;
-    auto* editor=activeEditor();
-    if(!editor) return;
-    if (paneWorkspace_->count()) {
-        tabs_->setHeaderGutter(editor->lineNumberAreaWidth(), tabs_->tabBar()->height());
-        return;
-    }
-    const auto boundary=editor->viewport()->mapTo(tabs_,QPoint(editor->lineNumberAreaWidth(),0));
-    tabs_->setHeaderGutter(boundary.x(),boundary.y());
 }
 
 void MainWindow::positionTabSwitcher() {
@@ -1917,7 +1887,7 @@ void MainWindow::saveCurrentFileAs() {
 }
 
 void MainWindow::updateWindowTitle() {
-    updateVimPageTabs();
+    updateEditorHeaders();
     auto* editor = activeEditor();
     QString projectName;
     if (!projectRoots_.isEmpty()) {
@@ -2421,7 +2391,9 @@ EditorWidget* MainWindow::createUntitledEditor() {
 void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool primary) {
     if (primary) connect(editor->document().get(), &Document::busyChanged, editor, [this, editor](bool) {
         if (documentEditor(activeEditor()) == editor) updateEditorPaneActions();
+        updateEditorHeaders();
     });
+    else connect(editor, &EditorWidget::modifiedChanged, this, &MainWindow::updateEditorHeaders);
     connect(editor, &EditorWidget::viewFocused, this, [this, editor] { viewFocused(editor); });
     connect(editor, &EditorWidget::vimWorkspaceRequested, this, [this, editor](const QString& key, int count, bool explicitCount) {
         executeVimWorkspaceKey(editor, key, count, explicitCount);
@@ -2452,11 +2424,6 @@ void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool p
     connect(editor,&EditorWidget::breakpointToggled,this,[this,editor](int line) {
         debugPanel_->toggleBreakpoint(editor->filePath(),line);
     });
-    const auto alignTitle=[this,editor] {
-        if(activeEditor()==editor) alignCurrentTabTitle();
-    };
-    connect(editor,&EditorWidget::gutterWidthChanged,this,alignTitle);
-    connect(editor,&EditorWidget::semanticViewportChanged,this,alignTitle);
     connect(editor,&EditorWidget::vimCompletionRequested,this,[this,editor]{requestCompletion(editor,false);});
     connect(editor, &EditorWidget::codeContextMenuRequested, this, [this, editor](const QPoint& global) {
         activateEditor(editor);

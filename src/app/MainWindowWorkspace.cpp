@@ -1,7 +1,7 @@
 #include "MainWindow.hpp"
+#include "Codicons.hpp"
 #include "I18n.hpp"
 #include "editor/EditorPaneWorkspace.hpp"
-#include "editor/EditorTabs.hpp"
 #include "editor/EditorWidget.hpp"
 #include "editor/VimDiffSession.hpp"
 #include "git/GitDiffView.hpp"
@@ -9,14 +9,48 @@
 
 #include <QFileInfo>
 #include <QAction>
-#include <QFontMetrics>
 #include <QLabel>
+#include <QMenu>
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStatusBar>
 #include <QTabBar>
+#include <QTabWidget>
 #include <algorithm>
+
+namespace {
+class BufferNames {
+public:
+    void add(const QString& path) {
+        if (!path.isEmpty()) paths_[QFileInfo(path).fileName()].insert(path);
+    }
+
+    QString label(const QString& path, const EditorWidget* editor) const {
+        if (path.isEmpty()) return I18n::text(editor->document()->property("detachedDeletedFile").toBool()
+            ? "Untitled (deleted)" : "Untitled");
+        const auto name = QFileInfo(path).fileName();
+        const auto found = paths_.constFind(name);
+        if (found == paths_.cend() || found->size() < 2) return name;
+        auto separator = path.lastIndexOf('/');
+        while (separator > 0) {
+            separator = path.lastIndexOf('/', separator - 1);
+            const auto suffix = path.sliced(separator + 1);
+            if (std::none_of(found->cbegin(), found->cend(), [&](const QString& other) {
+                return other != path && (other == suffix || other.endsWith('/' + suffix));
+            })) return suffix;
+        }
+        return path;
+    }
+
+private:
+    QHash<QString, QSet<QString>> paths_;
+};
+
+QString menuText(QString title) {
+    return title.replace('&', QStringLiteral("&&"));
+}
+}
 
 EditorWidget* MainWindow::activeEditor() const {
     if (paneWorkspace_ && paneWorkspace_->count()) return paneWorkspace_->activeEditor();
@@ -51,9 +85,8 @@ EditorWidget* MainWindow::showBufferInPane(EditorPane* pane, EditorWidget* sourc
         view = new EditorWidget(pane, source->document());
         view->initializeSharedView(*source);
         connectEditor(view, source->filePath(), false);
-        pane->addWidget(view);
     }
-    pane->setCurrentWidget(view);
+    pane->showView(view);
     return view;
 }
 
@@ -97,7 +130,6 @@ void MainWindow::updateWorkspaceFocus(bool focus) {
     updateEditorPaneActions();
     updateWindowTitle();
     scheduleOutline();
-    alignCurrentTabTitle();
 }
 
 void MainWindow::updateEditorPaneActions() {
@@ -109,23 +141,147 @@ void MainWindow::updateEditorPaneActions() {
         action->setEnabled(ready && (paneWorkspace_->count() > 1 || paneWorkspace_->panes().size() > 1));
 }
 
-void MainWindow::updateVimPageTabs() {
-    if (!vimPageTabs_) return;
+void MainWindow::updateEditorHeaders() {
     const QSignalBlocker block(vimPageTabs_);
     const int count = paneWorkspace_->count();
+    auto* single = count ? nullptr : activeEditor();
+    singleEditorHeader_->setVisible(single != nullptr);
+    if (single) {
+        const auto path = paneBufferPath(single);
+        singleEditorHeader_->setDocumentTitle(BufferNames{}.label(path, single), path, single->isModified());
+        singleEditorHeader_->setActive(true);
+        singleEditorHeader_->setCloseAction(!closing_ && !single->isBusy(), false);
+    }
+
     while (vimPageTabs_->count() > count) vimPageTabs_->removeTab(vimPageTabs_->count() - 1);
     while (vimPageTabs_->count() < count) vimPageTabs_->addTab({});
+    const auto* activePane = paneWorkspace_->activePane();
     for (int i = 0; i < count; ++i) {
-        const auto* editor = paneWorkspace_->pageEditor(i);
-        const auto path = editor ? editor->filePath() : QString{};
-        auto title = path.isEmpty() ? I18n::text("Untitled") : QFileInfo(path).fileName();
-        if (editor && editor->isModified()) title += QStringLiteral(" •");
-        vimPageTabs_->setTabText(i, title.replace('&', QStringLiteral("&&")));
-        vimPageTabs_->setTabToolTip(i, path);
+        const auto panes = paneWorkspace_->panesOnPage(i);
+        const bool canClosePane = count > 1 || panes.size() > 1;
+        BufferNames names;
+        for (auto* pane : panes) if (auto* view = pane->editor()) names.add(paneBufferPath(view));
+
+        QString firstTitle;
+        QStringList files;
+        bool modified = false;
+        for (auto* pane : panes) {
+            auto* view = pane->editor();
+            auto* header = pane->header();
+            header->setVisible(view != nullptr);
+            if (!view) continue;
+            const auto path = paneBufferPath(view);
+            const auto label = names.label(path, view);
+            const bool dirty = view->isModified();
+            header->setDocumentTitle(label, path, dirty);
+            header->setActive(pane == activePane);
+            header->setCloseAction(!closing_ && !view->isBusy(), canClosePane);
+            if (files.isEmpty()) firstTitle = label;
+            auto detail = path.isEmpty() ? label : path;
+            if (dirty) detail += QStringLiteral(" •");
+            files.append(detail);
+            modified |= dirty;
+        }
+        auto title = files.isEmpty() ? I18n::text("Tab page") : firstTitle;
+        if (files.size() > 1) title += QStringLiteral(" +%1").arg(files.size() - 1);
+        if (modified) title += QStringLiteral(" •");
+        vimPageTabs_->setTabText(i, menuText(title));
+        vimPageTabs_->setTabToolTip(i, files.join('\n'));
     }
     vimPageTabs_->setCurrentIndex(paneWorkspace_->currentIndex());
     vimPageTabs_->setVisible(count > 1);
     vimPageTabs_->setEnabled(!closing_);
+}
+
+QString MainWindow::paneBufferPath(const EditorWidget* editor) const {
+    const auto path = editor->filePath();
+    if (!path.isEmpty() || !editor->isBusy()) return path;
+    const auto* primary = documentEditor(editor);
+    return primary ? primary->property("openingPath").toString() : QString{};
+}
+
+void MainWindow::connectEditorHeader(EditorPaneHeader* header, EditorPane* pane) {
+    connect(header, &EditorPaneHeader::buffersRequested, this, [this, pane](const QPoint& position) {
+        showPaneBuffers(pane, position);
+    });
+    connect(header, &EditorPaneHeader::actionsRequested, this, [this, pane](const QPoint& position) {
+        showPaneActions(pane, position);
+    });
+    connect(header, &EditorPaneHeader::closeRequested, this, [this, pane] {
+        auto* editor = pane ? pane->editor() : activeEditor();
+        if (!editor || closing_ || editor->isBusy()) return;
+        if (!pane || (paneWorkspace_->count() == 1 && paneWorkspace_->panes().size() == 1))
+            closeTab(tabs_->indexOf(documentEditor(editor)));
+        else
+            closeEditorPane(editor);
+    });
+}
+
+void MainWindow::showPaneBuffers(EditorPane* pane, const QPoint& position) {
+    if (closing_) return;
+    QPointer<EditorPane> destination(pane);
+    const auto* current = documentEditor(pane ? pane->editor() : activeEditor());
+    QMenu menu(this);
+    menu.setObjectName("editorPaneBuffers");
+    QHash<QAction*, QPointer<EditorWidget>> choices;
+    BufferNames names;
+    for (int i = 0; i < tabs_->count(); ++i)
+        if (auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i))) names.add(paneBufferPath(editor));
+    for (const auto& item : tabMru_) {
+        auto* editor = qobject_cast<EditorWidget*>(item.data());
+        if (!editor || tabs_->indexOf(editor) < 0) continue;
+        auto title = names.label(paneBufferPath(editor), editor);
+        if (editor->isModified()) title += QStringLiteral(" •");
+        auto* action = menu.addAction(menuText(title));
+        action->setCheckable(true);
+        action->setChecked(editor == current);
+        choices.insert(action, editor);
+    }
+    const auto target = choices.value(menu.exec(position));
+    if (closing_ || !target || tabs_->indexOf(target) < 0) return;
+    if (pane) {
+        if (!destination || !paneWorkspace_->panes(true).contains(destination)) return;
+        paneWorkspace_->selectPane(destination);
+    }
+    activateEditor(target, true);
+}
+
+void MainWindow::showPaneActions(EditorPane* pane, const QPoint& position) {
+    QPointer<EditorWidget> editor(pane ? pane->editor() : activeEditor());
+    if (!editor || closing_) return;
+    QMenu menu(this);
+    menu.setObjectName("editorPaneMenu");
+    auto* right = menu.addAction(Codicons::icon("split-vertical"), I18n::text("Split Editor Right"));
+    auto* below = menu.addAction(Codicons::icon("split-horizontal"), I18n::text("Split Editor Below"));
+    right->setEnabled(!editor->isBusy());
+    below->setEnabled(!editor->isBusy());
+    QAction* only = nullptr;
+    const bool split = pane && paneWorkspace_->panes().size() > 1;
+    if (split) {
+        only = menu.addAction(I18n::text("Keep Only This Pane"));
+        only->setObjectName("keepOnlyEditorPane");
+    }
+    const bool closesPane = pane && (split || paneWorkspace_->count() > 1);
+    menu.addSeparator();
+    auto* close = menu.addAction(Codicons::icon("close"), I18n::text(closesPane ? "Close File" : "Close"));
+    close->setObjectName("closeCurrentTab");
+    close->setEnabled(!editor->isBusy());
+    auto* closeAll = menu.addAction(Codicons::icon("close-all"), I18n::text("Close All"));
+    closeAll->setObjectName("closeAllTabs");
+    auto* selected = menu.exec(position);
+    if (!selected || !editor || closing_) return;
+    if (selected == right || selected == below) {
+        if (editor->isBusy() || (pane && !paneWorkspace_->paneFor(editor))) return;
+        activateEditor(editor, false);
+        splitEditor(selected == right ? Qt::Horizontal : Qt::Vertical);
+    } else if (selected == only) {
+        const QScopedValueRollback changing(updatingWorkspace_, true);
+        if (keepOnlyEditorPane(editor)) updateWorkspaceFocus(true);
+    } else if (selected == close) {
+        closeTab(tabs_->indexOf(documentEditor(editor)));
+    } else if (selected == closeAll) {
+        closeAllTabs();
+    }
 }
 
 void MainWindow::viewFocused(EditorWidget* editor) {
@@ -153,7 +309,7 @@ void MainWindow::initializePaneWorkspace() {
     auto* pane = paneWorkspace_->newPage();
     pane->alternate = vimAlternateEditor_;
     if (source) showBufferInPane(pane, source);
-    tabs_->setHeaderOnly(true);
+    tabs_->hide();
     paneWorkspace_->show();
     updateWorkspaceFocus(false);
 }
@@ -181,6 +337,22 @@ bool MainWindow::closeEditorPane(EditorWidget* editor) {
     removeVimDiffView(editor);
     if (!paneWorkspace_->closePane(pane)) return false;
     updateWorkspaceFocus(true);
+    return true;
+}
+
+bool MainWindow::keepOnlyEditorPane(EditorWidget* editor) {
+    auto* pane = paneWorkspace_->paneFor(editor);
+    const auto siblings = paneWorkspace_->panes();
+    if (closing_ || !siblings.contains(pane)) return false;
+    for (auto* other : siblings) {
+        if (other != pane && other->editor() && other->editor()->isBusy()) {
+            editor->reportVimExMessage(I18n::text("Vim: the document is busy"));
+            return false;
+        }
+    }
+    for (auto* other : siblings) if (other != pane) removeVimDiffView(other->editor());
+    paneWorkspace_->selectPane(pane);
+    paneWorkspace_->keepPane(pane);
     return true;
 }
 
@@ -216,7 +388,7 @@ void MainWindow::removeBufferViews(EditorWidget* editor) {
             }
             if (next) showBufferInPane(pane, next);
         }
-        pane->removeWidget(view);
+        pane->removeView(view);
         view->deleteLater();
     }
     updateWorkspaceFocus(false);
@@ -314,13 +486,7 @@ void MainWindow::executeVimWorkspaceKey(EditorWidget* editor, const QString& com
             if (QStringLiteral("hjklwWtbp").contains(key)) {
                 paneWorkspace_->selectPane(paneWorkspace_->focusTarget(key, count, explicitCount));
             } else if (key == 'o') {
-                const auto panes = paneWorkspace_->panes();
-                for (auto* pane : panes) {
-                    auto* view = pane->editor();
-                    if (view && view != editor && view->isBusy()) { editor->reportVimExMessage(I18n::text("Vim: the document is busy")); return; }
-                }
-                for (auto* pane : panes) if (pane->editor() != editor) removeVimDiffView(pane->editor());
-                paneWorkspace_->keepPane(paneWorkspace_->activePane());
+                if (!keepOnlyEditorPane(editor)) return;
             } else if (key == '=') {
                 paneWorkspace_->equalize();
             } else if (QStringLiteral("+-_<>|").contains(key)) {

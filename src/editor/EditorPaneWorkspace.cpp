@@ -1,25 +1,138 @@
 #include "EditorPaneWorkspace.hpp"
 #include "EditorWidget.hpp"
+#include "app/I18n.hpp"
+#include "app/Codicons.hpp"
 
+#include <QHBoxLayout>
+#include <QPainter>
 #include <QSplitter>
+#include <QStyleOptionToolButton>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <limits>
 
-EditorPane::EditorPane() {
+class EditorPaneHeader::TitleButton final : public QToolButton {
+public:
+    using QToolButton::QToolButton;
+    bool modified{false};
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QStyleOptionToolButton option;
+        initStyleOption(&option);
+        option.text.clear();
+        QPainter painter(this);
+        style()->drawComplexControl(QStyle::CC_ToolButton, &option, &painter, this);
+        const QRect label = rect().adjusted(7, 0, -6, 0);
+        const QString suffix = modified ? QStringLiteral(" •  ▾") : QStringLiteral("  ▾");
+        const auto title = fontMetrics().elidedText(text(), Qt::ElideMiddle,
+            std::max(0, label.width() - fontMetrics().horizontalAdvance(suffix)));
+        style()->drawItemText(&painter, label, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine,
+                             palette(), isEnabled(), title + suffix, QPalette::ButtonText);
+    }
+};
+
+EditorPaneHeader::EditorPaneHeader(QWidget* parent)
+    : QFrame(parent), title_(new TitleButton(this)), close_(new QToolButton(this)) {
+    setObjectName("editorPaneHeader");
+    auto* layout = new QHBoxLayout(this);
+    layout->setContentsMargins(4, 2, 4, 1);
+    layout->setSpacing(2);
+    title_->setObjectName("editorPaneTitle");
+    title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    title_->setMinimumWidth(36);
+    title_->setContextMenuPolicy(Qt::CustomContextMenu);
+    layout->addWidget(title_, 1);
+
+    auto* more = new QToolButton(this);
+    more->setObjectName("editorPaneActions");
+    more->setIcon(Codicons::icon("ellipsis"));
+    more->setAccessibleName(I18n::text("Editor pane actions"));
+    more->setToolTip(more->accessibleName());
+    layout->addWidget(more);
+
+    close_->setObjectName("editorPaneClose");
+    close_->setIcon(Codicons::icon("close"));
+    layout->addWidget(close_);
+
+    connect(title_, &QToolButton::clicked, this, [this] {
+        emit buffersRequested(title_->mapToGlobal(title_->rect().bottomLeft()));
+    });
+    connect(title_, &QWidget::customContextMenuRequested, this, [this](const QPoint& point) {
+        emit actionsRequested(title_->mapToGlobal(point));
+    });
+    connect(more, &QToolButton::clicked, this, [this, more] {
+        emit actionsRequested(more->mapToGlobal(more->rect().bottomLeft()));
+    });
+    connect(close_, &QToolButton::clicked, this, &EditorPaneHeader::closeRequested);
+}
+
+void EditorPaneHeader::setDocumentTitle(const QString& title, const QString& path, bool modified) {
+    if (title_->text() != title) {
+        title_->setText(title);
+        title_->setShortcut({});
+    }
+    title_->modified = modified;
+    const auto description = modified ? title + QStringLiteral(" •") : title;
+    title_->setAccessibleName(description);
+    title_->setToolTip(path.isEmpty() ? description : path);
+    title_->update();
+}
+
+void EditorPaneHeader::setActive(bool active) {
+    if (active_ == active) return;
+    active_ = active;
+    update();
+}
+
+void EditorPaneHeader::setCloseAction(bool enabled, bool closesPane) {
+    close_->setEnabled(enabled);
+    close_->setAccessibleName(I18n::text(closesPane ? "Close Editor Pane" : "Close"));
+    close_->setToolTip(close_->accessibleName());
+}
+
+void EditorPaneHeader::paintEvent(QPaintEvent* event) {
+    QFrame::paintEvent(event);
+    if (active_) {
+        QPainter painter(this);
+        painter.fillRect(0, 0, width(), 2, palette().color(QPalette::Link));
+    }
+}
+
+EditorPane::EditorPane() : header_(new EditorPaneHeader(this)), views_(new QStackedWidget(this)) {
     setObjectName("editorPane");
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(header_);
+    layout->addWidget(views_, 1);
+    header_->hide();
 }
 
 EditorWidget* EditorPane::editor() const {
-    return qobject_cast<EditorWidget*>(currentWidget());
+    return qobject_cast<EditorWidget*>(views_->currentWidget());
 }
 
 EditorWidget* EditorPane::viewFor(const Document* document) const {
-    for (int i = 0; i < count(); ++i) {
-        auto* view = qobject_cast<EditorWidget*>(widget(i));
+    for (int i = 0; i < views_->count(); ++i) {
+        auto* view = qobject_cast<EditorWidget*>(views_->widget(i));
         if (view && view->document().get() == document) return view;
     }
     return nullptr;
+}
+
+void EditorPane::showView(EditorWidget* view) {
+    if (views_->indexOf(view) < 0) views_->addWidget(view);
+    views_->setCurrentWidget(view);
+}
+
+bool EditorPane::containsView(const EditorWidget* view) const {
+    return views_->indexOf(view) >= 0;
+}
+
+void EditorPane::removeView(EditorWidget* view) {
+    views_->removeWidget(view);
 }
 
 class EditorPaneWorkspace::Page final : public QWidget {
@@ -66,11 +179,6 @@ EditorWidget* EditorPaneWorkspace::activeEditor() const {
     return activePane() ? activePane()->editor() : nullptr;
 }
 
-EditorWidget* EditorPaneWorkspace::pageEditor(int index) const {
-    const auto* owner = static_cast<Page*>(widget(index));
-    return owner && owner->active ? owner->active->editor() : nullptr;
-}
-
 QList<EditorPane*> EditorPaneWorkspace::panes(bool allPages) const {
     QList<EditorPane*> result;
     if (allPages) {
@@ -88,8 +196,14 @@ QList<EditorPane*> EditorPaneWorkspace::panesOnPage(int index) const {
 }
 
 EditorPane* EditorPaneWorkspace::paneFor(const EditorWidget* editor) const {
-    for (auto* pane : panes(true)) if (pane->indexOf(editor) >= 0) return pane;
+    if (editor) for (auto* pane : panes(true)) if (pane->containsView(editor)) return pane;
     return nullptr;
+}
+
+EditorPane* EditorPaneWorkspace::createPane() {
+    auto* pane = new EditorPane;
+    emit paneCreated(pane);
+    return pane;
 }
 
 void EditorPaneWorkspace::selectPane(EditorPane* pane) {
@@ -121,7 +235,7 @@ QWidget* EditorPaneWorkspace::replaceInLayout(QWidget* before, QWidget* after) {
 EditorPane* EditorPaneWorkspace::split(Qt::Orientation orientation) {
     auto* current = activePane();
     if (!current) return nullptr;
-    auto* next = new EditorPane;
+    auto* next = createPane();
     auto* parent = qobject_cast<QSplitter*>(current->parentWidget());
     if (parent && parent->orientation() == orientation) {
         auto sizes = parent->sizes();
@@ -204,7 +318,7 @@ void EditorPaneWorkspace::keepPane(EditorPane* pane) {
 
 EditorPane* EditorPaneWorkspace::newPage(int after) {
     auto* owner = new Page;
-    auto* pane = new EditorPane;
+    auto* pane = createPane();
     owner->layout()->addWidget(pane);
     owner->active = pane;
     insertWidget(after < 0 ? currentIndex() + 1 : std::min(int(count()), after + 1), owner);

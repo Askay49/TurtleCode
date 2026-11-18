@@ -912,22 +912,18 @@ int main(int argc,char**argv) {
         const auto third=write("third.txt");window.openPaths({cpp,text,third});
         auto* tabs=window.findChild<QTabWidget*>();assert(tabs && tabs->count()==3);
         assert(waitFor([&]{for(auto* editor:window.findChildren<EditorWidget*>())if(editor->isBusy())return false;return true;}));
-        auto* bar=tabs->tabBar();
+        auto* header=window.findChild<QWidget*>("editorPaneHeader");
+        auto* title=header->findChild<QToolButton*>("editorPaneTitle");
         const auto checkHeader=[&]{
             QApplication::processEvents();
-            int visible=0;for(int i=0;i<bar->count();++i)visible+=bar->isTabVisible(i);
-            assert(visible==(tabs->count()>0?1:0));
-            if(tabs->count())assert(bar->isTabVisible(tabs->currentIndex()) && bar->tabRect(tabs->currentIndex()).isValid());
-            assert(!tabs->tabsClosable() && !tabs->isMovable());
+            assert(!tabs->tabBar()->isVisible());
+            assert(header->isVisible()==(tabs->count()>0));
             if(auto* editor=qobject_cast<EditorWidget*>(tabs->currentWidget())) {
-                const int tabLeft=bar->mapTo(&window,bar->tabRect(tabs->currentIndex()).topLeft()).x();
-                const int gutterRight=editor->viewport()->mapTo(&window,QPoint(editor->lineNumberAreaWidth(),0)).x();
-                assert(tabLeft==gutterRight);
-                auto* gutter=tabs->findChild<QWidget*>("tabGutter");assert(gutter && gutter->isVisible());
-                assert(gutter->mapTo(&window,QPoint(gutter->width(),0)).x()==gutterRight);
-                assert(!gutter->geometry().intersects(bar->geometry()));
-                const auto gutterPoint=bar->mapFromGlobal(gutter->mapToGlobal(gutter->rect().center()));
-                assert(bar->tabAt(gutterPoint)==-1);
+                auto path=editor->filePath();
+                if (path.isEmpty() && editor->isBusy()) path=editor->property("openingPath").toString();
+                assert(title->text()==QFileInfo(path).fileName());
+                assert(title->toolTip()==path);
+                assert(header->geometry().bottom()+1==tabs->geometry().top());
             }
         };
         checkHeader();QWidget* initial=tabs->currentWidget();
@@ -955,11 +951,11 @@ int main(int argc,char**argv) {
         const auto contextAction=[&](const QString& name) {
             QApplication::processEvents();
             QTimer::singleShot(0,[&]{
-                auto* menu=qobject_cast<QMenu*>(QApplication::activePopupWidget());assert(menu && menu->objectName()=="currentTabMenu");
+                auto* menu=qobject_cast<QMenu*>(QApplication::activePopupWidget());assert(menu && menu->objectName()=="editorPaneMenu");
                 QAction* action=nullptr;for(auto* candidate:menu->actions())if(candidate->objectName()==name)action=candidate;
                 assert(action);menu->setActiveAction(action);QTest::keyClick(menu,Qt::Key_Return);
             });
-            bar->customContextMenuRequested(bar->tabRect(tabs->currentIndex()).center());
+            header->findChild<QToolButton*>("editorPaneActions")->click();
         };
         contextAction("closeCurrentTab");assert(tabs->count()==2);checkHeader();
         auto* editor=qobject_cast<EditorWidget*>(tabs->currentWidget());assert(editor);
@@ -1102,7 +1098,7 @@ int main(int argc,char**argv) {
             tree->viewport()->mapTo(workspace,QPoint(70,tree->viewport()->height()-45)),
             editor->viewport()->mapTo(workspace,QPoint(editor->viewport()->width()-60,editor->viewport()->height()-45)),
             editor->viewport()->mapTo(workspace,QPoint(2,editor->viewport()->height()-45)),
-            window.findChild<QWidget*>("tabGutter")->mapTo(workspace,QPoint(2,2)),
+            window.findChild<QWidget*>("editorPaneHeader")->mapTo(workspace,QPoint(2,4)),
             QPoint(window.width()-40,window.menuBar()->height()/2),
             QPoint(200,window.height()-10)};
         const auto checkImage=[&](int opacity) {

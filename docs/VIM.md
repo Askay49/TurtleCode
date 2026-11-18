@@ -507,6 +507,12 @@ When two panes show the same buffer, they share text, dirty state and Undo.
 Each pane has its own cursor and scroll position. Drag a divider to resize the
 panes. Closing a pane leaves its buffer available.
 
+Each pane has a header with its file name and an unsaved-change dot. The active
+pane has an accent line. Click the file name to show another open buffer in that
+pane. The header also offers split and close actions. With multiple tab pages,
+the top bar switches between whole layouts. Hover over a tab to see the files
+shown on that page.
+
 | Command | Behavior |
 | --- | --- |
 | `:split [file]`, `:vsplit [file]`, `Ctrl+W s/v` | Split below or right, optionally opening a different file |

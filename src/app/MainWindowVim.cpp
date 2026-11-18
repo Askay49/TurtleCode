@@ -1,5 +1,4 @@
 #include "MainWindow.hpp"
-#include "editor/EditorTabs.hpp"
 #include "editor/EditorPaneWorkspace.hpp"
 #include "editor/EditorWidget.hpp"
 #include "document/FileState.hpp"
