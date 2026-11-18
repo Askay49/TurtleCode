@@ -24,6 +24,8 @@ Colors use `#RRGGBB`. Missing roles inherit the built-in C/C++ Dark defaults, un
 
 Tokyo Night uses a palette adapted from [Tokyo Night for VS Code](https://github.com/tokyo-night/tokyo-night-vscode-theme): light user types, purple built-in types/keywords, blue fields, and VS Code editor/selection colors. Translucent colors are flattened onto the editor background. Its existing Neovim-style Tree-sitter/LSP classification and font styles are retained. The theme ID remains `tokyo-night`; existing custom copies keep their saved colors. See [HIGHLIGHTING.md](HIGHLIGHTING.md).
 
+Catppuccin Latte, Frappé, Macchiato and Mocha follow the [Neovim Catppuccin previews](https://github.com/catppuccin/nvim#previews). The editor and line-number gutter share the base color, while the file tree uses the mantle color. The themes distinguish fields, methods and constructors and italicize parameters, comments and conditionals. A custom theme can also set these roles through JSON. Older themes inherit their existing editor and syntax colors for any omitted roles.
+
 Select a custom theme and click **Delete theme…** to remove its saved JSON file after confirmation. Built-in themes cannot be deleted. Deleting the selected custom theme switches to the built-in C/C++ Dark theme and persists that selection. Canceling or a file removal error leaves the theme intact.
 
 Optional `fontStyles` maps color roles to integer flags: bold=1, italic=2, underline=4, strike-through=8 (combine with addition). For example, `"fontStyles": {"syntax.comment": 2}` makes comments italic. Old files without this field remain valid. Export/import preserves these styles; the color dialog edits colors.

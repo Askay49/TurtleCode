@@ -30,9 +30,28 @@ static void vimExWindowTests(MainWindow& window,EditorWidget* editor,QTemporaryD
     ex("1w!");assert(editor->isModified() && read(path)=="Xone\n");
     ex("w");assert(!editor->isModified() && read(path).contains("Ythree"));
     // Command line owns Tab, history, the status indicator and input focus.
+    const auto viewportBefore = editor->viewport()->geometry();
     QTest::keyClicks(editor,":w ");auto* input=editor->findChild<QLineEdit*>("vimCommandInput");assert(input && input->hasFocus());
     auto* indicator=window.findChild<QLabel*>("vimModeIndicator");assert(indicator && indicator->text()=="COMMAND" && indicator->isEnabled());
+    auto* bar = editor->findChild<QFrame*>("vimCommandBar");
+    const auto checkOverlay = [&] {
+        const auto area = editor->viewport()->rect();
+        assert(bar && bar->isVisible() && bar->parentWidget() == editor->viewport());
+        assert(area.contains(bar->geometry()) && bar->y() + bar->height() < area.height() / 2);
+        assert(std::abs(bar->geometry().center().x() - area.center().x()) <= 1);
+        assert(bar->width() <= 720);
+    };
+    assert(editor->viewport()->geometry() == viewportBefore);
+    checkOverlay();
     window.grab().save("/tmp/turtle-vim-ex.png");QTest::keyClick(input,Qt::Key_Escape);assert(editor->hasFocus());
+    assert(bar->isHidden() && editor->viewport()->geometry() == viewportBefore);
+    const auto originalWindowSize = window.size();
+    QTest::keyClick(editor, Qt::Key_Colon);
+    window.resize(640, originalWindowSize.height());
+    QApplication::processEvents();
+    checkOverlay();
+    QTest::keyClick(input, Qt::Key_Escape);
+    window.resize(originalWindowSize);
     // Saving inside a recorded macro waits for the write before the next command.
     QTest::keyClicks(editor,"qz:w");QTest::keyClick(editor,Qt::Key_Return);
     assert(waitFor([&]{return !editor->vimCommandExecuting() && !editor->isBusy();}));QTest::keyClick(editor,Qt::Key_Q);

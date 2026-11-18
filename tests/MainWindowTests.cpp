@@ -1147,6 +1147,13 @@ int main(int argc,char**argv) {
             QPoint(window.width()-40,window.menuBar()->height()/2),
             QPoint(200,window.height()-10)};
         const auto checkImage=[&](int opacity) {
+            const auto selection = ThemeManager::instance().color("editor.selection");
+            auto* findInput = editor->findChild<QLineEdit*>("fileFindInput");
+            assert(findInput);
+            findInput->ensurePolished();
+            assert(QApplication::palette().color(QPalette::Highlight) == selection);
+            assert(findInput->palette().color(QPalette::Highlight) == selection);
+            assert(tree->palette().color(QPalette::Highlight) == selection);
             const auto actual=workspace->grab().toImage();
             for(const auto& point:samples) {
                 const auto expected=image.pixelColor(point);

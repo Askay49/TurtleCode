@@ -17,7 +17,7 @@ public:
     void initialize();
     void refreshAppearance();
     HighlightStyle highlightStyle(const QString& role) const;
-    HighlightStyle captureStyle(const QString& capture,const QString& fallbackRole) const;
+    HighlightStyle captureStyle(const QString& capture,const QString& fallbackRole,const QString& language={}) const;
     HighlightStyle semanticStyle(const QString& type,const QStringList& modifiers) const;
     void showSettings(QWidget* parent);
     QWidget* createSettingsPage(QWidget* parent, QDialog* dialog);

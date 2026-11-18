@@ -31,6 +31,7 @@ public:
     SyntaxHighlighter& operator=(const SyntaxHighlighter&) = delete;
 
     void setLanguageForPath(const QString& path);
+    const QString& languageId() const { return languageId_; }
     void setDocument(DocumentPtr document) { document_ = std::move(document); }
     void setLimits(HighlightLimits limits);
     [[nodiscard]] std::size_t cachedLineCount() const { return cache_.size(); }

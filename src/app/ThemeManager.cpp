@@ -24,15 +24,37 @@
 #include <QSaveFile>
 #include <QSettings>
 #include <QStyle>
-#include <algorithm>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QUuid>
+#include <utility>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 
 static void initializeHighlightResources() { Q_INIT_RESOURCE(turtle_code_highlighting); }
 namespace {
+const QMap<QString, QString> optionalRoles = {
+    {"editor.occurrence", "editor.selection"},
+    {"editor.gutterBackground", "sidebar.background"},
+    {"editor.lineNumber", "text.muted"},
+    {"editor.activeLineNumber", "editor.lineNumber"},
+    {"editor.headerBackground", "sidebar.background"},
+    {"editor.separator", "border"},
+    {"sidebar.selection", "editor.selection"},
+    {"status.background", "window.background"},
+    {"vim.indicator", "accent"},
+    {"vim.indicatorText", "accent.text"},
+    {"syntax.method", "syntax.function"},
+    {"syntax.constructor", "syntax.functionKeyword"},
+    {"syntax.luaConstructor", "syntax.constructor"},
+    {"syntax.conditionalKeyword", "syntax.controlKeyword"},
+    {"syntax.loopKeyword", "syntax.controlKeyword"},
+    {"syntax.keywordOperator", "syntax.operator"},
+    {"terminal.background", "editor.background"}, {"terminal.foreground", "text.primary"},
+    {"terminal.cursor", "editor.cursor"}, {"terminal.selectionBackground", "editor.selection"},
+    {"terminal.selectionForeground", "text.primary"}
+};
+
 QString themeDirectory() {
     return QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/themes";
 }
@@ -63,9 +85,7 @@ bool decode(const QByteArray& bytes, const EditorTheme& base, EditorTheme* outpu
         if (value.size() != 7 || !value.startsWith('#') || !color.isValid()) {
             *error = I18n::text("Invalid color for ") + it.key() + I18n::text(". Use #RRGGBB."); return false;
         }
-        if (output->colors.contains(it.key()) || QStringList{
-            "terminal.background", "terminal.foreground", "terminal.cursor",
-            "terminal.selectionBackground", "terminal.selectionForeground"}.contains(it.key()))
+        if (output->colors.contains(it.key()) || optionalRoles.contains(it.key()))
             output->colors[it.key()] = color;
     }
     if (obj.contains("fontStyles")) {
@@ -74,7 +94,7 @@ bool decode(const QByteArray& bytes, const EditorTheme& base, EditorTheme* outpu
         for(auto it=styles.begin();it!=styles.end();++it) {
             const int flags=it.value().toInt(-1);
             if (!it.value().isDouble() || flags<0 || flags>15 || it.value().toDouble()!=flags) { *error=I18n::text("Invalid theme font styles."); return false; }
-            if(output->colors.contains(it.key())) output->fontStyles[it.key()]=flags;
+            if(output->colors.contains(it.key()) || optionalRoles.contains(it.key())) output->fontStyles[it.key()]=flags;
         }
     }
     return true;
@@ -175,16 +195,11 @@ ThemeManager::ThemeManager() {
     current_ = themes_.front();
 }
 QColor ThemeManager::color(const QString& role) const {
-    const auto found = current_.colors.constFind(role);
-    if (found != current_.colors.cend()) return *found;
-    // Optional terminal overrides inherit editor colors, including in older custom themes.
-    static const QMap<QString, QString> inherited = {
-        {"editor.occurrence", "editor.selection"},
-        {"terminal.background", "editor.background"}, {"terminal.foreground", "text.primary"},
-        {"terminal.cursor", "editor.cursor"}, {"terminal.selectionBackground", "editor.selection"},
-        {"terminal.selectionForeground", "text.primary"}
-    };
-    return current_.colors.value(inherited.value(role, role), QColor("#d4d4d4"));
+    for (auto name = role; !name.isEmpty(); name = optionalRoles.value(name)) {
+        const auto found = current_.colors.constFind(name);
+        if (found != current_.colors.cend()) return *found;
+    }
+    return QColor("#d4d4d4");
 }
 void ThemeManager::refreshAppearance() {
     WorkspaceBackground::instance().reload();
@@ -209,12 +224,9 @@ void ThemeManager::initialize() {
 }
 void ThemeManager::apply(const EditorTheme& theme) {
     current_ = theme;
-    // Unpolish the previous stylesheet before installing the new palette.
-    // Otherwise Qt can restore its cached palette on a later font change.
-    qApp->setStyleSheet(QString());
-    if (qApp->style()->objectName().compare("fusion", Qt::CaseInsensitive) != 0)
+    if (qApp->styleSheet().isEmpty() && qApp->style()->objectName().compare("fusion", Qt::CaseInsensitive) != 0)
         qApp->setStyle("Fusion");
-    QPalette p;
+    auto p = qApp->style()->standardPalette();
     auto c = [this](const char* role) { return color(QString::fromLatin1(role)); };
     p.setColor(QPalette::Window, c("window.background")); p.setColor(QPalette::WindowText, c("text.primary"));
     p.setColor(QPalette::Base, c("editor.background")); p.setColor(QPalette::AlternateBase, c("editor.currentLine"));
@@ -224,18 +236,6 @@ void ThemeManager::apply(const EditorTheme& theme) {
     p.setColor(QPalette::ToolTipBase, c("window.background")); p.setColor(QPalette::ToolTipText, c("text.primary"));
     p.setColor(QPalette::Disabled, QPalette::Text, c("text.muted"));
     p.setColor(QPalette::Disabled, QPalette::ButtonText, c("text.muted"));
-    qApp->setPalette(p);
-    // Establish the unstyled palette from parents to children before Qt caches
-    // it during stylesheet polish. Later font changes must restore this palette.
-    auto widgets = QApplication::allWidgets();
-    const auto depth = [](QWidget* widget) {
-        int result = 0;
-        while ((widget = widget->parentWidget())) ++result;
-        return result;
-    };
-    std::sort(widgets.begin(), widgets.end(), [&](QWidget* a, QWidget* b) { return depth(a) < depth(b); });
-    for (QWidget* widget : widgets)
-        widget->setPalette(p);
     QString stylesheet = QString(
         "QWidget { color:%1; background:%2; }"
         "QLineEdit, QComboBox, QSpinBox, QTableWidget { background:%7; }"
@@ -366,10 +366,37 @@ void ThemeManager::apply(const EditorTheme& theme) {
         .arg(buttonText,c("diagnostic.error").name());
     stylesheet += QStringLiteral("QWidget#workspaceBackground QLabel#gitCount { background:%1; color:%2; border-radius:7px; font-size:10px; padding:0; }")
         .arg(accent.name(),buttonText);
-    qApp->setStyleSheet(stylesheet);
-    // Stylesheet polish may reset the application palette; keep future widgets
-    // on the same baseline as the widgets already present.
-    qApp->setPalette(p);
+    if (current_.colors.contains("sidebar.selection")) {
+        stylesheet += QStringLiteral(
+            "QWidget#workspaceBackground ProjectExplorer::item:hover, "
+            "QWidget#workspaceBackground ProjectExplorer::item:selected { background:%1; }")
+            .arg(c("sidebar.selection").name());
+    }
+    if (current_.colors.contains("editor.separator")) {
+        stylesheet += QStringLiteral(
+            "QWidget#workspaceBackground QFrame#editorPaneHeader { border-bottom-color:%1; }"
+            "QWidget#workspaceBackground QSplitter#editorPaneSplitter::handle { background:%1; }"
+            "QWidget#workspaceBackground QSplitter#editorPaneSplitter::handle:hover { background:%2; }")
+            .arg(c("editor.separator").name(), accent.name());
+    }
+    if (!WorkspaceBackground::instance().enabled()) {
+        if (current_.colors.contains("editor.headerBackground"))
+            stylesheet += QStringLiteral("QWidget#workspaceBackground QFrame#editorPaneHeader { background:%1; }")
+                .arg(c("editor.headerBackground").name());
+        if (current_.colors.contains("status.background"))
+            stylesheet += QStringLiteral("QWidget#workspaceBackground QStatusBar, QWidget#workspaceBackground QStatusBar QLabel { background:%1; }")
+                .arg(c("status.background").name());
+    }
+    if (current_.colors.contains("vim.indicator")) {
+        stylesheet += QStringLiteral("QWidget#workspaceBackground QStatusBar QLabel#vimModeIndicator:enabled {"
+            "background:%1; color:%2; border-radius:6px; font-weight:600; padding:0 5px; }")
+            .arg(c("vim.indicator").name(), c("vim.indicatorText").name());
+    }
+    // Qt can restore its native palette when the stylesheet is removed.
+    // Install the palette before repolishing so existing widgets inherit the
+    // new colors while retaining their local palette overrides.
+    if (qApp->palette() != p) qApp->setPalette(p);
+    if (qApp->styleSheet() != stylesheet) qApp->setStyleSheet(stylesheet);
     for (QWidget* widget : QApplication::allWidgets()) {
         widget->update();
     }
@@ -495,27 +522,40 @@ QWidget* ThemeManager::createSettingsPage(QWidget* parent, QDialog* dialog) {
 }
 
 HighlightStyle ThemeManager::highlightStyle(const QString& role) const {
-    return {color(role),current_.fontStyles.value(role,0)};
+    for (auto name = role; !name.isEmpty(); name = optionalRoles.value(name)) {
+        const auto foundColor = current_.colors.constFind(name);
+        if (foundColor != current_.colors.cend()) return {*foundColor, current_.fontStyles.value(name, 0)};
+        const auto foundStyle = current_.fontStyles.constFind(name);
+        if (foundStyle != current_.fontStyles.cend()) return {color(name), *foundStyle};
+    }
+    return {color(role), 0};
 }
-HighlightStyle ThemeManager::captureStyle(const QString& capture,const QString& fallbackRole) const {
+HighlightStyle ThemeManager::captureStyle(const QString& capture,const QString& fallbackRole,const QString& language) const {
     static const QMap<QString,QString> roles{
         {"comment","syntax.comment"},{"string","syntax.string"},{"string.escape","syntax.escape"},{"string.regexp","syntax.regexp"},
         {"character","syntax.character"},{"number","syntax.number"},{"boolean","syntax.boolean"},
         {"variable","syntax.variable"},{"variable.parameter","syntax.parameter"},{"parameter","syntax.parameter"},
         {"variable.member","syntax.property"},{"variable.builtin","syntax.builtinVariable"},{"property","syntax.property"},
-        {"function","syntax.function"},{"function.builtin","syntax.special"},{"function.macro","syntax.macro"},{"method","syntax.function"},
+        {"function","syntax.function"},{"function.builtin","syntax.special"},{"function.macro","syntax.macro"},
+        {"function.method","syntax.method"},{"method","syntax.method"},
         {"constant","syntax.constant"},{"constant.builtin","syntax.special"},{"constant.macro","syntax.macro"},
         {"type","syntax.type"},{"type.builtin","syntax.builtinType"},{"type.qualifier","syntax.keyword"},
         {"module","syntax.namespace"},{"namespace","syntax.namespace"},
-        {"keyword","syntax.keyword"},{"keyword.conditional","syntax.controlKeyword"},{"keyword.repeat","syntax.controlKeyword"},
-        {"keyword.exception","syntax.controlKeyword"},{"keyword.function","syntax.functionKeyword"},{"keyword.operator","syntax.operator"},
+        {"keyword","syntax.keyword"},{"keyword.conditional","syntax.conditionalKeyword"},{"keyword.repeat","syntax.loopKeyword"},
+        {"keyword.exception","syntax.controlKeyword"},{"keyword.function","syntax.functionKeyword"},{"keyword.operator","syntax.keywordOperator"},
         {"keyword.directive","syntax.preprocessor"},{"keyword.import","syntax.preprocessor"},
         {"operator","syntax.operator"},{"preprocessor","syntax.preprocessor"},{"attribute","syntax.preprocessor"},
         {"punctuation","syntax.punctuation"},{"delimiter","syntax.punctuation"},{"punctuation.bracket","syntax.bracket"},
-        {"label","syntax.function"},{"tag","syntax.type"},{"constructor","syntax.functionKeyword"}
+        {"label","syntax.function"},{"tag","syntax.type"},{"constructor","syntax.constructor"}
     };
+    // Installed grammars can still use the older bare Tree-sitter captures.
+    if (capture == "conditional" && current_.colors.contains("syntax.conditionalKeyword"))
+        return highlightStyle("syntax.conditionalKeyword");
+    if (capture == "repeat" && current_.colors.contains("syntax.loopKeyword"))
+        return highlightStyle("syntax.loopKeyword");
     QString name=capture;
     while(!name.isEmpty()) {
+        if (name == "constructor" && language == "lua") return highlightStyle("syntax.luaConstructor");
         if(roles.contains(name)) return highlightStyle(roles.value(name));
         const auto dot=name.lastIndexOf('.'); if(dot<0) break; name=name.left(dot);
     }
@@ -526,7 +566,7 @@ HighlightStyle ThemeManager::semanticStyle(const QString& type,const QStringList
     const bool builtin=modifiers.contains("defaultLibrary");
     if(type=="parameter") role="syntax.parameter";
     else if(type=="property" || type=="field") role="syntax.property";
-    else if(type=="function" || type=="method") role=builtin?"syntax.special":"syntax.function";
+    else if(type=="function" || type=="method") role=builtin?"syntax.special":type=="method"?"syntax.method":"syntax.function";
     else if(type=="macro") role=builtin?"syntax.special":"syntax.macro";
     else if(type=="namespace") role="syntax.namespace";
     else if(type=="builtinType") role="syntax.builtinType";

@@ -371,8 +371,10 @@ to the later spelling stage. These settings are session-local.
 
 ## Ex command line
 
-Press **`:`** in Normal or Visual. The command line has its own focus and IME;
-typing does not modify the document. **Enter** executes, **Esc / Ctrl+C / Ctrl+[**
+Press **`:`** in Normal or Visual. The command line opens over the upper part of
+the active editor pane, centered like the command palette. **`/`** and **`?`**
+open the search prompt in the same place. The input has its own focus and IME.
+**Enter** executes, **Esc / Ctrl+C / Ctrl+[**
 cancels. An empty **Backspace** returns to Normal. **Ctrl+U** clears text before
 the caret, **Ctrl+W** deletes a word, and **Ctrl+R {register}** inserts a register.
 **Up/Down** recall history matching the prefix before the caret; **Ctrl+P/N**

@@ -29,10 +29,18 @@ protected:
 const VimEx::Registry& exRegistry(){static const VimEx::Registry registry;return registry;}
 }
 bool EditorWidget::vimOwnsFocus() const {return hasFocus() || (vimExActive_ && vimExInput_ && vimExInput_->hasFocus());}
-void EditorWidget::positionVimCommandLine(){
-    if(!vimExBar_)return;
-    const auto height=vimExBar_->sizeHint().height();
-    vimExBar_->setGeometry(8,std::max(0,viewport()->height()-height-8),std::max(0,viewport()->width()-16),height);vimExBar_->raise();
+void EditorWidget::positionVimCommandLine() {
+    if (!vimExBar_ || vimExBar_->isHidden()) return;
+
+    constexpr int margin = 12;
+    constexpr int preferredWidth = 720;
+    const auto area = viewport()->size();
+    const int width = std::clamp(area.width() - 2 * margin, 0, preferredWidth);
+    const int height = std::min(vimExBar_->sizeHint().height(), area.height());
+    const int top = std::min(std::max(margin, area.height() / 6),
+                             std::max(0, area.height() - height - margin));
+    vimExBar_->setGeometry((area.width() - width) / 2, top, width, height);
+    vimExBar_->raise();
 }
 void EditorWidget::showVimCommandLine(int count,QChar prompt){
     vimCommandPrompt_=prompt;

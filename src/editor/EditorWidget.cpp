@@ -1378,11 +1378,12 @@ std::pair<QString,bool> EditorWidget::occurrenceQuery() const {
 void EditorWidget::paintEvent(QPaintEvent*) {
     updateBracketMatch();
     QPainter painter(viewport());
+    const auto& theme = ThemeManager::instance();
     // Keep glyph metrics, line drawing and cursor X calculations on one font.
     painter.setFont(font());
     const QFontMetricsF textMetrics(font());
-    WorkspaceBackground::instance().paint(viewport(), painter, viewport()->rect(), ThemeManager::instance().color("editor.background"));
-    auto currentLineBackground = ThemeManager::instance().color("editor.currentLine");
+    WorkspaceBackground::instance().paint(viewport(), painter, viewport()->rect(), theme.color("editor.background"));
+    auto currentLineBackground = theme.color("editor.currentLine");
     if (WorkspaceBackground::instance().enabled()) currentLineBackground.setAlpha(100);
     const int lh = lineHeight();
     const int firstLine = verticalScrollBar()->value();
@@ -1390,7 +1391,9 @@ void EditorWidget::paintEvent(QPaintEvent*) {
     highlighter_.setVisibleRange(static_cast<std::size_t>(documentLineForVisualRow(firstLine)),
         static_cast<std::size_t>(documentLineForVisualRow(firstLine+visibleLines-1)));
     const int gutter = gutterWidth();
-    WorkspaceBackground::instance().paint(viewport(), painter, QRect(0, 0, gutter, viewport()->height()), ThemeManager::instance().color("sidebar.background"));
+    WorkspaceBackground::instance().paint(viewport(), painter, QRect(0, 0, gutter, viewport()->height()), theme.color("editor.gutterBackground"));
+    const auto lineNumberColor = theme.color("editor.lineNumber");
+    const auto activeLineNumberColor = theme.color("editor.activeLineNumber");
     const auto [selBegin, selEnd] = selectionRange();
     const auto activeLine = currentLine();
     const auto [occurrence,wholeOccurrence] = occurrenceQuery();
@@ -1405,6 +1408,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             continue;
         }
         const auto lineNo = static_cast<std::size_t>(lineIndex);
+        const auto& gutterText = lineNo == activeLine ? activeLineNumberColor : lineNumberColor;
         if(debugBreakpoints_.contains(lineIndex+1)) {
             painter.setPen(Qt::NoPen); painter.setBrush(debugDisabledBreakpoints_.contains(lineIndex+1)?QColor(130,130,130):QColor(230,65,70));
             painter.drawEllipse(QPoint(7,debugY+lh/2),5,5); painter.setBrush(Qt::NoBrush);
@@ -1424,12 +1428,13 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             painter.fillRect(QRect(gutter,debugY,viewport()->width()-gutter,lh),fill);
             if (hasSelection() && selEnd>start && selBegin<buffer_.lineEnd(foldEnd))
                 painter.fillRect(QRect(gutter,debugY,viewport()->width()-gutter,lh),ThemeManager::instance().color("editor.selection"));
-            painter.setPen(ThemeManager::instance().color("text.muted"));
+            painter.setPen(gutterText);
             painter.drawText(QRect(8,debugY,gutter-14,lh),Qt::AlignVCenter|Qt::AlignRight,QString::number(lineIndex+1));
             const auto prefix=buffer_.slice(start,std::min<std::size_t>(256,end-start));
             int column=0;
             const auto title=expandedTabs(QString::fromUtf8(prefix.data(),prefix.size()),column);
             const QString summary=QStringLiteral("%1  ⋯ [%2]").arg(title).arg(foldEnd-lineIndex+1);
+            painter.setPen(theme.color("text.muted"));
             painter.drawText(QRect(gutter+12,debugY,textAreaWidth(),lh),Qt::AlignVCenter,
                              fontMetrics().elidedText(summary,Qt::ElideRight,textAreaWidth()));
             continue;
@@ -1437,7 +1442,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         if(end-start>64u*1024u) {
             const int y=(visualRow-firstLine)*lh,cell=std::max(1,fontMetrics().horizontalAdvance('M'));
             if(lineNo==activeLine && debugLine_!=lineIndex+1)painter.fillRect(QRect(gutter,y,viewport()->width()-gutter,lh),currentLineBackground);
-            painter.setPen(ThemeManager::instance().color("text.muted"));
+            painter.setPen(gutterText);
             painter.drawText(QRect(8,y,gutter-14,lh),Qt::AlignVCenter|Qt::AlignRight,QString::number(lineIndex+1));
             const auto base=buffer_.codePointsBefore(start);
             const auto firstColumn=static_cast<std::size_t>(horizontalOffset/cell);
@@ -1479,7 +1484,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         // Use the same row rectangle for all text. The drawText(x, y, text)
         // overload treats y as the baseline, which clipped row zero and made
         // the cursor's top-relative geometry disagree with the glyphs.
-        painter.setPen(ThemeManager::instance().color("text.muted"));
+        painter.setPen(gutterText);
         if (slice.begin==start) painter.drawText(QRect(8, y, gutter - 14, lh),
                          Qt::AlignVCenter | Qt::AlignRight,
                          QString::number(lineIndex + 1));
@@ -1623,14 +1628,13 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             std::sort(boundaries.begin(),boundaries.end()); boundaries.erase(std::unique(boundaries.begin(),boundaries.end()),boundaries.end());
             struct Segment { int start,length; HighlightStyle style; };
             QVector<Segment> segments; int lexicalIndex=0,semanticIndex=0;
-            auto& theme=ThemeManager::instance();
             for(int i=0;i+1<boundaries.size();++i) {
                 const int position=boundaries[i],length=boundaries[i+1]-position;
                 if(!length || position<0 || position>=line.size()) continue;
                 while(lexicalIndex<spans.size() && spans[lexicalIndex].start+spans[lexicalIndex].length<=position) ++lexicalIndex;
                 auto style=theme.highlightStyle("text.primary");
                 if(lexicalIndex<spans.size() && spans[lexicalIndex].start<=position)
-                    style=theme.captureStyle(spans[lexicalIndex].capture,roleFor(spans[lexicalIndex].kind));
+                    style=theme.captureStyle(spans[lexicalIndex].capture,roleFor(spans[lexicalIndex].kind),highlighter_.languageId());
                 while(semanticIndex<semantic.size() && semantic[semanticIndex].start+semantic[semanticIndex].length<=position) ++semanticIndex;
                 if(semanticIndex<semantic.size() && semantic[semanticIndex].start<=position) {
                     const auto overlay=theme.semanticStyle(semantic[semanticIndex].type,semantic[semanticIndex].modifiers);

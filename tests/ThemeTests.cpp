@@ -10,6 +10,7 @@
 #include <QImage>
 #include <QSettings>
 #include <QLabel>
+#include <QLineEdit>
 #include <QTreeWidget>
 #include <QListWidget>
 #include <QTableWidget>
@@ -113,6 +114,8 @@ int main(int argc, char** argv) {
             QMetaObject::invokeMethod(combo, "activated", Qt::DirectConnection, Q_ARG(int, i));
             QApplication::processEvents();
             assert(manager.color("editor.background").isValid());
+            assert(app.palette().color(QPalette::Highlight) == manager.color("editor.selection"));
+            assert(combo->palette().color(QPalette::Highlight) == manager.color("editor.selection"));
             QImage image(dialog->size(), QImage::Format_ARGB32);
             dialog->render(&image);
             if(combo->itemData(i).toString().startsWith("catppuccin-") && qEnvironmentVariableIsSet("TURTLE_CODE_THEME_PREVIEW_DIR"))image.save(QDir(qEnvironmentVariable("TURTLE_CODE_THEME_PREVIEW_DIR")).filePath(combo->itemData(i).toString()+".png"));
@@ -124,18 +127,41 @@ int main(int argc, char** argv) {
     });
     manager.showSettings(nullptr);
     assert(switched == 15);
-    const QMap<QString,QString> catppuccin{{"latte","#eff1f5"},{"frappe","#303446"},{"macchiato","#24273a"},{"mocha","#1e1e2e"}};
-    for(auto it=catppuccin.cbegin();it!=catppuccin.cend();++it) {
-        QSettings().setValue("appearance/theme","catppuccin-"+it.key());manager.initialize();
-        assert(manager.color("editor.background")==QColor(it.value()));
-        assert(manager.color("terminal.background")==QColor(it.value()));
-        assert(manager.color("accent.text")==QColor(it.value()));
-        for(int i=0;i<16;++i)assert(manager.color(QString("terminal.ansi%1").arg(i)).isValid());
+    struct CatppuccinFlavor { const char *name, *base, *lavender, *peach, *flamingo; };
+    const CatppuccinFlavor catppuccin[] = {
+        {"latte", "#eff1f5", "#7287fd", "#fe640b", "#dd7878"},
+        {"frappe", "#303446", "#babbf1", "#ef9f76", "#eebebe"},
+        {"macchiato", "#24273a", "#b7bdf8", "#f5a97f", "#f0c6c6"},
+        {"mocha", "#1e1e2e", "#b4befe", "#fab387", "#f2cdcd"},
+    };
+    for (const auto& flavor : catppuccin) {
+        QSettings().setValue("appearance/theme", QStringLiteral("catppuccin-") + flavor.name);
+        manager.initialize();
+        assert(manager.color("editor.background") == QColor(flavor.base));
+        assert(manager.color("editor.gutterBackground") == QColor(flavor.base));
+        assert(manager.color("terminal.background") == QColor(flavor.base));
+        assert(manager.color("accent.text") == QColor(flavor.base));
+        assert(manager.color("editor.activeLineNumber") == QColor(flavor.lavender));
+        assert(manager.color("vim.indicator") == QColor(flavor.lavender));
+        assert(manager.color("status.background") == manager.color("sidebar.selection"));
+        assert(manager.captureStyle("field", "syntax.property", "lua").color == QColor(flavor.lavender));
+        assert(manager.captureStyle("function.method.call", "syntax.function").color == QColor(flavor.peach));
+        assert(manager.semanticStyle("method", {}).color == QColor(flavor.peach));
+        assert(manager.captureStyle("constructor", "syntax.type", "lua").color == QColor(flavor.flamingo));
+        assert(manager.captureStyle("constructor", "syntax.type", "cpp").color != QColor(flavor.flamingo));
+        assert(manager.captureStyle("keyword.operator", "syntax.operator", "lua").color == manager.color("syntax.keyword"));
+        assert(manager.captureStyle("keyword.conditional", "syntax.keyword").fontStyles == 2);
+        assert(manager.captureStyle("conditional", "syntax.keyword", "lua").fontStyles == 2);
+        assert(manager.captureStyle("repeat", "syntax.keyword", "lua").fontStyles == 0);
+        assert(manager.semanticStyle("parameter", {}).fontStyles == 2);
+        for (int i = 0; i < 16; ++i) assert(manager.color(QString("terminal.ansi%1").arg(i)).isValid());
     }
     QSettings().setValue("appearance/theme","tokyo-night");
     // Loading a saved selection restores the same palette.
     manager.initialize();
     assert(manager.color("editor.background") == QColor("#1a1b26"));
+    assert(manager.color("editor.gutterBackground") == manager.color("sidebar.background"));
+    assert(manager.color("editor.activeLineNumber") == manager.color("text.muted"));
     assert(manager.color("syntax.parameter") == QColor("#e0af68"));
     assert(manager.color("syntax.property") == QColor("#7dcfff"));
     assert(manager.color("syntax.builtinType") == QColor("#bb9af7"));
@@ -165,13 +191,18 @@ int main(int argc, char** argv) {
         QWidget window;
         auto* layout = new QVBoxLayout(&window);
         auto* label = new QLabel("Settings refresh", &window);
+        const QColor localLinkColor("#b0349a");
+        QPalette localPalette;
+        localPalette.setColor(QPalette::LinkVisited, localLinkColor);
+        label->setPalette(localPalette);
+        auto* input = new QLineEdit("Selected text", &window);
         auto* tree = new QTreeWidget(&window);
         tree->setHeaderLabel("Files");
         auto* item = new QTreeWidgetItem(tree, {"main.cpp"});
         tree->setCurrentItem(item);
         auto* spin = new SettingsSpinBox(&window);
         spin->setRange(6,96); spin->setValue(18);
-        layout->addWidget(label); layout->addWidget(tree); layout->addWidget(spin);
+        layout->addWidget(label); layout->addWidget(input); layout->addWidget(tree); layout->addWidget(spin);
         window.resize(400, 300); window.show();
         QApplication::processEvents();
         const auto stylesheet = app.styleSheet();
@@ -179,9 +210,18 @@ int main(int argc, char** argv) {
             QDialog dialog(&window); dialog.show();
             manager.refreshAppearance();
             QFont font = tree->font(); font.setPointSize(12 + i); tree->setFont(font);
+            input->setFont(font);
+            QLineEdit newInput(&dialog);
+            newInput.ensurePolished();
             dialog.close();
             QApplication::processEvents();
             assert(app.styleSheet() == stylesheet);
+            const auto selection = manager.color("editor.selection");
+            for (const auto& palette : {app.palette(), input->palette(), newInput.palette(), tree->palette()}) {
+                assert(palette.color(QPalette::Active, QPalette::Highlight) == selection);
+                assert(palette.color(QPalette::Inactive, QPalette::Highlight) == selection);
+            }
+            assert(label->palette().color(QPalette::LinkVisited) == localLinkColor);
             QImage image(window.size(), QImage::Format_ARGB32);
             window.render(&image);
             assert(image.pixelColor(2, 2) == manager.color("window.background"));
