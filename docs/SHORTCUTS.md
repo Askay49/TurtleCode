@@ -26,7 +26,7 @@ Import merges the listed commands into the current draft and validates before ac
 
 The editor header shows only the current document, without a close button. The real tab starts at the right edge of the line-number gutter, with equal 12-pixel text padding on each side. A separate header gutter continues the line-number background up to the menu. The boundary follows changes to font size or the number of line-number digits. Right-click its title for **Close** or **Close All**. Unsaved documents require confirmation; cancelling Close All leaves every document open.
 
-**Ctrl+Tab** opens a list of open files above the center of the window in most-recently-used order. Keep Ctrl held and press Tab again to advance, or Shift+Tab to go backwards. Release Ctrl, press Enter, or click a row to open the selection; Escape or a click outside cancels. Arrow keys also select a row. The compact list displays filenames only, without a heading, paths or keyboard hints. The next/previous recent-tab shortcuts remain configurable.
+**Ctrl+Tab** opens a panel above the editor with file icons and filenames in most-recently-used order. The panel has its own space so the code stays visible below it. Keep Ctrl held and press Tab again to advance, or Shift+Tab to go backwards. Release Ctrl, press Enter, or click a row to open the selection. Escape or a click outside cancels. Arrow keys also select a row. The next/previous recent-tab shortcuts remain configurable.
 
 **Ctrl+D** adds the next occurrence to the selection. A complete identifier
 (selected explicitly or expanded from the caret) matches whole identifiers:

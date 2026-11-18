@@ -354,6 +354,12 @@ void ThemeManager::apply(const EditorTheme& theme) {
         "QWidget#workspaceBackground QScrollBar::add-line, QWidget#workspaceBackground QScrollBar::sub-line { width:0; height:0; border:0; background:transparent; }"
         "QWidget#workspaceBackground QScrollBar::add-page, QWidget#workspaceBackground QScrollBar::sub-page { background:transparent; }"
     ).arg(c("editor.selection").name(), c("border").name(), c("accent").name(), c("text.muted").name());
+    stylesheet += QStringLiteral(
+        "QFrame#openFileSwitcher, QWidget#workspaceBackground QFrame#openFileSwitcher { background:%1; border:1px solid %2; border-radius:8px; }"
+        "QListWidget#openFileSwitchList, QListWidget#openFileSwitchList QWidget { background:transparent; outline:0; }"
+        "QListWidget#openFileSwitchList::item { padding:0 8px; border-left:2px solid transparent; border-radius:4px; }"
+        "QListWidget#openFileSwitchList::item:selected { background:%3; border-left-color:%4; }"
+    ).arg(c("window.background").name(), c("border").name(), c("editor.selection").name(), c("accent").name());
     const auto accent=c("accent");
     const auto buttonText=accent.lightnessF()>0.55?QStringLiteral("#101018"):QStringLiteral("#ffffff");
     stylesheet += QStringLiteral("QWidget#gitPanel QPushButton#gitCommit:enabled, QWidget#gitPanel QToolButton#gitCommitMore:enabled { color:%1; } QLabel#gitError { color:%2; }")

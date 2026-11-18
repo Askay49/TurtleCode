@@ -612,6 +612,24 @@ void MainWindow::createUi() {
     paneWorkspace_->hide();
     documentLayout->addWidget(vimPageTabs_);
     documentLayout->addWidget(singleEditorHeader_);
+    tabSwitcher_ = new QFrame(documentArea);
+    tabSwitcher_->setObjectName("openFileSwitcher");
+    tabSwitcher_->setFrameShape(QFrame::StyledPanel);
+    auto* switcherLayout = new QVBoxLayout(tabSwitcher_);
+    switcherLayout->setContentsMargins(8, 8, 8, 8);
+    tabSwitchList_ = new QListWidget(tabSwitcher_);
+    tabSwitchList_->setObjectName("openFileSwitchList");
+    tabSwitchList_->setAccessibleName(I18n::text("Open files"));
+    tabSwitchList_->setFrameShape(QFrame::NoFrame);
+    tabSwitchList_->setIconSize(QSize(18, 18));
+    tabSwitchList_->setSpacing(2);
+    tabSwitchList_->setUniformItemSizes(true);
+    tabSwitchList_->setTextElideMode(Qt::ElideMiddle);
+    tabSwitchList_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    switcherLayout->addWidget(tabSwitchList_);
+    documentLayout->addWidget(tabSwitcher_, 0, Qt::AlignHCenter);
+    tabSwitcher_->hide();
+    connect(tabSwitchList_, &QListWidget::itemClicked, this, [this] { finishTabSwitch(true); });
     documentLayout->addWidget(tabs_, 1);
     documentLayout->addWidget(paneWorkspace_, 1);
     editorArea_->setCentralWidget(documentArea);
@@ -620,7 +638,7 @@ void MainWindow::createUi() {
         updateVimIndicator();
         scheduleOutline();
         if(gitDiff_ && gitDiff_->isVisible() && gitDiff_->nativeEditor() && gitDiff_->nativeEditor()!=activeEditor()) gitDiff_->hide();
-        if(tabSwitcher_ && tabSwitcher_->isVisible()) finishTabSwitch(false);
+        if (!tabSwitcher_->isHidden()) finishTabSwitch(false);
         if(lsp_ && lspStatus_) {
             auto* editor=activeEditor();
             lspStatus_->setText(lsp_->status(editor?editor->filePath():QString{}));
@@ -1246,57 +1264,66 @@ void MainWindow::finishClose(bool accepted) {
     updateWindowTitle();checkpointRecovery();
 }
 
-void MainWindow::positionTabSwitcher() {
-    if(!tabSwitcher_) return;
-    int textWidth=0;
-    for(int row=0;row<tabSwitchList_->count();++row)
-        textWidth=std::max(textWidth,tabSwitchList_->fontMetrics().horizontalAdvance(tabSwitchList_->item(row)->text()));
-    const auto margins=tabSwitcher_->layout()->contentsMargins();
-    const int rowHeight=std::max(28,tabSwitchList_->fontMetrics().height()+12);
-    const int popupWidth=std::min(std::clamp(textWidth+40,220,480),std::max(1,width()-32));
-    const int popupHeight=std::min(std::max(1,height()-80),margins.top()+margins.bottom()+2*tabSwitcher_->frameWidth()+std::min(10,tabSwitchList_->count())*rowHeight);
-    const int popupTop=std::max(menuBar()->height()+12,height()/3-popupHeight/2);
-    tabSwitcher_->setGeometry((width()-popupWidth)/2,popupTop,popupWidth,popupHeight);
+void MainWindow::resizeTabSwitcher() {
+    const auto area = tabSwitcher_->parentWidget()->contentsRect();
+    const auto margins = tabSwitcher_->layout()->contentsMargins();
+    const auto metrics = tabSwitchList_->fontMetrics();
+    const int rowHeight = std::max(26, metrics.height() + 10);
+    int textWidth = 0;
+    for (int row = 0; row < tabSwitchList_->count(); ++row) {
+        auto* item = tabSwitchList_->item(row);
+        textWidth = std::max(textWidth, metrics.horizontalAdvance(item->text()));
+        item->setSizeHint(QSize(0, rowHeight));
+    }
+    const int rowSpacing = 2 * tabSwitchList_->spacing();
+    const int verticalChrome = margins.top() + margins.bottom() + 2 * tabSwitcher_->frameWidth();
+    const int visibleRows = std::min(tabSwitchList_->count(),
+        std::clamp((area.height() / 2 - verticalChrome) / (rowHeight + rowSpacing), 1, 6));
+    const int preferredWidth = textWidth + tabSwitchList_->iconSize().width() + 58;
+    const int panelWidth = std::min(std::clamp(preferredWidth, 280, 500), std::max(1, area.width() - 16));
+    tabSwitcher_->setFixedSize(panelWidth, verticalChrome + visibleRows * (rowHeight + rowSpacing));
 }
 
 void MainWindow::switchRecentTab(int direction) {
-    if(!tabSwitcher_ || !tabSwitcher_->isVisible()) {
-        updateTabMru(documentEditor(activeEditor()));
-        if(tabMru_.isEmpty()) return;
-        tabSwitchOrder_=tabMru_;tabSwitchIndex_=0;
-        if(!tabSwitcher_) {
-            tabSwitcher_=new QFrame(this);tabSwitcher_->setObjectName("openFileSwitcher");
-            tabSwitcher_->setFrameShape(QFrame::StyledPanel);
-            auto* layout=new QVBoxLayout(tabSwitcher_);
-            layout->setContentsMargins(6,6,6,6);layout->setSpacing(0);
-            tabSwitchList_=new QListWidget(tabSwitcher_);tabSwitchList_->setObjectName("openFileSwitchList");
-            tabSwitchList_->setFrameShape(QFrame::NoFrame);
-            tabSwitchList_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-            layout->addWidget(tabSwitchList_);
-            connect(tabSwitchList_,&QListWidget::itemClicked,this,[this]{finishTabSwitch(true);});
-        }
+    if (tabSwitcher_->isHidden()) {
+        auto* currentEditor = documentEditor(activeEditor());
+        if (!currentEditor) return;
+        updateTabMru(currentEditor);
+        tabSwitchOrder_ = tabMru_;
         tabSwitchList_->clear();
-        for(const auto& page:tabSwitchOrder_) {
-            const int index=tabs_->indexOf(page);
-            auto* item=new QListWidgetItem(tabs_->tabText(index),tabSwitchList_);
-            item->setSizeHint(QSize(0,std::max(28,tabSwitchList_->fontMetrics().height()+12)));
+        for (const auto& page : tabSwitchOrder_) {
+            const int index = tabs_->indexOf(page);
+            new QListWidgetItem(FileIcons::icon(tabs_->tabToolTip(index)), tabs_->tabText(index), tabSwitchList_);
         }
-        tabSwitchFocus_=QApplication::focusWidget();
-        positionTabSwitcher();tabSwitcher_->show();tabSwitcher_->raise();
-        qApp->installEventFilter(this);tabSwitchList_->setFocus();
+        tabSwitchFocus_ = QApplication::focusWidget();
+        for (auto* editor : tabSwitcher_->parentWidget()->findChildren<EditorWidget*>()) {
+            if (!editor->isVisible()) continue;
+            for (auto* bar : {editor->verticalScrollBar(), editor->horizontalScrollBar()})
+                tabSwitchScroll_.append({bar, bar->value()});
+        }
+        tabSwitcher_->ensurePolished();
+        resizeTabSwitcher();
+        tabSwitcher_->show();
+        qApp->installEventFilter(this);
+        tabSwitchList_->setFocus();
     }
-    tabSwitchIndex_=(tabSwitchList_->currentRow()<0?0:tabSwitchList_->currentRow());
-    tabSwitchIndex_=(tabSwitchIndex_+direction+tabSwitchOrder_.size())%tabSwitchOrder_.size();
-    tabSwitchList_->setCurrentRow(tabSwitchIndex_);
+    const auto current = std::max(0, tabSwitchList_->currentRow());
+    const auto count = tabSwitchOrder_.size();
+    tabSwitchList_->setCurrentRow((current + direction + count) % count);
     tabSwitchList_->scrollToItem(tabSwitchList_->currentItem());
 }
 
 void MainWindow::finishTabSwitch(bool accept) {
-    if(!tabSwitcher_ || !tabSwitcher_->isVisible()) return;
+    if (tabSwitcher_->isHidden()) return;
     const int row=tabSwitchList_->currentRow();
     QPointer<QWidget> target=accept && row>=0 && row<tabSwitchOrder_.size()?tabSwitchOrder_.at(row):QPointer<QWidget>{};
-    qApp->removeEventFilter(this);tabSwitcher_->hide();
-    tabSwitchOrder_.clear();tabSwitchIndex_=-1;
+    qApp->removeEventFilter(this);
+    tabSwitcher_->hide();
+    tabSwitcher_->parentWidget()->layout()->activate();
+    for (const auto& [bar, value] : tabSwitchScroll_)
+        if (bar) bar->setValue(value);
+    tabSwitchScroll_.clear();
+    tabSwitchOrder_.clear();
     if(target && tabs_->indexOf(target)>=0) {
         activateEditor(qobject_cast<EditorWidget*>(target.data()), true);
     } else if(tabSwitchFocus_ && isActiveWindow()) tabSwitchFocus_->setFocus();
@@ -1304,8 +1331,9 @@ void MainWindow::finishTabSwitch(bool accept) {
 }
 
 bool MainWindow::eventFilter(QObject* watched,QEvent* event) {
-    if(!tabSwitcher_ || !tabSwitcher_->isVisible()) return QMainWindow::eventFilter(watched,event);
-    if(watched==this && event->type()==QEvent::Resize) positionTabSwitcher();
+    if (!tabSwitcher_ || tabSwitcher_->isHidden()) return QMainWindow::eventFilter(watched, event);
+    if (watched == tabSwitcher_->parentWidget() && event->type() == QEvent::Resize)
+        resizeTabSwitcher();
     if(watched==this && (event->type()==QEvent::WindowDeactivate || event->type()==QEvent::Hide || event->type()==QEvent::Close)) finishTabSwitch(false);
     if(event->type()==QEvent::MouseButtonPress) {
         auto* widget=qobject_cast<QWidget*>(watched);

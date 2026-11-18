@@ -61,6 +61,8 @@ jobs:
         run: ctest --test-dir build/appimage --output-on-failure -LE memory
 
       - name: Package AppImage
+        env:
+          APPIMAGE_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: bash packaging/build-appimage.sh build/appimage dist
 
       - name: Upload AppImage
@@ -73,3 +75,27 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: Turtle_Code-x86_64.AppImage
+          path: dist
+
+      - name: Publish verified AppImage and checksum
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          sha256sum --check Turtle_Code-x86_64.AppImage.sha256
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes \
+            Turtle_Code-x86_64.AppImage Turtle_Code-x86_64.AppImage.sha256

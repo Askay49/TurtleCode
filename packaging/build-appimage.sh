@@ -15,6 +15,19 @@ app_dir="$work_dir/AppDir"
 tools_dir="$work_dir/tools"
 mkdir -p "$tools_dir"
 
+DESTDIR="$app_dir" cmake --install "$build_dir" --prefix /usr
+desktop-file-validate "$app_dir/usr/share/applications/turtle-code.desktop"
+cp "$app_dir/usr/share/icons/hicolor/256x256/apps/turtle-code.png" "$app_dir/turtle-code.png"
+ln -s turtle-code.png "$app_dir/.DirIcon"
+
+editorconfig_link=$(LC_ALL=C ldd "$app_dir/usr/bin/turtle-code" |
+    awk '$1 ~ /^libeditorconfig\.so(\.[0-9]+)*$/ && $2 == "=>" && $3 ~ /^\// { print $1, $3 }')
+if [[ -z "$editorconfig_link" ]]; then
+    echo 'Cannot resolve the linked EditorConfig library. Install libeditorconfig-dev and rebuild Turtle Code.' >&2
+    exit 1
+fi
+read -r editorconfig_soname editorconfig_library <<< "$editorconfig_link"
+
 # Release tags and SHA-256 checksums pin the packaging tools.
 # Update both together when upgrading linuxdeploy or its Qt plugin.
 download_tool() {
@@ -30,11 +43,6 @@ download_tool linuxdeploy/linuxdeploy 1-alpha-20251107-1 linuxdeploy-x86_64.AppI
 download_tool linuxdeploy/linuxdeploy-plugin-qt 1-alpha-20250213-1 linuxdeploy-plugin-qt-x86_64.AppImage \
     15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
 
-DESTDIR="$app_dir" cmake --install "$build_dir" --prefix /usr
-desktop-file-validate "$app_dir/usr/share/applications/turtle-code.desktop"
-cp "$app_dir/usr/share/icons/hicolor/256x256/apps/turtle-code.png" "$app_dir/turtle-code.png"
-ln -s turtle-code.png "$app_dir/.DirIcon"
-
 # Extraction avoids requiring FUSE on the build runner. Bundle TLS libraries
 # explicitly because QtNetwork loads its SSL backend at runtime.
 export APPIMAGE_EXTRACT_AND_RUN=1
@@ -48,6 +56,7 @@ multiarch=$(${CC:-cc} -print-multiarch)
     --appdir "$app_dir" \
     --desktop-file "$app_dir/usr/share/applications/turtle-code.desktop" \
     --icon-file "$app_dir/usr/share/icons/hicolor/256x256/apps/turtle-code.png" \
+    --library "$editorconfig_library" \
     --library "/usr/lib/$multiarch/libssl.so.3" \
     --library "/usr/lib/$multiarch/libcrypto.so.3" \
     --library "$(${CXX:-c++} -print-file-name=libstdc++.so.6)" \
@@ -60,11 +69,20 @@ chmod 700 "$work_dir/runtime"
 (
     cd "$work_dir/smoke"
     "$LDAI_OUTPUT" --appimage-extract >/dev/null
-    env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
+    if [[ ! -f "squashfs-root/usr/lib/$editorconfig_soname" ]]; then
+        echo "AppImage is missing $editorconfig_soname." >&2
+        exit 1
+    fi
+    packaged_version=$(env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
         QT_QPA_PLATFORM=offscreen \
         XDG_CONFIG_HOME="$work_dir/config" XDG_DATA_HOME="$work_dir/data" \
         XDG_RUNTIME_DIR="$work_dir/runtime" \
-        timeout 30 ./squashfs-root/AppRun --version
+        timeout 30 ./squashfs-root/AppRun --version)
+    printf '%s\n' "$packaged_version"
+    if [[ -n "${APPIMAGE_RELEASE_TAG:-}" && "$packaged_version" != "Turtle Code $APPIMAGE_RELEASE_TAG" ]]; then
+        echo "AppImage version does not match tag $APPIMAGE_RELEASE_TAG." >&2
+        exit 1
+    fi
 )
 (
     cd "$output_dir"

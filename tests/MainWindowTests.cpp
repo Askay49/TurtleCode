@@ -952,9 +952,15 @@ int main(int argc,char**argv) {
         assert(popup->findChildren<QLabel*>().isEmpty());
         for(int row=0;row<list->count();++row) {
             assert(!list->item(row)->text().contains('\n') && !list->item(row)->text().contains('/') && list->item(row)->toolTip().isEmpty());
+            assert(!list->item(row)->icon().isNull());
         }
-        assert(tabs->currentWidget()==initial && std::abs(popup->geometry().center().x()-window.rect().center().x())<=1);
-        assert(std::abs(popup->geometry().center().y()-window.height()/3)<=1);
+        QApplication::processEvents();
+        assert(tabs->currentWidget()==initial && popup->parentWidget()==tabs->parentWidget());
+        assert(std::abs(popup->geometry().center().x()-popup->parentWidget()->rect().center().x())<=1);
+        assert(popup->geometry().top()>header->geometry().bottom());
+        assert(popup->geometry().bottom()<tabs->geometry().top());
+        if(qEnvironmentVariableIsSet("TURTLE_CODE_BACKGROUND_PREVIEW"))
+            window.grab().save(qEnvironmentVariable("TURTLE_CODE_BACKGROUND_PREVIEW")+".switcher.png");
         QTest::keyPress(list,Qt::Key_Tab,Qt::ControlModifier);assert(list->currentRow()==2);
         QTest::keyRelease(list,Qt::Key_Control);
         assert(!popup->isVisible() && tabs->currentWidget()!=initial);checkHeader();
@@ -986,12 +992,22 @@ int main(int argc,char**argv) {
         QTimer confirm;confirm.setInterval(1);QObject::connect(&confirm,&QTimer::timeout,[&]{
             if(auto* message=qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))message->button(QMessageBox::Discard)->click();
         });confirm.start();contextAction("closeAllTabs");confirm.stop();assert(tabs->count()==0);checkHeader();
+        QTest::keyPress(&window,Qt::Key_Tab,Qt::ControlModifier);
+        assert(!popup->isVisible());
+        QTest::keyRelease(&window,Qt::Key_Control);
         window.openPaths({text});assert(tabs->count()==1);checkHeader();
         assert(waitFor([&]{return !qobject_cast<EditorWidget*>(tabs->currentWidget())->isBusy();}));
         window.activateWindow();tabs->currentWidget()->setFocus();QApplication::processEvents();
         QTest::keyPress(tabs->currentWidget(),Qt::Key_Tab,Qt::ControlModifier);
         assert(popup->isVisible() && list->count()==1 && list->currentRow()==0);
-        QTest::keyRelease(list,Qt::Key_Control);assert(!popup->isVisible());checkHeader();closeDiscard(window);
+        QTest::keyRelease(list,Qt::Key_Control);assert(!popup->isVisible());checkHeader();
+        QTest::keyPress(tabs->currentWidget(),Qt::Key_Tab,Qt::ControlModifier);
+        assert(popup->isVisible());
+        window.hide();
+        QTest::keyRelease(&window,Qt::Key_Control);
+        window.show();
+        assert(popup->isHidden());
+        checkHeader();closeDiscard(window);
     }
 
     {
@@ -1134,6 +1150,20 @@ int main(int argc,char**argv) {
         };
         checkImage(100);
         if(qEnvironmentVariableIsSet("TURTLE_CODE_BACKGROUND_PREVIEW")) window.grab().save(qEnvironmentVariable("TURTLE_CODE_BACKGROUND_PREVIEW"));
+        window.activateWindow();
+        editor->setFocus();
+        QApplication::processEvents();
+        QTest::keyPress(editor,Qt::Key_Tab,Qt::ControlModifier);
+        auto* switcher=window.findChild<QFrame*>("openFileSwitcher");
+        auto* switchList=window.findChild<QListWidget*>("openFileSwitchList");
+        assert(switcher->isVisible() && switchList->count()==1);
+        const auto surface=window.grab().toImage();
+        const QPoint padding=switcher->mapTo(&window,QPoint(switcher->width()/2,4));
+        assert(surface.pixelColor(padding)==ThemeManager::instance().color("window.background"));
+        if(qEnvironmentVariableIsSet("TURTLE_CODE_BACKGROUND_PREVIEW"))
+            surface.save(qEnvironmentVariable("TURTLE_CODE_BACKGROUND_PREVIEW")+".wallpaper-switcher.png");
+        QTest::keyClick(switchList,Qt::Key_Escape);
+        QTest::keyRelease(editor,Qt::Key_Control);
         saveBackground(imageFile,35); checkImage(35);
         // Reload uses persisted settings; cancelling a removal changes nothing.
         ThemeManager::instance().initialize(); checkImage(35);
