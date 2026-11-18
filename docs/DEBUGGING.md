@@ -159,8 +159,10 @@ adapterArgs, launchArguments, externalSymbols и `${serverConsolePort}`.
 Существующие файлы не переписываются; миграция ещё более старых настроек
 из QSettings сохраняет исходный формат debug.json, чтобы не потерять параметры.
 
-Для cp302 короткие файлы уже подготовлены. Исходная `.vscode` не изменена;
-старый длинный конфиг сохранён как `.turtle/debug.pre-launch-format.json.bak`.
+Для типа `cpp` внешний поиск символов LLDB отключён по умолчанию, чтобы
+ожидание сетевого сервера символов не задерживало запуск. `externalSymbols: true`
+разрешает такой поиск. Для `stopOnEntry` этот тип использует одноразовую точку
+останова в `main`, чтобы остановка произошла в исходном коде.
 
 Форматы и обозначения сверены с документацией VS Code:
 [launch.json](https://code.visualstudio.com/docs/debugtest/debugging-configuration),

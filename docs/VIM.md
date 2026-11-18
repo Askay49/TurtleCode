@@ -80,9 +80,9 @@ Supported text objects use `i` (inside) or `a` (around):
 | `ib` / `ab`, `iB` / `aB` | Parentheses/braces |
 | `ip` / `ap` | Paragraph, including adjacent empty lines for `a` |
 
-Objects can be used in Visual mode too, for example `viw`. Delimiter objects are
-textual and do not depend on an installed language grammar. Tags and sentence
-objects are not implemented.
+Objects also work in Visual mode, for example `viw`. Delimiter objects use
+the document text directly. See [Additional Insert and Visual commands](#additional-insert-and-visual-commands)
+for sentence objects `is/as` and tag objects `it/at`.
 
 ## Editing and Undo
 

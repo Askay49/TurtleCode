@@ -24,7 +24,12 @@ Import/export use a Turtle Code JSON file, for example:
 
 Import merges the listed commands into the current draft and validates before accepting it. Export writes the complete draft. Unknown commands, reserved keys and conflicts are rejected. Imported settings take effect after **Save**.
 
-The editor header shows only the current document, without a close button. The real tab starts at the right edge of the line-number gutter, with equal 12-pixel text padding on each side. A separate header gutter continues the line-number background up to the menu. The boundary follows changes to font size or the number of line-number digits. Right-click its title for **Close** or **Close All**. Unsaved documents require confirmation; cancelling Close All leaves every document open.
+Each editor pane shows its current document in a header. The active pane has
+an accent line. Click the title to choose another open buffer for that pane.
+The header provides split and close actions, and a top tab bar appears when
+multiple Vim tab pages are open. Unsaved documents require confirmation before
+closing. Cancelling Close All leaves every document open. See [VIM.md](VIM.md#editor-panes-vim-tab-pages-and-diff)
+for pane and tab-page controls.
 
 **Ctrl+Tab** opens an opaque panel over the editor with file icons and filenames in most-recently-used order. The editor keeps its size and scroll position while the panel is open. Keep Ctrl held and press Tab again to advance, or Shift+Tab to go backwards. Release Ctrl, press Enter, or click a row to open the selection. Escape or a click outside cancels. Arrow keys also select a row. The next/previous recent-tab shortcuts remain configurable.
 

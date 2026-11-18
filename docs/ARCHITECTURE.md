@@ -14,8 +14,10 @@ code-point helpers.
 
 ## Editor adapter and Unicode
 
-`EditorWidget` owns a `PieceTreeBuffer`, translates Qt input into UTF-8 edits, and
-renders visible lines. `UnicodeNavigation` is a QtCore adapter: it uses
+`Document` owns the `PieceTreeBuffer` and its edit history. `EditorWidget`
+translates Qt input into UTF-8 edits and renders visible lines. Split views of the
+same document share that state and keep independent cursor and scroll positions.
+`UnicodeNavigation` is a QtCore adapter: it uses
 `QTextBoundaryFinder` to map extended grapheme-cluster boundaries and basic word
 movement back to UTF-8 byte offsets. The Piece Tree remains independent of Qt.
 
@@ -64,24 +66,27 @@ The UI records ordered edits as UTF-8 byte offsets plus byte-based row/column po
 removed bytes and inserted bytes. The worker applies each edit with `ts_tree_edit`,
 then calls `ts_parser_parse_string` with the edited previous tree so unchanged
 subtrees can be reused. `ts_tree_get_changed_ranges` is combined with explicit edit
-ranges; only those line ranges have their query captures refreshed. The worker keeps
-its per-line span cache, including line splices caused by inserted/deleted newlines.
+ranges to invalidate affected captures. Captures are queried for the visible rows
+and nearby uncached rows. The worker updates its per-line cache as edits insert
+or delete lines.
 
 Parsing runs asynchronously on Qt's worker pool. The worker owns its source text,
 parser and tree; ordinary edits replay on that private source without copying the
 live document again. A 90 ms debounce coalesces rapid edits. Results are displayed
 only when the document revision, session generation and language still match.
-Initial loads, undo/redo, language changes, and detected edit-stream mismatches
-trigger a full snapshot and parse. An active parse is not yet interrupted.
-Unsupported or uninstalled file types remain plain text.
+Initial loads, language changes, and detected edit-stream mismatches can trigger
+a full snapshot and parse. Undo/Redo sends incremental edits. Outdated parse or
+query jobs stop cooperatively. Unsupported or uninstalled file types remain
+plain text. See [HIGHLIGHTING.md](HIGHLIGHTING.md) for budgets and scheduling.
 
-## LSP pilot
+## Language servers
 
-`LspClient` connects to an installed `clangd` through a framed JSON-RPC
-`QProcess`. The current C/C++ pilot sends full document changes after a 250 ms
-debounce for files no larger than 2 MiB. Diagnostics are drawn on visible rows;
-`Ctrl+Space` requests completion and `F12` opens a definition. The editor keeps
-the JSON-RPC transport and document versions outside the widget.
+`LspClient` communicates with an installed server through framed JSON-RPC over
+`QProcess`. `LspManager` routes documents to server profiles by language and
+workspace. Diagnostics paint on visible rows, `Ctrl+Space` requests completion,
+and `F12` opens a definition. `LspAdaptivePolicy` controls synchronization and
+automatic work based on document size and response latency. See [LSP.md](LSP.md)
+for size thresholds and transport limits.
 
 ## Language registry (v0.7.0)
 
@@ -111,34 +116,40 @@ overscan. The line-number gutter is fixed, while horizontal scrolling is applied
 the text, selection, preedit and caret geometry. Text drawing is clipped to the
 text viewport so scrolled glyphs cannot paint over the gutter.
 
-The vertical scrollbar is line-based. To avoid scanning every line on each edit,
+The vertical scrollbar uses visible layout rows, including wrapping and folds.
+To avoid scanning every line on each edit,
 the horizontal extent is recalculated from the active line only. Cursor movement and
 edits update the extent and keep the caret visible. Drag-selection auto-scrolls at
 both viewport edges. `scrollContentsBy` schedules a repaint instead of attempting
 to pixel-scroll stale custom-rendered content.
 
-Tree-sitter parsing now runs on a worker over immutable text snapshots and reuses a
-persistent edited syntax tree between text changes. Query captures are refreshed only
-for changed line ranges. File loading and saving remain synchronous. Parsing jobs are
-coalesced and stale results are not displayed; active parser cancellation and reducing
-UI-thread snapshot copies remain follow-up optimizations.
+Loading and saving run in background workers. The chunked file loading section
+below describes backing files, preview and cancellation.
 
 
 ## Project workspace and process entry point (v0.9.0)
 
-The Qt application shell owns `ProjectExplorer`, a tree widget whose directory enumeration runs on Qt's thread pool. Expanded directories are populated on demand; a `QFileSystemWatcher` invalidates loaded directories when their contents change. Hidden files are excluded by default and can be enabled for both Explorer and project search with `Ctrl+H`; `.gitignore` does not control visibility. The project search runs off the UI thread and returns file/line matches.
+`ProjectExplorer` enumerates expanded directories in the background and watches
+them for changes. `WorkspaceFiles` shares ignore rules between the tree, Quick Open
+and project search. Hidden files have a separate toggle, `Ctrl+H`. See
+[LARGE_PROJECTS.md](LARGE_PROJECTS.md) for filtering, indexing and pagination.
 
-The command-line entry point accepts multiple positional paths and resolves them relative to the launching process working directory. Directories become workspace roots and files open as tabs. A per-user `QLocalServer`/`QLocalSocket` endpoint forwards requests to the primary window; `--new-window` uses a process-specific endpoint, while the default and `--reuse-window` target the primary endpoint.
+The command-line entry point resolves positional paths relative to the launching
+process. One directory becomes the project root and files open as tabs. A per-user
+`QLocalServer`/`QLocalSocket` endpoint forwards requests to the primary window.
+`--new-window` opens a separate process, while the default and `--reuse-window`
+target the primary endpoint.
 
 ## Project search (v0.10)
 
 `SearchPanel` is a persistent sidebar surface rather than a modal dialog. It debounces
 queries and delegates filesystem work to `ProjectSearchService`. A new query cancels
 the previous worker through a shared atomic token, and stale results are discarded by
-generation. Search supports case sensitivity, whole-word and regular-expression modes,
-include/exclude globs, a shared hidden-file toggle, binary-file detection and a bounded
-result count. Results are grouped by file and reveal the selected match only after an
-asynchronously opened document has finished loading.
+generation. Search supports case sensitivity, whole-word and regular-expression
+modes, include/exclude globs, a shared hidden-file toggle and binary-file detection.
+Matches are stored on disk and the panel displays them by file on pages. The selected
+match is revealed after its document has loaded. See [LARGE_PROJECTS.md](LARGE_PROJECTS.md)
+for regex budgets and long-line handling.
 
 
 ## Project Explorer refresh and rename behavior
@@ -169,7 +180,11 @@ Search can iterate lines from a shared file-backed snapshot, and random line nav
 
 ## Bounded editing operations and history
 
-Font preferences are read through `app/FontSettings.hpp`. QSettings keys `fonts/tree/family`, `fonts/tree/size`, `fonts/editor/family`, `fonts/editor/size`, `fonts/terminal/family`, and `fonts/terminal/size` store separate families and point sizes (6–96). New editor/explorer instances read these preferences during construction. Saving the Editor settings dialog updates existing editors/explorers across application windows and recomputes editor scroll geometry without modifying document text/history. The terminal preferences are persisted only; a future terminal should use `FontSettings::font(FontSettings::Area::Terminal)`.
+Font preferences use `app/FontSettings.hpp`. QSettings stores independent
+families and point sizes (6–96) under `fonts/tree`, `fonts/editor` and
+`fonts/terminal`. Saving the settings updates existing explorers, editors and
+terminals across application windows. The editor recomputes scroll geometry
+and the terminal recomputes its cell grid.
 
 See [TEXT_PROCESSING.md](TEXT_PROCESSING.md) for user-facing behaviour and limitations. The editor settings store `editor/historyMemoryMiB` (default 64), `editor/historySpillToDisk` (default true), and `editor/historyDiskMiB` (default 0/unlimited) in QSettings. Limits apply per document to retained payload bytes, not whole-process RSS or tree/container metadata. Oldest commands are removed when spill is disabled and RAM is exceeded, or the disk history limit is exceeded. Save-point identifiers survive pruning; storage errors keep recoverable history and report a notice, making the RAM target soft in that error case.
 

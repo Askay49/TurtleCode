@@ -25,17 +25,11 @@
   - [x] replace preview for visible results, progressive result loading, selected matches, protection for modified buffers, file-change checks and streaming project-wide replace
 - [x] initial clangd integration for C/C++: diagnostics, Ctrl+Space completion and F12 definition
 
-## Current editor performance notes
+## Актуальные сведения
 
-- Painting is viewport-bounded: only visible rows plus a small overscan are drawn. The Piece Tree remains the source of document text; the editor does not create widgets per line.
-- The vertical scrollbar represents document lines. The horizontal scrollbar tracks the active line's pixel width, avoiding an O(document-lines) width scan on every keystroke. Moving to another line recalculates its horizontal extent.
-- The gutter remains fixed while the text area scrolls horizontally.
-- Cursor movement and edits keep the cursor visible. Dragging a selection beyond the viewport auto-scrolls vertically and horizontally.
-- Tree-sitter parses run in the Qt worker pool. Ordinary edits replay on a worker-owned UTF-8 source; loads, undo and redo still take a full snapshot. The worker retains its parser/tree, applies ordered `TSInputEdit` operations, and refreshes captures in changed ranges. Edits are debounced and obsolete results are discarded. Active parsing is not interrupted yet.
-- C/C++ LSP uses an installed `clangd`. Document sync is currently full-text and limited to files up to 2 MiB to keep larger files responsive.
-- The optional `TURTLE_CODE_SYNTAX_BENCH=1 ./build/turtle-code-syntax-tests` probe measures an initial parse and an edit in a 1.6 MiB C++ buffer. One local Debug run took 904 ms initially, under 1 ms to queue the edit, and 550 ms for the worker to return updated spans; timings are machine-dependent.
-- File loading and saving run in background workers. Project-wide replacement writes files atomically and reloads clean open buffers.
-- Project search has no fixed result or file-size cap. The sidebar creates match rows in batches, and typing replacement text repaints only visible rows. Replacement streams each file through an atomic temporary file instead of materializing a second full-file copy.
+Текущие ограничения и устройство описаны в [архитектуре](ARCHITECTURE.md),
+[подсветке](HIGHLIGHTING.md), [LSP](LSP.md) и [больших проектах](LARGE_PROJECTS.md).
+Возможности модального редактирования перечислены в [VIM.md](VIM.md).
 
 
 ### v0.9.8 Explorer rename stability
