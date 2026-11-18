@@ -60,7 +60,7 @@ Tests cover hard charged-byte/row limits, LRU protection/recency, sparse row shi
 
 ## Semantic tokens
 
-Enabled by default. Use **Settings → Language server → Semantic highlighting (LSP)** to switch this layer off independently of completion. The server must advertise `semanticTokensProvider.full`; `workspace/semanticTokens/refresh` is supported. Superseded requests are canceled. Servers without this capability retain syntax highlighting.
+Enabled by default. Use **Settings… → Languages and tools → Language servers → Semantic highlighting (LSP)** to switch this layer off independently of completion. The server must advertise `semanticTokensProvider.full`; `workspace/semanticTokens/refresh` is supported. Superseded requests are canceled. Servers without this capability retain syntax highlighting.
 
 The protocol client uses each server's advertised legend; it does not hard-code clangd's numeric token IDs. Standard types and relevant clangd types/modifiers map to theme roles. Unknown types preserve syntax styles. A future language server can use the same transport/decoder/renderer. Currently the settings profile exposes C/C++ with clangd.
 

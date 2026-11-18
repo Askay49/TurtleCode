@@ -192,10 +192,11 @@ private:
     void saveAllFiles();
     void saveCurrentFileAs();
     void updateWindowTitle();
-    void showLanguageSettings();
-    void showLspSettings();
-    void showEditorSettings();
-    void showInterfaceLanguageSettings();
+    enum class SettingsPage { Last, Editor, Appearance, Theme, Shortcuts, Highlighting, LanguageServers, Files, History };
+    void showSettings(SettingsPage page = SettingsPage::Last);
+    QWidget* createHighlightingSettings(QWidget* parent);
+    void applyLspSettings(bool serverChanged);
+    void applyFileVisibilitySettings();
     void configureLsp();
     bool ensureManualLsp(EditorWidget* editor,std::function<void()> retry);
     void requestSemanticHighlighting(EditorWidget* editor, bool force = false);

@@ -7,31 +7,23 @@
 #include <QLockFile>
 #include <QScrollBar>
 #include <QScrollArea>
-#include <QScreen>
 #include "app/FileIcons.hpp"
 #include "app/Codicons.hpp"
 #include "app/I18n.hpp"
-#include "FontSettings.hpp"
 #include "terminal/TerminalPanel.hpp"
 #include "terminal/TerminalWidget.hpp"
-#include <QFontComboBox>
-#include <QFormLayout>
-#include <QGroupBox>
 #include "ShortcutManager.hpp"
 #include "ThemeManager.hpp"
 #include "WorkspaceBackground.hpp"
 #include <QPainter>
-#include <QImageReader>
 #include "MainWindow.hpp"
 
 #include <QAction>
-#include <QComboBox>
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QElapsedTimer>
 #include <QTreeWidget>
 #include "language/WorkspaceEdits.hpp"
-#include "app/SettingsSpinBox.hpp"
 #include <QCursor>
 #include <QTableWidget>
 #include <QPlainTextEdit>
@@ -73,7 +65,6 @@
 #include <QPair>
 #include <QVector>
 #include <QScrollArea>
-#include <QScreen>
 #include <QPushButton>
 #include <QHBoxLayout>
 #include <QScopedValueRollback>
@@ -103,7 +94,6 @@
 #include "language/LanguageRegistry.hpp"
 #include "language/GrammarManager.hpp"
 #include "language/LspManager.hpp"
-#include "language/LspSettingsDialog.hpp"
 
 namespace {
 
@@ -816,34 +806,46 @@ void MainWindow::createMenus() {
     connect(forwardAction, &QAction::triggered, this, [this] { navigateHistory(1); });
 
     auto* settingsMenu = menuBar()->addMenu(I18n::text("&Settings"));
-    auto* vimAction=settingsMenu->addAction(Codicons::icon("keyboard"),I18n::text("Vim mode"));
-    vimAction->setObjectName("settings.vimMode");vimAction->setCheckable(true);
-    vimAction->setChecked(QSettings().value("editor/vimMode",false).toBool());
-    ShortcutManager::instance().bind("settings.vimMode",vimAction);
-    connect(vimAction,&QAction::toggled,this,[this,vimAction](bool enabled) {
-        QSettings settings;const bool previous=settings.value("editor/vimMode",false).toBool();
-        settings.setValue("editor/vimMode",enabled);settings.sync();
-        if(settings.status()!=QSettings::NoError){settings.setValue("editor/vimMode",previous);const QSignalBlocker blocker(vimAction);vimAction->setChecked(previous);statusBar()->showMessage(I18n::text("Cannot save settings."),6000);return;}
+    auto* openSettings = settingsMenu->addAction(Codicons::icon("settings-gear"), I18n::text("Settings…"));
+    openSettings->setObjectName("settings.open");
+    ShortcutManager::instance().bind("settings.open", openSettings);
+    connect(openSettings, &QAction::triggered, this, [this] { showSettings(); });
+
+    auto addWindowAction = [this](const QString& id, const QString& label, const QString& icon) {
+        auto* action = new QAction(Codicons::icon(icon), label, this);
+        action->setObjectName(id);
+        addAction(action);
+        ShortcutManager::instance().bind(id, action);
+        return action;
+    };
+    auto addSettingsAction = [this, &addWindowAction](const QString& id, const char* label, const QString& icon, SettingsPage page) {
+        auto* action = addWindowAction(id, I18n::text(label), icon);
+        connect(action, &QAction::triggered, this, [this, page] { showSettings(page); });
+    };
+    addSettingsAction("settings.editor", "Editor settings", "settings-gear", SettingsPage::Editor);
+    addSettingsAction("settings.interfaceLanguage", "Interface language", "globe", SettingsPage::Appearance);
+    addSettingsAction("settings.theme", "Theme", "color-mode", SettingsPage::Theme);
+    addSettingsAction("settings.shortcuts", "Keyboard shortcuts", "keyboard", SettingsPage::Shortcuts);
+    addSettingsAction("settings.lsp", "Language servers", "server", SettingsPage::LanguageServers);
+    addSettingsAction("settings.languages", "Syntax highlighting", "code", SettingsPage::Highlighting);
+
+    auto* vimAction = addWindowAction("settings.vimMode", I18n::text("Vim mode"), "keyboard");
+    vimAction->setCheckable(true);
+    vimAction->setChecked(QSettings().value("editor/vimMode", false).toBool());
+    connect(vimAction, &QAction::triggered, this, [this, vimAction](bool enabled) {
+        QSettings settings;
+        const bool previous = settings.value("editor/vimMode", false).toBool();
+        settings.setValue("editor/vimMode", enabled);
+        settings.sync();
+        if (settings.status() != QSettings::NoError) {
+            settings.setValue("editor/vimMode", previous);
+            const QSignalBlocker blocker(vimAction);
+            vimAction->setChecked(previous);
+            statusBar()->showMessage(I18n::text("Cannot save settings."), 6000);
+            return;
+        }
         applyVimSettings();
     });
-    auto* editorSettings=settingsMenu->addAction(Codicons::icon("settings-gear"), I18n::text("Editor..."));
-    ShortcutManager::instance().bind("settings.editor", editorSettings);
-    connect(editorSettings,&QAction::triggered,this,&MainWindow::showEditorSettings);
-    auto* interfaceLanguageAction = settingsMenu->addAction(Codicons::icon("globe"), I18n::text("Interface language..."));
-    ShortcutManager::instance().bind("settings.interfaceLanguage", interfaceLanguageAction);
-    connect(interfaceLanguageAction, &QAction::triggered, this, &MainWindow::showInterfaceLanguageSettings);
-    auto* themeAction = settingsMenu->addAction(Codicons::icon("color-mode"), I18n::text("Theme..."));
-    ShortcutManager::instance().bind("settings.theme", themeAction);
-    connect(themeAction, &QAction::triggered, this, [this] { ThemeManager::instance().showSettings(this); });
-    auto* shortcutsAction = settingsMenu->addAction(Codicons::icon("keyboard"), I18n::text("Keyboard shortcuts..."));
-    ShortcutManager::instance().bind("settings.shortcuts", shortcutsAction);
-    connect(shortcutsAction, &QAction::triggered, this, [this] { ShortcutManager::instance().showSettings(this); });
-    auto* lspAction = settingsMenu->addAction(Codicons::icon("server"), I18n::text("Language server..."));
-    ShortcutManager::instance().bind("settings.lsp", lspAction);
-    connect(lspAction, &QAction::triggered, this, &MainWindow::showLspSettings);
-    auto* languagesAction = settingsMenu->addAction(Codicons::icon("code"), I18n::text("&Languages..."));
-    ShortcutManager::instance().bind("settings.languages", languagesAction);
-    connect(languagesAction, &QAction::triggered, this, &MainWindow::showLanguageSettings);
 
     auto* viewMenu = menuBar()->addMenu(I18n::text("&View"));
     auto addPaneAction = [this, viewMenu](const QString& id, const QString& label, const QString& icon, auto action) {
@@ -914,29 +916,24 @@ void MainWindow::createMenus() {
         terminalPanel_->open(directory.isEmpty() ? QDir::homePath() : directory);
         if (firstOpen) editorArea_->resizeDocks({terminalPanel_}, {qMax(180, editorArea_->height()/3)}, Qt::Vertical);
     });
-    auto* hiddenAction = viewMenu->addAction(Codicons::icon("eye"), I18n::text("Show Hidden Files"));
-    hiddenAction->setCheckable(true);
-    hiddenAction->setChecked(QSettings().value("view/showHidden",false).toBool());
-    explorer_->setShowHidden(hiddenAction->isChecked());searchPanel_->setShowHidden(hiddenAction->isChecked());
-    ShortcutManager::instance().bind("view.hidden", hiddenAction);
-    connect(hiddenAction, &QAction::toggled, this, [this](bool show) {
-        QSettings().setValue("view/showHidden",show);
-        explorer_->setShowHidden(show);
-        workspaceIndex_->configure(explicitProject_?projectRoots_:QStringList{}, {show,QSettings().value("project/includeIgnored",false).toBool(),{}});
-        searchPanel_->setShowHidden(show);
-        statusBar()->showMessage(show ? I18n::text("Hidden files are visible") : I18n::text("Hidden files are hidden"), 2000);
-    });
-    auto* ignoredAction = viewMenu->addAction(Codicons::icon("filter"), I18n::text("Include ignored files"));
-    ShortcutManager::instance().bind("view.ignored",ignoredAction);
-    ignoredAction->setCheckable(true);
-    ignoredAction->setChecked(QSettings().value("project/includeIgnored",false).toBool());
-    explorer_->setIncludeIgnored(ignoredAction->isChecked());
-    searchPanel_->setIncludeIgnored(ignoredAction->isChecked());
-    connect(ignoredAction,&QAction::toggled,this,[this](bool include) {
-        QSettings().setValue("project/includeIgnored",include);
-        explorer_->setIncludeIgnored(include);searchPanel_->setIncludeIgnored(include);
-        workspaceIndex_->configure(explicitProject_?projectRoots_:QStringList{},{QSettings().value("view/showHidden",false).toBool(),include,{}});
-    });
+    auto addFileFilterAction = [this, &addWindowAction](const QString& id, const char* label,
+                                                        const QString& icon, const QString& key) {
+        auto* action = addWindowAction(id, I18n::text(label), icon);
+        action->setCheckable(true);
+        action->setChecked(QSettings().value(key, false).toBool());
+        connect(action, &QAction::triggered, this, [this, key](bool enabled) {
+            QSettings().setValue(key, enabled);
+            applyFileVisibilitySettings();
+            if (key == "view/showHidden")
+                statusBar()->showMessage(I18n::text(enabled ? "Hidden files are visible" : "Hidden files are hidden"), 2000);
+        });
+    };
+    addFileFilterAction("view.hidden", "Show Hidden Files", "eye", "view/showHidden");
+    addFileFilterAction("view.ignored", "Include ignored files", "filter", "project/includeIgnored");
+    explorer_->setShowHidden(QSettings().value("view/showHidden", false).toBool());
+    explorer_->setIncludeIgnored(QSettings().value("project/includeIgnored", false).toBool());
+    searchPanel_->setShowHidden(QSettings().value("view/showHidden", false).toBool());
+    searchPanel_->setIncludeIgnored(QSettings().value("project/includeIgnored", false).toBool());
     auto* explorerAction = viewMenu->addAction(Codicons::icon("files"), I18n::text("Toggle Side Bar"));
     explorerAction->setObjectName("view.explorer");
     ShortcutManager::instance().bind("view.explorer", explorerAction);
@@ -1968,129 +1965,6 @@ void MainWindow::finishProjectReplace(const ProjectReplaceResult& result) {
     replaceLockedEditors_.clear();
 }
 
-void MainWindow::showLanguageSettings() {
-    QDialog dialog(this);
-    dialog.setWindowTitle(I18n::text("Language Support"));
-    dialog.setMinimumSize(600, 480);
-    dialog.resize(700, 620);
-
-    auto* root = new QVBoxLayout(&dialog);
-    root->setContentsMargins(20, 18, 20, 16);
-    root->setSpacing(12);
-
-    auto* heading = new QLabel(I18n::text("Language Support"), &dialog);
-    QFont headingFont = heading->font();
-    headingFont.setPointSize(15);
-    headingFont.setBold(true);
-    heading->setFont(headingFont);
-    root->addWidget(heading);
-
-    auto* description = new QLabel(
-        I18n::text("Enable a language to download its Tree-sitter grammar automatically. Installation happens in the background; files remain usable as plain text while a grammar is unavailable."), &dialog);
-    description->setObjectName("description");
-    description->setWordWrap(true);
-    root->addWidget(description);
-
-    auto* status = new QLabel(I18n::text("Select a language to install or enable its grammar."), &dialog);
-    status->setObjectName("status");
-    status->setWordWrap(true);
-    root->addWidget(status);
-    connect(grammarManager_, &GrammarManager::statusChanged, status,
-            [status](const QString&, const QString& message) { status->setText(message); });
-
-    auto* scroll = new QScrollArea(&dialog);
-    scroll->setWidgetResizable(true);
-    auto* content = new QWidget(scroll);
-    auto* contentLayout = new QVBoxLayout(content);
-    contentLayout->setContentsMargins(4, 4, 4, 4);
-    contentLayout->setSpacing(8);
-
-    struct LanguageToggle { QString id; QString name; QPointer<QCheckBox> checkbox; };
-    QVector<LanguageToggle> toggles;
-    QString currentCategory;
-    for (const auto& language : LanguageRegistry::languages()) {
-        if (language.category != currentCategory) {
-            currentCategory = language.category;
-            auto* categoryLabel = new QLabel(currentCategory, content);
-            QFont categoryFont = categoryLabel->font();
-            categoryFont.setBold(true);
-            categoryFont.setPointSize(categoryFont.pointSize() + 1);
-            categoryLabel->setFont(categoryFont);
-            contentLayout->addWidget(categoryLabel);
-        }
-        const bool installed = GrammarManager::isInstalled(language.id);
-        auto* checkbox = new QCheckBox(language.name + (installed ? I18n::text("  · Installed") : I18n::text("  · Not installed")), content);
-        checkbox->setChecked(installed && LanguageRegistry::isEnabled(language.id));
-        checkbox->setToolTip(installed ? I18n::text("Toggle syntax highlighting for this language.")
-                                      : I18n::text("Enable to download and install the official Tree-sitter grammar."));
-        contentLayout->addWidget(checkbox);
-        toggles.push_back({language.id, language.name, checkbox});
-
-        connect(checkbox, &QCheckBox::toggled, &dialog,
-                [this, id = language.id, name = language.name, checkbox, status](bool enabled) {
-            if (!enabled) {
-                LanguageRegistry::setEnabled(id, false);
-                for (int i = 0; i < tabs_->count(); ++i)
-                    if (auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i))) editor->refreshSyntaxHighlighting();
-                return;
-            }
-            if (GrammarManager::isInstalled(id)) {
-                LanguageRegistry::setEnabled(id, true);
-                for (int i = 0; i < tabs_->count(); ++i)
-                    if (auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i))) editor->refreshSyntaxHighlighting();
-                status->setText(I18n::text("Language enabled."));
-                return;
-            }
-            LanguageRegistry::setEnabled(id, true);
-            checkbox->setText(name + I18n::text("  · Installing…"));
-            status->setText(I18n::text("Preparing grammar download…"));
-            grammarManager_->install(id);
-        });
-    }
-    contentLayout->addStretch(1);
-    scroll->setWidget(content);
-    root->addWidget(scroll, 1);
-
-    auto* note = new QLabel(
-        I18n::text("Grammars are downloaded from their public Tree-sitter repositories, compiled locally, and stored in your user data directory. A C compiler and tar are required for installation. The IDE itself does not need to be rebuilt."), &dialog);
-    note->setObjectName("note");
-    note->setWordWrap(true);
-    root->addWidget(note);
-
-    connect(grammarManager_, &GrammarManager::installationFinished, &dialog,
-            [this, toggles, status](const QString& id, bool success) {
-        for (const auto& toggle : toggles) {
-            if (toggle.id != id || !toggle.checkbox) continue;
-            toggle.checkbox->setEnabled(true);
-            if (success) {
-                toggle.checkbox->setText(toggle.name + I18n::text("  · Installed"));
-                const bool enabled = LanguageRegistry::isEnabled(id);
-                {
-                    const QSignalBlocker blocker(toggle.checkbox);
-                    toggle.checkbox->setChecked(enabled);
-                }
-                status->setText(enabled ? I18n::text("Grammar installed and language enabled.")
-                                        : I18n::text("Grammar installed; language remains disabled."));
-            } else {
-                toggle.checkbox->setText(toggle.name + I18n::text("  · Not installed"));
-                const QSignalBlocker blocker(toggle.checkbox);
-                toggle.checkbox->setChecked(false);
-            }
-        }
-        if (success) {
-            for (int i = 0; i < tabs_->count(); ++i)
-                if (auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i))) editor->refreshSyntaxHighlighting();
-        }
-    });
-
-    auto* buttons = new IconDialogs::ButtonBox(QDialogButtonBox::Close, &dialog);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    root->addWidget(buttons);
-    dialog.exec();
-}
-
-
 void MainWindow::configureLsp() {
     for(int i=0;i<tabs_->count();++i) if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i))) {
         editor->clearSemanticHighlighting(); editor->setDiagnostics({}); editor->lspPolicy().reset();
@@ -2104,17 +1978,6 @@ void MainWindow::configureLsp() {
             lsp_->open(editor->filePath(),editor->lspText());
     requestSemanticHighlighting(activeEditor(),true);
     scheduleOutline();
-}
-void MainWindow::showLspSettings() {
-    LspSettingsDialog dialog(lsp_,this);
-    if(dialog.exec()!=QDialog::Accepted) return;
-    const bool semantic=QSettings().value("lsp/semanticHighlighting",true).toBool();
-    for(int i=0;i<tabs_->count();++i) if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i))) {
-        editor->hideCompletions();
-        if(!semantic) {lsp_->cancelSemanticTokens(editor->filePath());editor->clearSemanticHighlighting();}
-    }
-    if(dialog.serverChanged) configureLsp();
-    else requestSemanticHighlighting(activeEditor(),true);
 }
 bool MainWindow::ensureManualLsp(EditorWidget* editor,std::function<void()> retry) {
     if(!editor || editor->isBusy() || !lsp_ || !lsp_->supports(editor->filePath())) return false;
@@ -2727,26 +2590,6 @@ void MainWindow::renameSymbol() {
     });
 }
 
-void MainWindow::showInterfaceLanguageSettings() {
-    QDialog dialog(this); dialog.setWindowTitle(I18n::text("Interface language"));
-    auto* layout=new QVBoxLayout(&dialog);
-    layout->addWidget(new QLabel(I18n::text("Language:"),&dialog));
-    auto* language=new QComboBox(&dialog); language->setObjectName("interfaceLanguage");
-    language->addItem("English","en"); language->addItem(QString::fromUtf8("Русский"),"ru");
-    language->setCurrentIndex(language->findData(I18n::selectedLanguage())); layout->addWidget(language);
-    auto* note=new QLabel(I18n::text("Restart Turtle Code to apply the selected interface language."),&dialog);
-    note->setWordWrap(true); layout->addWidget(note);
-    auto* buttons=new IconDialogs::ButtonBox(QDialogButtonBox::Save|QDialogButtonBox::Cancel,&dialog); layout->addWidget(buttons);
-    connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
-    connect(buttons,&QDialogButtonBox::accepted,&dialog,[&] {
-        const auto selected=language->currentData().toString();
-        if (!I18n::saveLanguage(selected)) { IconDialogs::MessageBox::warning(&dialog,I18n::text("Interface language"),I18n::text("Could not save the interface language.")); return; }
-        if (selected!=I18n::activeLanguage()) IconDialogs::MessageBox::information(&dialog,I18n::text("Interface language"),I18n::text("The language choice is saved. Restart the editor when convenient; your open files stay unchanged."));
-        dialog.accept();
-    });
-    dialog.exec();
-}
-
 void MainWindow::applyVimSettings() {
     const bool enabled=QSettings().value("editor/vimMode",false).toBool();
     for(auto* widget:QApplication::allWidgets()) {
@@ -2764,136 +2607,6 @@ void MainWindow::updateVimIndicator() {
         if(auto* focused=qobject_cast<EditorWidget*>(widget);focused && isAncestorOf(focused)){editor=focused;break;}
     const bool visible=editor && editor->vimEnabled();vimStatus_->setVisible(visible);
     if(visible){vimStatus_->setText(editor->vimModeName());vimStatus_->setEnabled(editor->hasFocus() || editor->vimCommandLineActive());}
-}
-
-void MainWindow::showEditorSettings() {
-    QDialog dialog(this);dialog.setWindowTitle(I18n::text("Editor settings"));
-    auto* outer=new QVBoxLayout(&dialog);
-    auto* scroll=new QScrollArea(&dialog);scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);
-    auto* content=new QWidget(scroll);scroll->setWidget(content);outer->addWidget(scroll,1);
-    auto* layout=new QVBoxLayout(content);QSettings settings;
-    auto* vim=new QCheckBox(I18n::text("Enable Vim mode"),content);
-    vim->setObjectName("vimModeEnabled");vim->setChecked(settings.value("editor/vimMode",false).toBool());
-    vim->setToolTip(I18n::text("Normal: i/a to insert, v to select. Escape returns to Normal."));layout->addWidget(vim);
-    auto* fonts=new QGroupBox(I18n::text("Fonts"),&dialog);
-    auto* fontLayout=new QFormLayout(fonts);
-    struct FontRow { FontSettings::Area area; QFontComboBox* family; QSpinBox* size; };
-    std::vector<FontRow> fontRows;
-    const auto addFontRow=[&](FontSettings::Area area,const QString& label,const QString& name) {
-        const auto selected=FontSettings::font(area);
-        auto* row=new QWidget(fonts);auto* rowLayout=new QHBoxLayout(row);rowLayout->setContentsMargins(0,0,0,0);
-        auto* family=new QFontComboBox(row);family->setObjectName(name+"FontFamily");family->setCurrentFont(selected);
-        auto* size=new SettingsSpinBox(row);size->setObjectName(name+"FontSize");size->setRange(6,96);
-        size->setSuffix(I18n::text(" pt"));size->setValue(selected.pointSize());
-        rowLayout->addWidget(family,1);rowLayout->addWidget(size);fontLayout->addRow(label,row);
-        fontRows.push_back({area,family,size});
-    };
-    addFontRow(FontSettings::Area::Tree,I18n::text("Project tree:"),"tree");
-    addFontRow(FontSettings::Area::Editor,I18n::text("Editor text:"),"editor");
-    addFontRow(FontSettings::Area::Terminal,I18n::text("Terminal:"),"terminal");
-    layout->addWidget(fonts);
-    auto* backgroundGroup = new QGroupBox(I18n::text("Workspace background"), &dialog);
-    auto* backgroundLayout = new QFormLayout(backgroundGroup);
-    auto* imageRow = new QWidget(backgroundGroup);
-    auto* imageLayout = new QHBoxLayout(imageRow); imageLayout->setContentsMargins(0,0,0,0);
-    auto* imagePath = new QLineEdit(settings.value("appearance/backgroundImage").toString(), imageRow);
-    imagePath->setObjectName("backgroundImage"); imagePath->setReadOnly(true);
-    imagePath->setPlaceholderText(I18n::text("No image selected"));
-    auto* browseImage = new QPushButton(I18n::text("Choose image…"), imageRow); browseImage->setIcon(Codicons::icon("file-media"));
-    auto* clearImage = new QPushButton(I18n::text("Remove"), imageRow); clearImage->setIcon(Codicons::icon("trash"));
-    clearImage->setObjectName("removeBackgroundImage");
-    imageLayout->addWidget(imagePath,1); imageLayout->addWidget(browseImage); imageLayout->addWidget(clearImage);
-    backgroundLayout->addRow(I18n::text("Image:"), imageRow);
-    auto* imageOpacity = new SettingsSpinBox(backgroundGroup); imageOpacity->setObjectName("backgroundOpacity");
-    imageOpacity->setRange(0,100); imageOpacity->setSuffix(" %");
-    imageOpacity->setValue(std::clamp(settings.value("appearance/backgroundOpacity",15).toInt(),0,100));
-    backgroundLayout->addRow(I18n::text("Opacity:"),imageOpacity);
-    auto* backgroundNote = new QLabel(I18n::text("One image behind the project tree, text and panels. Scaled to fill the workspace without distortion."),backgroundGroup);
-    backgroundNote->setWordWrap(true); backgroundLayout->addRow(backgroundNote);
-    layout->addWidget(backgroundGroup);
-    connect(clearImage,&QPushButton::clicked,imagePath,&QLineEdit::clear);
-    connect(browseImage,&QPushButton::clicked,&dialog,[&] {
-        QStringList patterns;
-        for (const auto& format : QImageReader::supportedImageFormats()) patterns << "*." + QString::fromLatin1(format);
-        const auto path = IconDialogs::FileDialog::getOpenFileName(&dialog,I18n::text("Choose background image"),imagePath->text(),
-            I18n::text("Images (%1)").arg(patterns.join(' ')));
-        if (!path.isEmpty()) imagePath->setText(path);
-    });
-    layout->addWidget(new QLabel(I18n::text("Undo/Redo memory budget, MiB"),&dialog));
-    auto* memory=new SettingsSpinBox(&dialog);memory->setObjectName("historyMemoryMiB");memory->setRange(1,4096);
-    memory->setValue(settings.value("editor/historyMemoryMiB",64).toInt());layout->addWidget(memory);
-    auto* spill=new QCheckBox(I18n::text("Store history exceeding the memory budget on disk"),&dialog);
-    spill->setObjectName("historySpillToDisk");spill->setChecked(settings.value("editor/historySpillToDisk",true).toBool());layout->addWidget(spill);
-    layout->addWidget(new QLabel(I18n::text("History disk budget, MiB (0: unlimited)"),&dialog));
-    auto* disk=new SettingsSpinBox(&dialog);disk->setObjectName("historyDiskMiB");disk->setRange(0,1048576);disk->setSpecialValueText(I18n::text("Unlimited"));
-    disk->setValue(settings.value("editor/historyDiskMiB",0).toInt());disk->setEnabled(spill->isChecked());layout->addWidget(disk);
-    connect(spill,&QCheckBox::toggled,disk,&QSpinBox::setEnabled);
-    auto* note=new QLabel(I18n::text("When disk storage is disabled or its limit is reached, the oldest Undo/Redo actions are removed. Changes apply to open documents. Temporary history is deleted when its document closes."),&dialog);
-    note->setWordWrap(true);layout->addWidget(note);
-    auto* autoPairs=new QCheckBox(I18n::text("Automatically close brackets and quotes"),&dialog);
-    autoPairs->setObjectName("autoPairs");autoPairs->setChecked(settings.value("editor/autoPairs",true).toBool());
-    layout->addWidget(autoPairs);
-    auto* backups=new QCheckBox(I18n::text("Automatically back up unsaved documents"),&dialog);
-    backups->setObjectName("recoveryEnabled");backups->setChecked(settings.value("editor/recoveryEnabled",true).toBool());
-    backups->setToolTip(I18n::text("Existing recovery copies are kept when disabled. Workspace and cursor positions are still remembered."));
-    layout->addWidget(backups);
-    auto* buttons=new IconDialogs::ButtonBox(QDialogButtonBox::Save|QDialogButtonBox::Cancel,&dialog);outer->addWidget(buttons);
-    connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
-    connect(buttons,&QDialogButtonBox::accepted,&dialog,[&] {
-        if (!imagePath->text().isEmpty()) {
-            QImageReader reader(imagePath->text()); reader.setAutoTransform(true);
-            if (reader.read().isNull()) {
-                IconDialogs::MessageBox::warning(&dialog,I18n::text("Workspace background"),I18n::text("Cannot open this image. Choose another file or remove the background."));
-                return;
-            }
-        }
-        const bool backgroundChanged = settings.value("appearance/backgroundImage").toString() != imagePath->text()
-            || settings.value("appearance/backgroundOpacity",15).toInt() != imageOpacity->value();
-        for(const auto& row:fontRows) {
-            const auto prefix=FontSettings::key(row.area);
-            settings.setValue(prefix+"family",row.family->currentFont().family());
-            settings.setValue(prefix+"size",row.size->value());
-        }
-        settings.setValue("appearance/backgroundImage",imagePath->text());
-        settings.setValue("appearance/backgroundOpacity",imageOpacity->value());
-        settings.setValue("editor/historyMemoryMiB",memory->value());settings.setValue("editor/historySpillToDisk",spill->isChecked());
-        settings.setValue("editor/historyDiskMiB",disk->value());
-        settings.setValue("editor/vimMode",vim->isChecked());
-        settings.setValue("editor/autoPairs",autoPairs->isChecked());
-        settings.setValue("editor/recoveryEnabled",backups->isChecked());settings.sync();
-        if(settings.status()!=QSettings::NoError){IconDialogs::MessageBox::warning(&dialog,I18n::text("Editor settings"),I18n::text("Cannot save settings."));return;}
-        applyVimSettings();
-        if (backgroundChanged) ThemeManager::instance().refreshAppearance();
-        for(auto* widget:QApplication::allWidgets()) {
-            if(auto* window=qobject_cast<MainWindow*>(widget)) {
-                window->applyRecoverySettings();
-                if(window->searchPanel_) window->searchPanel_->applyFontSettings();
-                if(window->outline_) window->outline_->applyFontSettings();
-                if(window->gitPanel_) window->gitPanel_->applyFontSettings();
-            }
-            if(auto* editor=qobject_cast<EditorWidget*>(widget)) editor->applyFontSettings();
-            else if(auto* terminal=qobject_cast<TerminalWidget*>(widget)) terminal->applyFontSettings();
-            else if(auto* tree=qobject_cast<ProjectExplorer*>(widget)) tree->setFont(FontSettings::font(FontSettings::Area::Tree));
-        }
-        for(auto* editor:findChildren<EditorWidget*>())if(!editor->isBusy())editor->applyHistorySettings();
-        dialog.accept();
-    });
-    // Size the initial window from the translated content, including the font
-    // selectors and numeric fields. Keep vertical scrolling on smaller screens.
-    dialog.ensurePolished();
-    layout->activate();
-    const auto margins = outer->contentsMargins();
-    const int scrollWidth = scroll->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, scroll);
-    const QSize available = dialog.screen()->availableGeometry().size() - QSize(40,80);
-    const int width = std::min(available.width(), std::max(760,
-        content->sizeHint().width() + margins.left() + margins.right() + scrollWidth + 4));
-    const int contentWidth = width - margins.left() - margins.right() - scrollWidth - 4;
-    const int contentHeight = layout->hasHeightForWidth()
-        ? layout->totalHeightForWidth(contentWidth) : content->sizeHint().height();
-    const int height = std::min(available.height(), std::max(700,
-        contentHeight + margins.top() + margins.bottom() + buttons->sizeHint().height() + outer->spacing() + 4));
-    dialog.resize(width, height);
-    dialog.exec();
 }
 
 void MainWindow::initializeRecovery() {

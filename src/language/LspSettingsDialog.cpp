@@ -8,6 +8,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -40,27 +41,33 @@ QString quotedArguments(const QStringList& arguments) {
     return result.join(' ');
 }
 }
-LspSettingsDialog::LspSettingsDialog(LspManager* manager, QWidget* parent) : QDialog(parent) {
-    setWindowTitle(I18n::text("Language servers")); resize(980, 760);
+LspSettingsPage::LspSettingsPage(LspManager* manager, QWidget* parent, bool showCompletionControls)
+    : QWidget(parent) {
     // The dialog owns a draft; Cancel never modifies active profiles.
     auto draft = std::make_shared<LspConfiguration>(LspConfiguration::load());
     const auto original = draft->json();
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
     auto* global = new QHBoxLayout;
     auto* enabled = new QCheckBox(I18n::text("Enable language servers"), this);
     enabled->setObjectName("lspEnabled"); enabled->setChecked(QSettings().value("lsp/enabled",true).toBool());
     auto* semantic = new QCheckBox(I18n::text("Semantic highlighting (LSP)"), this);
     semantic->setObjectName("semanticHighlighting"); semantic->setChecked(QSettings().value("lsp/semanticHighlighting",true).toBool());
     global->addWidget(enabled); global->addWidget(semantic); global->addStretch(); layout->addLayout(global);
-    auto* completionRow = new QHBoxLayout;
-    auto* automatic = new QCheckBox(I18n::text("Automatically show completions while typing"), this);
-    automatic->setChecked(QSettings().value("lsp/autoCompletion",true).toBool());
-    auto* delay = new SettingsSpinBox(this); delay->setObjectName("completionDelayMs"); delay->setRange(50,2000);
-    delay->setValue(std::clamp(QSettings().value("lsp/completionDelayMs",150).toInt(),50,2000));
-    delay->setEnabled(automatic->isChecked()); connect(automatic,&QCheckBox::toggled,delay,&QSpinBox::setEnabled);
-    completionRow->addWidget(automatic); completionRow->addWidget(new QLabel(I18n::text("Completion delay, ms"),this)); completionRow->addWidget(delay); completionRow->addStretch(); layout->addLayout(completionRow);
+    QCheckBox* automatic = nullptr;
+    SettingsSpinBox* delay = nullptr;
+    if (showCompletionControls) {
+        auto* completionRow = new QHBoxLayout;
+        automatic = new QCheckBox(I18n::text("Automatically show completions while typing"), this);
+        automatic->setChecked(QSettings().value("lsp/autoCompletion",true).toBool());
+        delay = new SettingsSpinBox(this); delay->setObjectName("completionDelayMs"); delay->setRange(50,2000);
+        delay->setValue(std::clamp(QSettings().value("lsp/completionDelayMs",150).toInt(),50,2000));
+        delay->setEnabled(automatic->isChecked()); connect(automatic,&QCheckBox::toggled,delay,&QSpinBox::setEnabled);
+        completionRow->addWidget(automatic); completionRow->addWidget(new QLabel(I18n::text("Completion delay, ms"),this)); completionRow->addWidget(delay); completionRow->addStretch(); layout->addLayout(completionRow);
+    }
     auto* splitter = new QSplitter(this); layout->addWidget(splitter,1);
     auto* languages = new QListWidget(splitter); languages->setObjectName("lspLanguages");
+    languages->setMinimumWidth(132);
     for (const auto& language : LanguageRegistry::languages()) {
         auto* item = new QListWidgetItem(language.name,languages); item->setData(Qt::UserRole,language.id);
     }
@@ -69,16 +76,24 @@ LspSettingsDialog::LspSettingsDialog(LspManager* manager, QWidget* parent) : QDi
     auto* profiles = new QComboBox(right); profiles->setObjectName("lspProfile");
     auto* add = new QPushButton(I18n::text("Add profile"),right); add->setIcon(Codicons::icon("add")); add->setObjectName("lspAddProfile");
     auto* remove = new QPushButton(I18n::text("Delete profile"),right); remove->setIcon(Codicons::icon("trash"));
-    profileRow->addWidget(profiles,1); profileRow->addWidget(add); profileRow->addWidget(remove); rightLayout->addLayout(profileRow);
+    rightLayout->addWidget(profiles);
+    profileRow->addWidget(add);
+    profileRow->addWidget(remove);
+    profileRow->addStretch();
+    rightLayout->addLayout(profileRow);
     auto* fields = new QGroupBox(I18n::text("Server profile (shared by assigned languages)"),right);
     auto* form = new QFormLayout(fields);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     auto* profileEnabled = new QCheckBox(I18n::text("Enable this profile"),fields); profileEnabled->setObjectName("lspProfileEnabled"); form->addRow(profileEnabled);
     auto* name = new QLineEdit(fields); name->setObjectName("lspProfileName"); form->addRow(I18n::text("Profile name"),name);
     auto* commandRow = new QWidget(fields); auto* commandLayout = new QHBoxLayout(commandRow); commandLayout->setContentsMargins(0,0,0,0);
     auto* command = new QLineEdit(commandRow); command->setObjectName("lspCommand");
     auto* browse = new QPushButton(I18n::text("Browse..."),commandRow); browse->setIcon(Codicons::icon("folder-opened")); commandLayout->addWidget(command,1); commandLayout->addWidget(browse);
     form->addRow(I18n::text("Server executable"),commandRow);
-    auto* arguments = new QLineEdit(fields); arguments->setObjectName("lspArguments"); form->addRow(I18n::text("Arguments (quote paths containing spaces)"),arguments);
+    auto* arguments = new QLineEdit(fields);
+    arguments->setObjectName("lspArguments");
+    arguments->setToolTip(I18n::text("Arguments (quote paths containing spaces)"));
+    form->addRow(I18n::text("Arguments"), arguments);
     auto* directory = new QLineEdit(fields); directory->setObjectName("lspCompileDirectory");
     auto* directoryLabel = new QLabel(I18n::text("clangd compilation database directory"),fields); form->addRow(directoryLabel,directory);
     auto* logging = new QComboBox(fields); logging->setObjectName("lspLogLevel");
@@ -87,26 +102,30 @@ LspSettingsDialog::LspSettingsDialog(LspManager* manager, QWidget* parent) : QDi
     auto* pages = new QTabWidget(right); rightLayout->addWidget(pages,1);
     auto* journalPage = new QWidget(pages); auto* journalLayout = new QVBoxLayout(journalPage);
     auto* status = new QLabel(journalPage); status->setObjectName("lspProfileStatus"); status->setTextFormat(Qt::PlainText); status->setWordWrap(true); status->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Minimum); journalLayout->addWidget(status);
-    auto* actions = new QHBoxLayout;
+    auto* actions = new QGridLayout;
     auto* check = new QPushButton(I18n::text("Check connection"),journalPage); check->setIcon(Codicons::icon("plug")); check->setObjectName("lspCheckConnection");
     auto* restart = new QPushButton(I18n::text("Restart server"),journalPage); restart->setIcon(Codicons::icon("debug-restart"));
     auto* clear = new QPushButton(I18n::text("Clear log"),journalPage); clear->setIcon(Codicons::icon("clear-all"));
-    actions->addWidget(check); actions->addWidget(restart); actions->addWidget(clear); actions->addStretch(); journalLayout->addLayout(actions);
+    actions->addWidget(check, 0, 0);
+    actions->addWidget(restart, 1, 0);
+    actions->addWidget(clear, 0, 1);
+    actions->setColumnStretch(2, 1);
+    journalLayout->addLayout(actions);
     auto* journal = new QPlainTextEdit(journalPage); journal->setObjectName("lspLog"); journal->setReadOnly(true); journalLayout->addWidget(journal,1);
     auto* logNote = new QLabel(I18n::text("Logs are never written to disk. Normal: 8 KiB for errors + 8 KiB for events per server instance. Detailed messages may contain document text."),journalPage); logNote->setWordWrap(true); journalLayout->addWidget(logNote);
     pages->addTab(journalPage,I18n::text("Status and log"));
     auto* advanced = new QWidget(pages); auto* advancedLayout = new QFormLayout(advanced);
+    advancedLayout->setRowWrapPolicy(QFormLayout::WrapLongRows);
     auto* languageId = new QLineEdit(advanced); languageId->setObjectName("lspLanguageId"); languageId->setPlaceholderText(I18n::text("Automatic")); advancedLayout->addRow(I18n::text("Language ID for selected language"),languageId);
     auto* initialization = new QPlainTextEdit(advanced); initialization->setObjectName("lspInitializationOptions");
     auto* serverSettings = new QPlainTextEdit(advanced); serverSettings->setObjectName("lspServerSettings");
     advancedLayout->addRow(I18n::text("Initialization options (JSON object)"),initialization);
     advancedLayout->addRow(I18n::text("Server settings (JSON object)"),serverSettings);
     pages->addTab(advanced,I18n::text("Advanced"));
-    splitter->setStretchFactor(0,0); splitter->setStretchFactor(1,1); splitter->setSizes({240,720});
+    splitter->setStretchFactor(0,0); splitter->setStretchFactor(1,1); splitter->setSizes({170,720});
     auto* note = new QLabel(I18n::text("Install servers yourself, then select their executable and arguments. Documents choose their server automatically. A successful connection does not guarantee support for every feature."),this); note->setWordWrap(true); layout->addWidget(note);
-    auto* buttons = new IconDialogs::ButtonBox(QDialogButtonBox::Save|QDialogButtonBox::Cancel,this); layout->addWidget(buttons);
 
-    struct State { QString language, profile; bool loading{false}; QPointer<LspClient> probe; };
+    struct State { QString language, profile; bool loading{false}, fieldsEdited{false}; QPointer<LspClient> probe; };
     auto state = std::make_shared<State>();
     auto findProfile = [draft](const QString& id) -> LspProfile* { for(auto& profile:draft->profiles) if(profile.id==id) return &profile; return nullptr; };
     auto readObject = [this](QPlainTextEdit* editor,QJsonObject* value) {
@@ -117,13 +136,20 @@ LspSettingsDialog::LspSettingsDialog(LspManager* manager, QWidget* parent) : QDi
         }
         *value=document.object(); return true;
     };
+    auto markEdited = [state] { if (!state->loading) state->fieldsEdited = true; };
+    for (auto* field : {name, command, arguments, directory})
+        connect(field, &QLineEdit::textChanged, this, markEdited);
+    for (auto* field : {initialization, serverSettings})
+        connect(field, &QPlainTextEdit::textChanged, this, markEdited);
+    connect(profileEnabled, &QCheckBox::toggled, this, markEdited);
+    connect(logging, &QComboBox::currentIndexChanged, this, markEdited);
     auto store = [=,this] {
         if(state->loading) return true;
         if(!state->language.isEmpty()) {
             const auto id=languageId->text().trimmed();
             if(id.isEmpty()) draft->languageIds.remove(state->language); else draft->languageIds[state->language]=id;
         }
-        auto* profile=findProfile(state->profile); if(!profile) return true;
+        auto* profile=findProfile(state->profile); if(!profile || !state->fieldsEdited) return true;
         QJsonObject init,settings;
         if(!readObject(initialization,&init) || !readObject(serverSettings,&settings)) return false;
         profile->server.name=name->text().trimmed();
@@ -132,6 +158,7 @@ LspSettingsDialog::LspSettingsDialog(LspManager* manager, QWidget* parent) : QDi
         profile->server.arguments=QProcess::splitCommand(arguments->text());
         if(profile->id=="clangd" && !directory->text().trimmed().isEmpty()) profile->server.arguments.append("--compile-commands-dir="+directory->text().trimmed());
         profile->server.initializationOptions=init; profile->server.settings=settings; profile->server.logLevel=logging->currentIndex();
+        state->fieldsEdited = false;
         return true;
     };
     auto refresh = [=,this] {
@@ -170,7 +197,7 @@ LspSettingsDialog::LspSettingsDialog(LspManager* manager, QWidget* parent) : QDi
         if(journal->toPlainText()!=logText) journal->setPlainText(logText);
     };
     auto load = [=,this](const QString& id) {
-        state->loading=true; state->profile=id;
+        state->loading=true; state->profile=id; state->fieldsEdited=false;
         const auto* profile=findProfile(id); fields->setEnabled(profile); initialization->setEnabled(profile); serverSettings->setEnabled(profile); remove->setEnabled(profile); check->setEnabled(profile); restart->setEnabled(profile);
         name->setText(profile?profile->server.name:QString{}); command->setText(profile?profile->server.command:QString{});
         auto args=profile?profile->server.arguments:QStringList{}; QString compileDirectory;
@@ -226,28 +253,63 @@ LspSettingsDialog::LspSettingsDialog(LspManager* manager, QWidget* parent) : QDi
     connect(restart,&QPushButton::clicked,this,[=,this] { manager->restart(state->profile);if(state->probe)state->probe->checkConnection();refresh(); });
     connect(clear,&QPushButton::clicked,this,[=,this] { manager->clearLog(state->profile);if(state->probe)state->probe->clearLog();refresh(); });
     connect(enabled,&QCheckBox::toggled,this,[=,this]{refresh();});
-    auto* timer=new QTimer(this);timer->setInterval(500);connect(timer,&QTimer::timeout,this,refresh);timer->start();
-    connect(buttons,&QDialogButtonBox::rejected,this,&QDialog::reject);
-    connect(buttons,&QDialogButtonBox::accepted,this,[=,this] {
-        if(!store())return;
+    auto* timer = new QTimer(this);
+    timer->setInterval(500);
+    connect(timer, &QTimer::timeout, this, [this, refresh] { if (isVisible()) refresh(); });
+    timer->start();
+    prepareSave_ = [=,this] {
+        if (!store()) return false;
+        const bool enabledChanged = QSettings().value("lsp/enabled", true).toBool() != enabled->isChecked();
+        serverChanged = original != draft->json() || enabledChanged;
+        if (!serverChanged) return true;
         for(const auto& profile:draft->profiles) if(enabled->isChecked() && profile.enabled && !profile.server.command.isEmpty()
             && QStandardPaths::findExecutable(profile.server.command).isEmpty()) {
-            IconDialogs::MessageBox::warning(this,I18n::text("Language servers"),profile.server.name+": "+I18n::text("Choose an existing server executable."));return;
+            IconDialogs::MessageBox::warning(this,I18n::text("Language servers"),profile.server.name+": "+I18n::text("Choose an existing server executable."));return false;
         }
         for(const auto& profile:draft->profiles) if(profile.id=="clangd") for(const auto& argument:profile.server.arguments)
             if(argument.startsWith("--compile-commands-dir=") && !QFileInfo::exists(QDir(argument.mid(23)).filePath("compile_commands.json"))) {
-                IconDialogs::MessageBox::warning(this,I18n::text("Language servers"),I18n::text("The selected directory does not contain compile_commands.json."));return;
+                IconDialogs::MessageBox::warning(this,I18n::text("Language servers"),I18n::text("The selected directory does not contain compile_commands.json."));return false;
             }
+        return true;
+    };
+    writeSettings_ = [=](QSettings& settings) {
+        const auto profiles = draft->json();
+        if (original != profiles) settings.setValue("lsp/profiles", QJsonDocument(profiles).toJson(QJsonDocument::Compact));
+        settings.setValue("lsp/enabled", enabled->isChecked());
+        settings.setValue("lsp/semanticHighlighting", semantic->isChecked());
+        if (automatic) {
+            settings.setValue("lsp/autoCompletion", automatic->isChecked());
+            settings.setValue("lsp/completionDelayMs", delay->value());
+        }
+    };
+    languages->setCurrentRow(0);
+    stopProbe_ = [state] { if (state->probe) delete state->probe.data(); };
+}
+
+LspSettingsPage::~LspSettingsPage() {
+    // End probes before QWidget destroys the controls used by their callbacks.
+    stopProbe_();
+}
+
+LspSettingsDialog::LspSettingsDialog(LspManager* manager, QWidget* parent) : QDialog(parent) {
+    setWindowTitle(I18n::text("Language servers"));
+    resize(980, 760);
+    auto* layout = new QVBoxLayout(this);
+    auto* page = new LspSettingsPage(manager, this, true);
+    layout->addWidget(page);
+    auto* buttons = new IconDialogs::ButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, this, [this, page] {
+        if (!page->prepareSave()) return;
         QSettings settings;
-        serverChanged=original!=draft->json() || settings.value("lsp/enabled",true).toBool()!=enabled->isChecked();
-        if(original!=draft->json())draft->save();
-        settings.setValue("lsp/enabled",enabled->isChecked());settings.setValue("lsp/semanticHighlighting",semantic->isChecked());
-        settings.setValue("lsp/autoCompletion",automatic->isChecked());settings.setValue("lsp/completionDelayMs",delay->value());settings.sync();
-        if(settings.status()!=QSettings::NoError){IconDialogs::MessageBox::warning(this,I18n::text("Language servers"),I18n::text("Cannot save settings."));return;}
+        page->writeSettings(settings);
+        settings.sync();
+        if (settings.status() != QSettings::NoError) {
+            IconDialogs::MessageBox::warning(this, I18n::text("Language servers"), I18n::text("Cannot save settings."));
+            return;
+        }
+        serverChanged = page->serverChanged;
         accept();
     });
-    languages->setCurrentRow(0);
-    // End probes while callbacks/widgets are still alive, not in QObject's late
-    // child destruction after captured dialog state has gone away.
-    connect(this,&QDialog::finished,this,[=,this]{if(state->probe){delete state->probe.data();state->probe=nullptr;}});
 }

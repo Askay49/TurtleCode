@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+class QDialog;
 class QWidget;
 struct EditorTheme { QString id; QString name; QMap<QString, QColor> colors; QMap<QString,int> fontStyles; };
 struct HighlightStyle { QColor color; int fontStyles{0}; }; // 1 bold, 2 italic, 4 underline, 8 strike-through
@@ -19,6 +20,7 @@ public:
     HighlightStyle captureStyle(const QString& capture,const QString& fallbackRole) const;
     HighlightStyle semanticStyle(const QString& type,const QStringList& modifiers) const;
     void showSettings(QWidget* parent);
+    QWidget* createSettingsPage(QWidget* parent, QDialog* dialog);
 signals:
     void themeChanged();
 private:

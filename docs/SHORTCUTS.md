@@ -3,7 +3,7 @@
 The optional [Vim mode](VIM.md) changes editor typing, selection and Escape
 handling. Dialogs, search fields and terminal retain their ordinary shortcuts.
 
-Open **Settings → Keyboard shortcuts / Горячие клавиши…**. Search by command name, category or ID. Select a row, focus the shortcut field and press the desired combination (up to four strokes), then click **Assign**. **Clear** disables the command shortcut. **Reset selected** and **Reset all** restore defaults. Click **Save** to apply all changes immediately; **Cancel** discards the draft.
+Open **Settings… → Keyboard shortcuts / Настройки… → Горячие клавиши**. Search by command name, category or ID. Select a row, focus the shortcut field and press the desired combination (up to four strokes), then click **Assign**. **Clear** disables the command shortcut. **Reset selected** and **Reset all** restore defaults. Click **Save** to apply all changes immediately; **Cancel** discards the draft.
 
 Conflicting shortcuts and shared chord prefixes are rejected. Window commands and editor commands overlap while the editor is focused, so they cannot reuse a shortcut. Text input, clipboard, undo/redo, normal cursor movement, selection and Ctrl+L line selection are fixed. Escape/Enter and navigation inside dialogs remain fixed. Advanced editor commands (extra cursors, select next occurrence, line copying and line movement) are configurable.
 
@@ -70,7 +70,7 @@ last line. Affected ranges of 1 MiB or more use the existing cancellable backgro
 editing path. Undo restores text and cursors; as with other commands, the existing
 history does not store selection anchors.
 
-Document formatting: **Ctrl+Shift+I**, command ID `code.formatDocument`, menu Code → Format document. The shortcut can be changed in Settings → Keyboard shortcuts.
+Document formatting: **Ctrl+Shift+I**, command ID `code.formatDocument`, menu Code → Format document. The shortcut can be changed in Settings… → Keyboard shortcuts.
 
 Smart editing: **Ctrl+/** toggles line comments, **Ctrl+Shift+A** toggles block
 comments. Command IDs: `editor.toggleLineComment`, `editor.toggleBlockComment`.
@@ -89,4 +89,4 @@ displays current user-assigned shortcuts, including commands with no shortcut.
 
 An empty query puts recently invoked commands first. Up to 20 command IDs are
 stored locally in QSettings under `commands/recent`. The palette shortcut is
-configurable under Settings → Keyboard shortcuts. Ctrl+P still searches files.
+configurable under Settings… → Keyboard shortcuts. Ctrl+P still searches files.

@@ -252,7 +252,7 @@ static void safetyTests(QTemporaryDir& directory) {
                 if(save)dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->click();
                 else dialog->reject();
             });
-            action(window,"Editor...")->trigger();
+            window.findChild<QAction*>("settings.open")->trigger();
         };
         setBackups(false,false);assert(QSettings().value("editor/recoveryEnabled",true).toBool());
         setBackups(false,true);assert(!QSettings().value("editor/recoveryEnabled",true).toBool());
@@ -536,57 +536,76 @@ int main(int argc,char**argv) {
             secondAction->trigger();
             assert(editor->miniMapEnabled() && minimap->isChecked());
         }
-        bool fileMenu=false,settingsMenu=false;
-        for(auto* action:window.menuBar()->actions()) {
-            fileMenu |= action->text()==QString::fromUtf8("&Файл");
-            settingsMenu |= action->text()==QString::fromUtf8("&Настройки");
-        }
-        assert(fileMenu && settingsMenu);
-        QAction *languageAction=nullptr,*shortcutsAction=nullptr,*lspAction=nullptr;
-        for(auto* action:window.findChildren<QAction*>()) {
-            if(action->text()==QString::fromUtf8("Язык интерфейса...")) languageAction=action;
-            if(action->text()==QString::fromUtf8("Горячие клавиши...")) shortcutsAction=action;
-            if(action->text()==QString::fromUtf8("Языковой сервер...")) lspAction=action;
-        }
+        assert(window.menuBar()->actions().front()->text()==QString::fromUtf8("&Файл"));
+        auto* openSettings=window.findChild<QAction*>("settings.open");
+        assert(openSettings && openSettings->text()==QString::fromUtf8("Настройки…"));
+        QMenu* settingsMenu=nullptr;
+        for(auto* action:window.menuBar()->actions())
+            if(action->text()==QString::fromUtf8("&Настройки")) settingsMenu=action->menu();
+        assert(settingsMenu && settingsMenu->actions()==QList<QAction*>{openSettings});
+        auto* languageAction=window.findChild<QAction*>("settings.interfaceLanguage");
+        auto* shortcutsAction=window.findChild<QAction*>("settings.shortcuts");
+        auto* lspAction=window.findChild<QAction*>("settings.lsp");
         assert(languageAction && shortcutsAction && lspAction);
-        bool checkedLanguage=false;
+        const auto activeSettings=[](const char* section) {
+            auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            assert(dialog && dialog->objectName()=="applicationSettings");
+            assert(dialog->windowTitle()==QString::fromUtf8("Настройки"));
+            auto* sections=dialog->findChild<QListWidget*>("settingsSections");
+            assert(sections && sections->count()==6 && sections->currentItem()->data(Qt::UserRole).toString()==section);
+            return dialog;
+        };
         QTimer::singleShot(0,[&] {
-            auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()); assert(dialog);
-            assert(dialog->windowTitle()==QString::fromUtf8("Язык интерфейса"));
-            auto* combo=dialog->findChild<QComboBox*>("interfaceLanguage"); assert(combo && combo->currentData().toString()=="ru");
-            auto* buttons=dialog->findChild<QDialogButtonBox*>(); assert(buttons);
+            auto* dialog=activeSettings("appearance");
+            auto* combo=dialog->findChild<QComboBox*>("interfaceLanguage");
+            assert(combo && combo->isVisible() && combo->currentData().toString()=="ru");
+            auto* buttons=dialog->findChild<QDialogButtonBox*>();
             auto save=buttons->button(QDialogButtonBox::Save)->text(); save.remove('&');
-            assert(save==QString::fromUtf8("Сохранить")); checkedLanguage=true; dialog->reject();
-        });
-        languageAction->trigger(); assert(checkedLanguage);
-        bool checkedShortcuts=false;
-        QTimer::singleShot(0,[&] {
-            auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()); assert(dialog);
-            auto* table=dialog->findChild<QTableWidget*>(); assert(table);
-            assert(table->item(0,0)->text()==QString::fromUtf8("Файл"));
-            assert(table->item(0,1)->text()==QString::fromUtf8("Открыть файл"));
-            assert(table->item(0,2)->text().contains('O')); checkedShortcuts=true; dialog->reject();
-        });
-        shortcutsAction->trigger(); assert(checkedShortcuts);
-        bool checkedLsp=false;
-        QTimer::singleShot(0,[&] {
-            auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()); assert(dialog);
-            bool found=false;
-            for(auto* field:dialog->findChildren<QCheckBox*>()) found |= field->text()==QString::fromUtf8("Автоматически показывать подсказки при вводе");
-            assert(found); checkedLsp=true; dialog->reject();
-        });
-        lspAction->trigger(); assert(checkedLsp);
-        QAction* editorAction=nullptr;
-        for (auto* action : window.findChildren<QAction*>())
-            if (action->text()==I18n::text("Editor...")) editorAction=action;
-        assert(editorAction);
-        QTimer::singleShot(0,[&] {
-            auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()); assert(dialog);
+            assert(save==QString::fromUtf8("Сохранить"));
             if(qEnvironmentVariableIsSet("TURTLE_CODE_BACKGROUND_PREVIEW"))
-                dialog->grab().save(qEnvironmentVariable("TURTLE_CODE_BACKGROUND_PREVIEW")+".editor.png");
+                dialog->grab().save(qEnvironmentVariable("TURTLE_CODE_BACKGROUND_PREVIEW")+".appearance.png");
             dialog->reject();
         });
-        editorAction->trigger();
+        languageAction->trigger();
+        QTimer::singleShot(0,[&] {
+            auto* dialog=activeSettings("shortcuts");
+            auto* table=dialog->findChild<QTableWidget*>("shortcutSettingsTable");
+            assert(table && table->isVisible());
+            assert(table->item(0,0)->text()==QString::fromUtf8("Файл"));
+            assert(table->item(0,1)->text()==QString::fromUtf8("Открыть файл"));
+            assert(table->item(0,2)->text().contains('O'));
+            dialog->reject();
+        });
+        shortcutsAction->trigger();
+        QTimer::singleShot(0,[&] {
+            auto* dialog=activeSettings("languages");
+            auto* tabs=dialog->findChild<QTabWidget*>("languageSettingsTabs");
+            auto* serverLanguages=dialog->findChild<QListWidget*>("lspLanguages");
+            assert(tabs && tabs->currentIndex()==1 && serverLanguages && serverLanguages->isVisible());
+            if(qEnvironmentVariableIsSet("TURTLE_CODE_BACKGROUND_PREVIEW"))
+                dialog->grab().save(qEnvironmentVariable("TURTLE_CODE_BACKGROUND_PREVIEW")+".servers.png");
+            serverLanguages->setFocus();
+            QTest::keyClick(serverLanguages,Qt::Key_Escape);
+            assert(!dialog->isVisible());
+        });
+        lspAction->trigger();
+        QTimer::singleShot(0,[&] {
+            auto* dialog=activeSettings("languages");
+            assert(dialog->findChild<QTabWidget*>("languageSettingsTabs")->currentIndex()==1);
+            auto* sections=dialog->findChild<QListWidget*>("settingsSections");
+            sections->setCurrentRow(0);
+            auto* completion=dialog->findChild<QCheckBox*>("lspAutoCompletion");
+            assert(completion && completion->isVisible() && completion->text()==QString::fromUtf8("Автоматически показывать подсказки при вводе"));
+            completion->setChecked(false);
+            sections->setCurrentRow(4);
+            dialog->findChild<QCheckBox*>("settingsShowHidden")->setChecked(true);
+            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->click();
+        });
+        openSettings->trigger();
+        assert(QSettings().value("interface/settingsSection").toString()=="files");
+        assert(!QSettings().value("lsp/autoCompletion",true).toBool());
+        assert(QSettings().value("view/showHidden").toBool());
+        assert(window.findChild<QAction*>("view.hidden")->isChecked());
         closeDiscard(window); return 0;
     }
 
@@ -798,8 +817,7 @@ int main(int argc,char**argv) {
         assert(source->document()->buffer().text()=="int value = 1;\n");
         assert(target->document()->buffer().text()=="// concurrent edit\nint value = 1;\n");
         responder.stop();
-        QAction* lspSettings=nullptr;
-        for(auto* action:window.findChildren<QAction*>()) if(action->text()=="Language server...") lspSettings=action;
+        auto* lspSettings=window.findChild<QAction*>("settings.lsp");
         assert(lspSettings);
         for(bool enabled:{false,true}) {
             QTimer::singleShot(0,[&,enabled] {
@@ -988,7 +1006,7 @@ int main(int argc,char**argv) {
         other.findChild<QAction*>("view.terminal")->trigger();
         const auto original=editor->document()->buffer().text();const auto revision=editor->lspRevision();
         const auto family=QFontInfo(QFontDatabase::systemFont(QFontDatabase::FixedFont)).family();
-        for(auto* action:window.findChildren<QAction*>())if(action->text()=="Editor...")settingsAction=action;
+        settingsAction=window.findChild<QAction*>("settings.interfaceLanguage");
         assert(settingsAction);QTimer::singleShot(0,[&]{
             auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());assert(dialog);
             auto* memory=dialog->findChild<QSpinBox*>("historyMemoryMiB");auto* disk=dialog->findChild<QSpinBox*>("historyDiskMiB");auto* spill=dialog->findChild<QCheckBox*>("historySpillToDisk");
@@ -1077,7 +1095,7 @@ int main(int argc,char**argv) {
             image.setPixelColor(x,y,QColor(80+x%150,40+y%170,90));
         const auto imageFile=directory.filePath("background.png"); assert(image.save(imageFile));
         QAction* settingsAction=nullptr;
-        for(auto* action:window.findChildren<QAction*>()) if(action->text()=="Editor...") settingsAction=action;
+        settingsAction=window.findChild<QAction*>("settings.interfaceLanguage");
         assert(settingsAction);
         const auto saveBackground=[&](const QString& path,int opacity) {
             QTimer::singleShot(0,[&,path,opacity]{
@@ -1148,7 +1166,7 @@ int main(int argc,char**argv) {
         assert(editor->document()->buffer().text()==original && QApplication::focusWidget()==editor);
         line->trigger();
         assert(editor->document()->buffer().text()=="// "+original);QTest::keyClick(editor,Qt::Key_Z,Qt::ControlModifier);
-        QAction* settingsAction=nullptr;for(auto* action:window.findChildren<QAction*>())if(action->text()=="Editor...")settingsAction=action;
+        auto* settingsAction=window.findChild<QAction*>("settings.editor");
         assert(settingsAction);
         const auto setPairs=[&](bool enabled,bool save) {
             QTimer::singleShot(0,[&,enabled,save]{

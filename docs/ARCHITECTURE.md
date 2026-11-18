@@ -88,7 +88,7 @@ the JSON-RPC transport and document versions outside the widget.
 `LanguageRegistry` is the central catalogue for syntax support. Each entry has a
 stable ID, display name, file extensions, grammar repository, parser symbol and
 optional source subdirectory. User enablement is stored under
-`languages/<id>/enabled` in `QSettings`. `Settings → Languages...` installs missing
+`languages/<id>/enabled` in `QSettings`. `Settings… → Languages and tools → Syntax highlighting` installs missing
 grammars on demand and refreshes open tabs after installation or enablement.
 
 `GrammarManager` downloads source archives asynchronously, compiles a shared

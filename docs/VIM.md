@@ -1,6 +1,6 @@
 # Vim mode — stages 1–10
 
-Enable **Settings → Vim mode / Настройки → Режим Vim**, or search for `Vim`
+Enable **Settings… → Editor → Enable Vim mode / Настройки… → Редактор → Включить режим Vim**, or search for `Vim`
 in the command palette (**Ctrl+Shift+P**, command ID `settings.vimMode`).
 The same option is available in Editor settings. It is off by default and saved
 under `editor/vimMode` in QSettings. Changing it applies to all open windows;

@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QColorDialog>
 #include <QComboBox>
+#include <memory>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -244,6 +245,8 @@ void ThemeManager::apply(const EditorTheme& theme) {
         // explicit base background, native painting ignores item padding until
         // hover/selection adds a background, shifting icons and text.
         "QMenu::item, QListView::item, QTableView::item { border:0; background:transparent; }"
+        "QMenu::item { padding-top:2px; padding-bottom:2px; }"
+        "QComboBox QListView { qproperty-spacing:2; }"
         "QToolTip { color:%1; background:%2; border:1px solid %3; }"
         "QTreeView, QStackedWidget { background:%4; }"
         "QLineEdit, QComboBox, QSpinBox { padding:4px; border:1px solid %3; }"
@@ -383,16 +386,27 @@ void ThemeManager::showSettings(QWidget* parent) {
     QDialog dialog(parent);
     dialog.setWindowTitle(I18n::text("Theme")); dialog.resize(620, 620);
     auto* layout = new QVBoxLayout(&dialog);
-    auto* info = new QLabel(I18n::text("Built-in palettes adapted for Turtle Code. Double-click colors to preview; save a custom copy to keep changes."), &dialog);
+    layout->addWidget(createSettingsPage(&dialog, &dialog));
+    auto* close = new IconDialogs::ButtonBox(QDialogButtonBox::Close, &dialog);
+    layout->addWidget(close);
+    QObject::connect(close, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    dialog.exec();
+}
+
+QWidget* ThemeManager::createSettingsPage(QWidget* parent, QDialog* dialog) {
+    auto* page = new QWidget(parent);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* info = new QLabel(I18n::text("Theme selection takes effect immediately. Double-click a color to preview it, then save a custom copy to keep your edits."), page);
     info->setWordWrap(true); layout->addWidget(info);
-    auto* combo = new QComboBox(&dialog);
+    auto* combo = new QComboBox(page);
     for (const auto& theme : themes_) combo->addItem(theme.name, theme.id);
     combo->setCurrentIndex(combo->findData(current_.id));
-    auto* remove = new QPushButton(I18n::text("Delete theme…"), &dialog); remove->setIcon(Codicons::icon("trash"));
+    auto* remove = new QPushButton(I18n::text("Delete theme…"), page); remove->setIcon(Codicons::icon("trash"));
     remove->setObjectName("deleteCustomTheme");
     auto* selector = new QHBoxLayout;
     selector->addWidget(combo, 1); selector->addWidget(remove); layout->addLayout(selector);
-    auto* table = new QTableWidget(&dialog); table->setColumnCount(2);
+    auto* table = new QTableWidget(page); table->setColumnCount(2);
     table->setHorizontalHeaderLabels({I18n::text("Color role"), I18n::text("Color — double-click to edit")});
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers); layout->addWidget(table);
@@ -406,74 +420,72 @@ void ThemeManager::showSettings(QWidget* parent) {
         }
     };
     refresh();
-    bool draft = false;
-    auto confirmDiscard = [&] {
-        return !draft || IconDialogs::MessageBox::question(&dialog, I18n::text("Unsaved colors"), I18n::text("Discard unsaved color changes?"),
+    auto draft = std::make_shared<bool>(false);
+    auto confirmDiscard = [page, draft] {
+        return !*draft || IconDialogs::MessageBox::question(page, I18n::text("Unsaved colors"), I18n::text("Discard unsaved color changes?"),
             QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Discard;
     };
-    QObject::connect(combo, qOverload<int>(&QComboBox::activated), &dialog, [&](int index) {
+    QObject::connect(combo, qOverload<int>(&QComboBox::activated), page, [this, combo, confirmDiscard, draft, refresh](int index) {
         if (!confirmDiscard()) { combo->setCurrentIndex(combo->findData(current_.id)); return; }
-        apply(themes_.at(index)); QSettings().setValue("appearance/theme", current_.id); draft = false; refresh();
+        apply(themes_.at(index)); QSettings().setValue("appearance/theme", current_.id); *draft = false; refresh();
     });
-    QObject::connect(remove, &QPushButton::clicked, &dialog, [&] {
+    QObject::connect(remove, &QPushButton::clicked, page, [this, page, combo, draft, refresh] {
         const int index=combo->currentIndex();
         if (index<0 || index>=themes_.size() || !themes_[index].id.startsWith("custom-")) return;
         const auto theme=themes_[index];
-        if (IconDialogs::MessageBox::question(&dialog, I18n::text("Delete theme"),
+        if (IconDialogs::MessageBox::question(page, I18n::text("Delete theme"),
                 I18n::text("Delete custom theme “%1”? This cannot be undone.").arg(theme.name),
                 QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel)!=QMessageBox::Yes) return;
         QFile file(QDir(themeDirectory()).filePath(theme.id.mid(7)+".json"));
         if (!file.remove()) {
-            IconDialogs::MessageBox::warning(&dialog, I18n::text("Cannot delete theme"), file.errorString()); return;
+            IconDialogs::MessageBox::warning(page, I18n::text("Cannot delete theme"), file.errorString()); return;
         }
         themes_.removeAt(index); combo->removeItem(index);
         apply(themes_.front());
         QSettings().setValue("appearance/theme",current_.id);
-        combo->setCurrentIndex(0); draft=false; refresh();
+        combo->setCurrentIndex(0); *draft=false; refresh();
     });
-    QObject::connect(table, &QTableWidget::cellDoubleClicked, &dialog, [&](int row, int) {
+    QObject::connect(table, &QTableWidget::cellDoubleClicked, page, [this, page, table, draft, refresh](int row, int) {
         const QString role = table->item(row, 0)->text();
-        const QColor selected = IconDialogs::ColorDialog::getColor(color(role), &dialog, role);
-        if (selected.isValid()) { auto theme = current_; theme.colors[role] = selected; apply(theme); draft = true; refresh(); }
+        const QColor selected = IconDialogs::ColorDialog::getColor(color(role), page, role);
+        if (selected.isValid()) { auto theme = current_; theme.colors[role] = selected; apply(theme); *draft = true; refresh(); }
     });
     auto* buttons = new QHBoxLayout; layout->addLayout(buttons);
-    auto* save = new QPushButton(I18n::text("Save custom copy…"), &dialog); save->setIcon(Codicons::icon("save"));
-    auto* import = new QPushButton(I18n::text("Import JSON…"), &dialog); import->setIcon(Codicons::icon("folder-opened"));
-    auto* exportButton = new QPushButton(I18n::text("Export JSON…"), &dialog); exportButton->setIcon(Codicons::icon("export"));
+    auto* save = new QPushButton(I18n::text("Save custom copy…"), page); save->setIcon(Codicons::icon("save"));
+    auto* import = new QPushButton(I18n::text("Import JSON…"), page); import->setIcon(Codicons::icon("folder-opened"));
+    auto* exportButton = new QPushButton(I18n::text("Export JSON…"), page); exportButton->setIcon(Codicons::icon("export"));
     buttons->addWidget(save); buttons->addWidget(import); buttons->addWidget(exportButton);
-    auto appendSaved = [&] { combo->addItem(current_.name, current_.id); combo->setCurrentIndex(combo->count()-1); draft = false; refresh(); };
-    QObject::connect(save, &QPushButton::clicked, &dialog, [&] {
-        bool ok; const auto name = IconDialogs::InputDialog::getText(&dialog, I18n::text("Custom theme"), I18n::text("Name:"), QLineEdit::Normal, current_.name + I18n::text(" (custom)"), &ok).trimmed();
+    auto appendSaved = [this, combo, draft, refresh] { combo->addItem(current_.name, current_.id); combo->setCurrentIndex(combo->count()-1); *draft = false; refresh(); };
+    QObject::connect(save, &QPushButton::clicked, page, [this, page, appendSaved] {
+        bool ok; const auto name = IconDialogs::InputDialog::getText(page, I18n::text("Custom theme"), I18n::text("Name:"), QLineEdit::Normal, current_.name + I18n::text(" (custom)"), &ok).trimmed();
         if (!ok || name.isEmpty()) return;
         auto theme = current_; theme.name = name; QString error;
-        if (!saveCustom(theme, &error)) IconDialogs::MessageBox::warning(&dialog, I18n::text("Theme"), error); else appendSaved();
+        if (!saveCustom(theme, &error)) IconDialogs::MessageBox::warning(page, I18n::text("Theme"), error); else appendSaved();
     });
-    QObject::connect(import, &QPushButton::clicked, &dialog, [&] {
+    QObject::connect(import, &QPushButton::clicked, page, [this, page, confirmDiscard, appendSaved] {
         if (!confirmDiscard()) return;
-        const auto path = IconDialogs::FileDialog::getOpenFileName(&dialog, I18n::text("Import Turtle Code theme"), {}, "JSON (*.json)");
+        const auto path = IconDialogs::FileDialog::getOpenFileName(page, I18n::text("Import Turtle Code theme"), {}, "JSON (*.json)");
         if (path.isEmpty()) return;
         QFile file(path); QString error; EditorTheme theme;
         if (!file.open(QIODevice::ReadOnly)) error = file.errorString();
         else if (file.size() > 1024 * 1024) error = I18n::text("Theme file exceeds 1 MiB.");
         else if (decode(file.readAll(), themes_.front(), &theme, &error) && saveCustom(theme, &error)) { appendSaved(); return; }
-        IconDialogs::MessageBox::warning(&dialog, I18n::text("Cannot import theme"), error);
+        IconDialogs::MessageBox::warning(page, I18n::text("Cannot import theme"), error);
     });
-    QObject::connect(exportButton, &QPushButton::clicked, &dialog, [&] {
-        auto path = IconDialogs::FileDialog::getSaveFileName(&dialog, I18n::text("Export theme"), "theme.json", "JSON (*.json)");
+    QObject::connect(exportButton, &QPushButton::clicked, page, [this, page] {
+        auto path = IconDialogs::FileDialog::getSaveFileName(page, I18n::text("Export theme"), "theme.json", "JSON (*.json)");
         if (path.isEmpty()) return;
         if (!path.endsWith(".json", Qt::CaseInsensitive)) path += ".json";
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly) || file.write(encode(current_)) == -1 || !file.commit())
-            IconDialogs::MessageBox::warning(&dialog, I18n::text("Cannot export theme"), file.errorString());
+            IconDialogs::MessageBox::warning(page, I18n::text("Cannot export theme"), file.errorString());
     });
-    auto* close = new IconDialogs::ButtonBox(QDialogButtonBox::Close, &dialog); layout->addWidget(close);
-    QObject::connect(close, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    dialog.exec();
-    // Unsaved previews are session-only; restore the last persisted selection on close.
-    if (draft) {
+    QObject::connect(dialog, &QDialog::finished, page, [this, draft] {
+        if (!*draft) return;
         const QString id = QSettings().value("appearance/theme", themes_.front().id).toString();
         for (const auto& theme : themes_) if (theme.id == id) { apply(theme); break; }
-    }
+    });
+    return page;
 }
 
 HighlightStyle ThemeManager::highlightStyle(const QString& role) const {

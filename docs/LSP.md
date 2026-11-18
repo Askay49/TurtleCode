@@ -4,7 +4,7 @@ The initial server profile is **clangd for C/C++**. Tree-sitter grammars remain 
 
 ## Settings
 
-Open **Settings → Language server / Языковой сервер…**. The dialog lists every
+Open **Settings… → Languages and tools → Language servers**. The dialog lists every
 language in `LanguageRegistry`, including languages without a configured server.
 Select a language and assign a server profile, or choose **No server**. A profile
 can serve several languages (for example, C and C++ share clangd).
@@ -36,8 +36,9 @@ can serve several languages (for example, C and C++ share clangd).
   Changing only log levels updates buffers without restarting servers.
   Cancel discards the draft. Check/restart/clear are explicit
   runtime actions and are not undone by Cancel.
-- Auto completion, semantic highlighting and completion delay remain independent
-  global options. Delay is 50–2000 ms (default 150 ms).
+- **Settings… → Editor → Typing** controls automatic completion and its delay
+  (50–2000 ms, default 150 ms). Semantic highlighting is controlled on the
+  **Language servers** tab.
 
 ### Routing and workspace roots
 
@@ -91,7 +92,7 @@ instance's root; an isolated connection check has its own bounded log.
 
 ## Editor actions
 
-These defaults can be changed under **Settings → Keyboard shortcuts**:
+These defaults can be changed under **Settings… → Keyboard shortcuts**:
 
 | Action | Default |
 | --- | --- |

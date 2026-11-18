@@ -1,6 +1,6 @@
 # Interface languages
 
-Open **Settings → Interface language...** (Russian: **Настройки → Язык интерфейса...**) and choose **English** or **Русский**. Save the choice, then restart Turtle Code when convenient. Changing this preference does not close the application or modify open documents. The initial default follows the system language: Russian on a Russian locale, English otherwise.
+Open **Settings… → Appearance → Interface** (Russian: **Настройки… → Внешний вид → Интерфейс**) and choose **English** or **Русский**. Save the choice, then restart Turtle Code when convenient. Changing this preference does not close the application or modify open documents. The initial default follows the system language: Russian on a Russian locale, English otherwise.
 
 The saved language code is stored in QSettings under `interface/language`. The selected code and currently active language are separate so choosing a language does not partially retranslate an existing window.
 

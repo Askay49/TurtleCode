@@ -21,6 +21,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QMessageBox>
+#include <QMenu>
 #include <QPushButton>
 #include <QStandardPaths>
 #include <cassert>
@@ -55,6 +56,23 @@ public:
     }
 };
 
+static void popupRowsHaveVerticalPadding() {
+    QMenu menu;
+    auto* action = menu.addAction("First item");
+    menu.ensurePolished();
+    const auto paddedMenuHeight = menu.actionGeometry(action).height();
+    menu.setStyleSheet("QMenu::item { padding-top:0; padding-bottom:0; }");
+    assert(paddedMenuHeight > menu.actionGeometry(action).height());
+
+    QComboBox combo;
+    combo.addItem("First item");
+    combo.ensurePolished();
+    auto* list = qobject_cast<QListView*>(combo.view());
+    assert(list);
+    list->ensurePolished();
+    assert(list->spacing() == 2);
+}
+
 static void stableItemGeometry() {
     QPixmap marker(16,16);marker.fill(QColor("#ff00ff"));QIcon icon;
     for(const auto mode:{QIcon::Normal,QIcon::Active,QIcon::Selected,QIcon::Disabled})
@@ -82,6 +100,7 @@ int main(int argc, char** argv) {
     app.setOrganizationName("TurtleCodeTests"); app.setApplicationName("ThemeTests");
     auto& manager = ThemeManager::instance(); manager.initialize();
     stableItemGeometry();
+    popupRowsHaveVerticalPadding();
     assert(manager.color("editor.background") == QColor("#1e1e1e"));
     int switched = 0;
     QTimer::singleShot(0, [&] {

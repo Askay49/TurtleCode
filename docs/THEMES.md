@@ -1,6 +1,6 @@
 # Themes
 
-Open **Settings → Theme / Тема оформления…**. Selecting a theme applies it immediately and remembers it for the next launch. Double-click a color to preview changes. Use **Save custom copy…** to give your theme a name and keep it. Unsaved color previews revert when the window closes. Export includes the currently previewed colors.
+Open **Settings… → Appearance → Theme**. Selecting a theme applies it immediately and remembers it for the next launch. Double-click a color to preview changes. Use **Save custom copy…** to give your theme a name and keep it. Unsaved color previews revert when the window closes. Export includes the currently previewed colors.
 
 Ten built-in palettes are adapted for Turtle Code from the theme families listed at https://htmlacademy.ru/blog/soft/vs-code-themes : C/C++, One Dark Pro, GitHub, Dracula, Winter is Coming, Monokai Pro, Night Owl, Ayu, Shades of Purple, and Noctis. These are independent color adaptations, not bundled VS Code extensions or complete reproductions of their variants, token rules, or typography. Monokai is explicitly labeled “inspired”.
 
@@ -31,6 +31,6 @@ Optional `fontStyles` maps color roles to integer flags: bold=1, italic=2, under
 
 ## Workspace background image
 
-Use **Settings → Editor… → Workspace background** to choose an image, set its opacity (0–100%, default 15%), or remove it. Save applies the changes to all open windows; Cancel leaves them untouched. The file path and opacity persist in QSettings as `appearance/backgroundImage` and `appearance/backgroundOpacity`. The image is referenced in place, so keep the source file available. An unavailable image on startup falls back to the regular theme.
+Use **Settings… → Appearance → Interface → Workspace background** to choose an image, set its opacity (0–100%, default 15%), or remove it. Save applies the changes to all open windows; Cancel leaves them untouched. The file path and opacity persist in QSettings as `appearance/backgroundImage` and `appearance/backgroundOpacity`. The image is referenced in place, so keep the source file available. An unavailable image on startup falls back to the regular theme.
 
 The image fills the entire editor window behind the project tree, search panel, tab header, line numbers, editor text, menu bar and status bar. It is centered, preserves its aspect ratio and crops overflow. All surfaces share workspace coordinates, including after resizing or moving the sidebar divider; document scrolling does not move the image. Current-line highlighting becomes translucent while the image is enabled. Popup menus, dialogs, selections and input fields retain readable backgrounds. Image formats follow the installed Qt image plugins.

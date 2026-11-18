@@ -65,7 +65,7 @@ ShortcutManager::ShortcutManager() {
     add("code.problems", "Errors and warnings", "Code", "Ctrl+Shift+M");
     add("code.hover", "Symbol information", "Code", "F1");
     add("code.signature", "Function parameters", "Code", "Ctrl+Shift+Space");
-    add("settings.lsp", "Language server", "Settings");
+    add("settings.lsp", "Language servers", "Settings");
     add("code.declaration", "Go to Declaration", "Code");
     add("code.typeDefinition", "Go to Type Definition", "Code");
     add("code.references", "Find All References", "Code", "Shift+F12");
@@ -76,7 +76,7 @@ ShortcutManager::ShortcutManager() {
     add("navigation.tabPrevious", "Previous recent tab", "Navigation", "Ctrl+Shift+Tab");
     add("navigation.back", "Back", "Navigation", "Alt+Left");
     add("navigation.forward", "Forward", "Navigation", "Alt+Right");
-    add("view.hidden", "Show hidden files", "View", "Ctrl+H");
+    add("view.hidden", "Show hidden files", "Files and search", "Ctrl+H");
     add("view.terminal", "Toggle terminal", "View", "Ctrl+`");
     add("view.debug", "Run and Debug", "View", "Ctrl+Shift+D");
     add("debug.start", "Start / Continue Debugging", "Run and Debug", "F5");
@@ -89,7 +89,7 @@ ShortcutManager::ShortcutManager() {
     add("view.explorer", "Toggle sidebar", "View", "Ctrl+B");
     add("settings.interfaceLanguage", "Interface language", "Settings");
     add("settings.theme", "Theme", "Settings");
-    add("settings.languages", "Languages", "Settings");
+    add("settings.languages", "Syntax highlighting", "Settings");
     add("settings.shortcuts", "Keyboard shortcuts", "Settings");
     add("editor.toggleLineComment", "Toggle line comment", "Editor", "Ctrl+/", "Editor");
     add("editor.toggleBlockComment", "Toggle block comment", "Editor", "Ctrl+Shift+A", "Editor");
@@ -105,11 +105,12 @@ ShortcutManager::ShortcutManager() {
     add("editor.closePane", "Close Editor Pane", "Editor");
 
     add("navigation.commands", "Command palette", "Navigation", "Ctrl+Shift+P");
+    add("settings.open", "Open Settings", "Settings");
     add("settings.editor", "Editor settings", "Settings");
     add("settings.vimMode", "Vim mode", "Settings");
     add("view.minimap", "Minimap", "View");
     add("view.outline", "Outline", "View");
-    add("view.ignored", "Include ignored files", "View");
+    add("view.ignored", "Include ignored files", "Files and search");
 
     QSettings settings; settings.beginGroup("shortcuts");
     for (const auto& command : commands_) if (settings.contains(command.id))
@@ -169,74 +170,117 @@ QString ShortcutManager::validate(const QMap<QString, QKeySequence>& values) con
 }
 bool ShortcutManager::save(const QMap<QString, QKeySequence>& values, QString* error) {
     *error = validate(values); if (!error->isEmpty()) return false;
-    QSettings settings; settings.beginGroup("shortcuts");
-    QMap<QString, QKeySequence> overrides;
+    QSettings settings;
+    writeSettings(settings, values);
+    settings.sync();
+    if (settings.status() != QSettings::NoError) { *error = I18n::text("Could not save shortcut settings."); return false; }
+    applySettings(values);
+    return true;
+}
+void ShortcutManager::writeSettings(QSettings& settings, const QMap<QString, QKeySequence>& values) const {
+    settings.beginGroup("shortcuts");
     for (const auto& command : commands_) {
         const auto key = values.value(command.id, command.standard);
         if (key == command.standard) settings.remove(command.id);
-        else { settings.setValue(command.id, key.toString(QKeySequence::PortableText)); overrides[command.id] = key; }
+        else settings.setValue(command.id, key.toString(QKeySequence::PortableText));
     }
-    settings.endGroup(); settings.sync();
-    if (settings.status() != QSettings::NoError) { *error = I18n::text("Could not save shortcut settings."); return false; }
-    overrides_ = overrides; refresh(); return true;
+    settings.endGroup();
+}
+void ShortcutManager::applySettings(const QMap<QString, QKeySequence>& values) {
+    overrides_.clear();
+    for (const auto& command : commands_) {
+        const auto key = values.value(command.id, command.standard);
+        if (key != command.standard) overrides_.insert(command.id, key);
+    }
+    refresh();
 }
 void ShortcutManager::showSettings(QWidget* parent) {
-    QDialog dialog(parent); dialog.setWindowTitle(I18n::text("Keyboard shortcuts")); dialog.resize(850, 650);
+    QMap<QString, QKeySequence> values;
+    QDialog dialog(parent);
+    dialog.setWindowTitle(I18n::text("Keyboard shortcuts"));
+    dialog.resize(850, 650);
     auto* layout = new QVBoxLayout(&dialog);
-    auto* note = new QLabel(I18n::text("Select a command and press a new shortcut below. Text input, clipboard and normal cursor navigation stay fixed."), &dialog);
+    layout->addWidget(createSettingsPage(&dialog, values));
+    auto* buttons = new IconDialogs::ButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        QString error;
+        if (save(values, &error)) dialog.accept();
+        else IconDialogs::MessageBox::warning(&dialog, I18n::text("Cannot save shortcuts"), error);
+    });
+    dialog.exec();
+}
+QWidget* ShortcutManager::createSettingsPage(QWidget* parent, QMap<QString, QKeySequence>& values) {
+    auto* page = new QWidget(parent);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* note = new QLabel(I18n::text("Select a command and press a new shortcut below. Text input, clipboard and normal cursor navigation stay fixed."), page);
     note->setWordWrap(true); layout->addWidget(note);
-    auto* search = new QLineEdit(&dialog); search->setPlaceholderText(I18n::text("Search commands…")); layout->addWidget(search);
-    auto* table = new QTableWidget(commands_.size(), 5, &dialog);
+    auto* search = new QLineEdit(page); search->setPlaceholderText(I18n::text("Search commands…")); layout->addWidget(search);
+    auto* table = new QTableWidget(commands_.size(), 5, page);
+    table->setObjectName("shortcutSettingsTable");
     table->setHorizontalHeaderLabels({I18n::text("Category"), I18n::text("Command"), I18n::text("Shortcut"), I18n::text("Default"), I18n::text("Scope")});
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     table->setSelectionBehavior(QAbstractItemView::SelectRows); table->setSelectionMode(QAbstractItemView::SingleSelection);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers); layout->addWidget(table);
-    QMap<QString, QKeySequence> values;
     for (const auto& command : commands_) values[command.id] = sequence(command.id);
-    auto refreshTable = [&] {
+    auto refreshTable = [this, table, &values] {
         for (int row = 0; row < commands_.size(); ++row) {
             const auto& c = commands_[row]; const QStringList columns{c.category, c.name, values[c.id].toString(), c.standard.toString(), c.scope};
             for (int col = 0; col < columns.size(); ++col) table->setItem(row, col, new QTableWidgetItem(columns[col]));
         }
     }; refreshTable();
-    auto* edit = new QKeySequenceEdit(&dialog); layout->addWidget(edit);
-    auto* status = new QLabel(&dialog); status->setWordWrap(true); layout->addWidget(status);
+    auto* edit = new QKeySequenceEdit(page); layout->addWidget(edit);
+    auto* status = new QLabel(page); status->setWordWrap(true); layout->addWidget(status);
     auto* row = new QHBoxLayout; layout->addLayout(row);
-    auto button = [&](const QString& label, const char* icon) { auto* b = new QPushButton(Codicons::icon(QString::fromLatin1(icon)), label, &dialog); row->addWidget(b); return b; };
-    auto* assign = button(I18n::text("Assign"), "check"); auto* clear = button(I18n::text("Clear"), "clear-all"); auto* reset = button(I18n::text("Reset selected"), "discard"); auto* resetAll = button(I18n::text("Reset all"), "discard");
-    auto* import = button(I18n::text("Import…"), "folder-opened"); auto* exportButton = button(I18n::text("Export…"), "export");
-    auto update = [&] { refreshTable(); status->setText(validate(values)); };
-    QObject::connect(table, &QTableWidget::currentCellChanged, &dialog, [&](int current, int, int, int) {
+    auto button = [page](QHBoxLayout* layout, const QString& label, const char* icon) {
+        auto* button = new QPushButton(Codicons::icon(QString::fromLatin1(icon)), label, page);
+        layout->addWidget(button);
+        return button;
+    };
+    auto* assign = button(row, I18n::text("Assign"), "check");
+    auto* clear = button(row, I18n::text("Clear"), "clear-all");
+    auto* reset = button(row, I18n::text("Reset selected"), "discard");
+    auto* resetAll = button(row, I18n::text("Reset all"), "discard");
+    row->addStretch();
+    auto* transfer = new QHBoxLayout;
+    layout->addLayout(transfer);
+    auto* import = button(transfer, I18n::text("Import…"), "folder-opened");
+    auto* exportButton = button(transfer, I18n::text("Export…"), "export");
+    transfer->addStretch();
+    auto update = [this, refreshTable, status, &values] { refreshTable(); status->setText(validate(values)); };
+    QObject::connect(table, &QTableWidget::currentCellChanged, page, [this, edit, &values](int current, int, int, int) {
         if (current >= 0) edit->setKeySequence(values[commands_[current].id]);
     });
-    QObject::connect(search, &QLineEdit::textChanged, &dialog, [&](const QString& text) {
+    QObject::connect(search, &QLineEdit::textChanged, page, [this, table](const QString& text) {
         for (int i = 0; i < commands_.size(); ++i) table->setRowHidden(i, !(commands_[i].name + " " + commands_[i].category + " " + commands_[i].id).contains(text, Qt::CaseInsensitive));
     });
-    auto setSelected = [&](const QKeySequence& key) {
+    auto setSelected = [this, table, edit, update, &values](const QKeySequence& key) {
         const int index = table->currentRow(); if (index < 0) return;
         values[commands_[index].id] = key; edit->setKeySequence(key); update();
     };
-    QObject::connect(assign, &QPushButton::clicked, &dialog, [&] { setSelected(edit->keySequence()); });
-    QObject::connect(clear, &QPushButton::clicked, &dialog, [&] { setSelected({}); });
-    QObject::connect(reset, &QPushButton::clicked, &dialog, [&] { if (table->currentRow() >= 0) setSelected(commands_[table->currentRow()].standard); });
-    QObject::connect(resetAll, &QPushButton::clicked, &dialog, [&] {
-        if (IconDialogs::MessageBox::question(&dialog, I18n::text("Reset shortcuts"), I18n::text("Restore all default shortcuts?")) != QMessageBox::Yes) return;
+    QObject::connect(assign, &QPushButton::clicked, page, [setSelected, edit] { setSelected(edit->keySequence()); });
+    QObject::connect(clear, &QPushButton::clicked, page, [setSelected] { setSelected({}); });
+    QObject::connect(reset, &QPushButton::clicked, page, [this, table, setSelected] { if (table->currentRow() >= 0) setSelected(commands_[table->currentRow()].standard); });
+    QObject::connect(resetAll, &QPushButton::clicked, page, [this, page, update, &values] {
+        if (IconDialogs::MessageBox::question(page, I18n::text("Reset shortcuts"), I18n::text("Restore all default shortcuts?")) != QMessageBox::Yes) return;
         for (const auto& c : commands_) values[c.id] = c.standard; update();
     });
-    QObject::connect(exportButton, &QPushButton::clicked, &dialog, [&] {
-        const auto error = validate(values); if (!error.isEmpty()) { IconDialogs::MessageBox::warning(&dialog, I18n::text("Shortcuts"), error); return; }
-        auto path = IconDialogs::FileDialog::getSaveFileName(&dialog, I18n::text("Export shortcuts"), "shortcuts.json", "JSON (*.json)"); if (path.isEmpty()) return;
+    QObject::connect(exportButton, &QPushButton::clicked, page, [this, page, &values] {
+        const auto error = validate(values); if (!error.isEmpty()) { IconDialogs::MessageBox::warning(page, I18n::text("Shortcuts"), error); return; }
+        auto path = IconDialogs::FileDialog::getSaveFileName(page, I18n::text("Export shortcuts"), "shortcuts.json", "JSON (*.json)"); if (path.isEmpty()) return;
         if (!path.endsWith(".json", Qt::CaseInsensitive)) path += ".json";
         QJsonObject shortcuts; for (auto it = values.cbegin(); it != values.cend(); ++it) shortcuts[it.key()] = it.value().toString(QKeySequence::PortableText);
         QSaveFile file(path); const auto data = QJsonDocument(QJsonObject{{"formatVersion", 1}, {"shortcuts", shortcuts}}).toJson();
-        if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) IconDialogs::MessageBox::warning(&dialog, I18n::text("Export failed"), file.errorString());
+        if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) IconDialogs::MessageBox::warning(page, I18n::text("Export failed"), file.errorString());
     });
-    QObject::connect(import, &QPushButton::clicked, &dialog, [&] {
-        const auto path = IconDialogs::FileDialog::getOpenFileName(&dialog, I18n::text("Import shortcuts"), {}, "JSON (*.json)"); if (path.isEmpty()) return;
-        QFile file(path); if (!file.open(QIODevice::ReadOnly) || file.size() > 1024*1024) { IconDialogs::MessageBox::warning(&dialog, I18n::text("Import failed"), I18n::text("Cannot read file or file is too large.")); return; }
+    QObject::connect(import, &QPushButton::clicked, page, [this, page, update, &values] {
+        const auto path = IconDialogs::FileDialog::getOpenFileName(page, I18n::text("Import shortcuts"), {}, "JSON (*.json)"); if (path.isEmpty()) return;
+        QFile file(path); if (!file.open(QIODevice::ReadOnly) || file.size() > 1024*1024) { IconDialogs::MessageBox::warning(page, I18n::text("Import failed"), I18n::text("Cannot read file or file is too large.")); return; }
         QJsonParseError error; const auto doc = QJsonDocument::fromJson(file.readAll(), &error); const auto object = doc.object();
-        if (error.error != QJsonParseError::NoError || object.value("formatVersion").toInt() != 1 || !object.value("shortcuts").isObject()) { IconDialogs::MessageBox::warning(&dialog, I18n::text("Import failed"), I18n::text("Invalid shortcut file format.")); return; }
+        if (error.error != QJsonParseError::NoError || object.value("formatVersion").toInt() != 1 || !object.value("shortcuts").isObject()) { IconDialogs::MessageBox::warning(page, I18n::text("Import failed"), I18n::text("Invalid shortcut file format.")); return; }
         auto imported = values; const auto keys = object.value("shortcuts").toObject(); QString problem;
         for (auto it = keys.begin(); it != keys.end(); ++it) {
             if (!imported.contains(it.key())) { problem = I18n::text("Unknown command: ") + it.key(); break; }
@@ -246,13 +290,9 @@ void ShortcutManager::showSettings(QWidget* parent) {
             imported[it.key()] = key;
         }
         if (problem.isEmpty()) problem = validate(imported);
-        if (!problem.isEmpty()) { IconDialogs::MessageBox::warning(&dialog, I18n::text("Import failed"), problem); return; }
+        if (!problem.isEmpty()) { IconDialogs::MessageBox::warning(page, I18n::text("Import failed"), problem); return; }
         values = imported; update();
     });
-    auto* buttons = new IconDialogs::ButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog); layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
-        QString error; if (save(values, &error)) dialog.accept(); else IconDialogs::MessageBox::warning(&dialog, I18n::text("Cannot save shortcuts"), error);
-    });
-    table->selectRow(0); dialog.exec();
+    table->selectRow(0);
+    return page;
 }
