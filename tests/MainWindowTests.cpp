@@ -347,6 +347,7 @@ static void safetyTests(QTemporaryDir& directory) {
 #include "FormattingTests.hpp"
 #include "CommandPaletteTests.hpp"
 #include "VimWindowTests.hpp"
+#include "VimWorkspaceTests.hpp"
 #include "VimInsertWindowTests.hpp"
 #include "ProjectScaleWindowTests.hpp"
 #include "GitWindowTests.hpp"
@@ -505,6 +506,7 @@ int main(int argc,char**argv) {
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--git"){gitWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--project-scale"){projectScaleWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-insert"){vimInsertWindowTests(directory);return 0;}
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-workspace"){vimWorkspaceTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--vim"){vimWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--commands"){commandPaletteTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--formatting"){formattingTests(directory);return 0;}

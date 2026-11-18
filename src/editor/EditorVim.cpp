@@ -64,12 +64,12 @@ void EditorWidget::switchVimMode(VimController::Mode mode,bool fromEscape) {
     vimInsertCount_=1;vimInsertPrefix_.clear();
     history_.endGroup();hideCompletions();vimPreferredX_=-1;
     if(previous==VimController::Mode::Visual && anchor_) {
-        vimPreviousVisualAnchor_=VimState::Session::instance().anchor(this,filePath_,*anchor_,navigationPosition());
+        vimPreviousVisualAnchor_=VimState::Session::instance().anchor(document_.get(),filePath_,*anchor_,navigationPosition());
         vimPreviousVisualHead_=vimLocation();vimPreviousVisualLine_=vimVisualLine_;vimPreviousVisualBlock_=vimVisualBlock_;
         vimPreviousBlockAnchor_=vimBlockAnchorColumn_;vimPreviousBlockAnchorEnd_=vimBlockAnchorEnd_;vimPreviousBlockHead_=vimBlockVirtualColumn_;vimPreviousVisualToEnd_=vimBlockToEnd_;
         const auto [a,b]=selectionRange();
         auto& marks=VimState::Session::instance().marks(vimMarkKey());
-        marks['<']=VimState::Session::instance().anchor(this,filePath_,a,QPoint(1,1));marks['>']=VimState::Session::instance().anchor(this,filePath_,b>a?graphemeBoundaryAt(b,false):b,QPoint(1,1));
+        marks['<']=VimState::Session::instance().anchor(document_.get(),filePath_,a,QPoint(1,1));marks['>']=VimState::Session::instance().anchor(document_.get(),filePath_,b>a?graphemeBoundaryAt(b,false):b,QPoint(1,1));
     }
     vimVisualLine_=false;vimVisualBlock_=false;
     if(mode==VimController::Mode::Normal) {
@@ -119,6 +119,10 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
     }
     event->accept();
     if(command==C::Consume || command==C::Pending)return true;
+    if (command == C::Workspace) {
+        emit vimWorkspaceRequested(action.text, action.count, action.explicitCount);
+        return true;
+    }
     if(command!=C::ScreenUp && command!=C::ScreenDown)vimScreenPreferredX_=-1;
     if(vimInsertNormal_)vimInsertNormalEnd_=command==C::End || command==C::LastText || ((command==C::Up || command==C::Down) && vimPreferredX_<0 && cursorPosition_==graphemeBoundaryAt(lineContentEnd(currentLine()),false));
     if(command==C::RestoreVisual) {

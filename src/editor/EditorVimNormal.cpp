@@ -33,7 +33,7 @@ void EditorWidget::editVimNormal(const VimController::Action& action){
         if(!candidate){if(visual)switchVimMode(VimController::Mode::Normal);return;}
     }
     const auto target=visual?ranges.front().begin:action.command==C::ToggleCase?ranges.back().end:original;
-    const auto anchors=VimState::Session::instance().anchors(this);std::vector<std::size_t> positions;for(const auto& anchor:anchors)positions.push_back(anchor->offset);
+    const auto anchors=VimState::Session::instance().anchors(document_.get());std::vector<std::size_t> positions;for(const auto& anchor:anchors)positions.push_back(anchor->offset);
     auto projected=std::make_shared<std::vector<std::size_t>>();auto bounds=std::make_shared<std::optional<std::pair<std::size_t,std::size_t>>>();
     switchVimMode(VimController::Mode::Normal);history_.beginGroup(true);auto after=std::make_shared<std::size_t>(target);
     runBulkOperation(QStringLiteral("Vim…"),[ranges,action,options,target,original,visual,after,positions,projected,bounds](PieceTreeBuffer& buffer,EditHistory& history,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
@@ -47,7 +47,7 @@ void EditorWidget::transformVimRange(std::size_t begin,std::size_t end,VimContro
     using C=VimController::Command;const auto original=cursorPosition_,first=buffer_.lineIndexAt(begin),last=buffer_.lineIndexAt(end>begin?end-1:begin);
     refreshEditorConfig();VimNormal::Options options;options.shiftWidth=editorConfig_.indentation();options.tabWidth=editorConfig_.tabSize();options.tabs=editorConfig_.tabs.value_or(false);
     const auto& state=VimState::Session::instance();options.joinSpaces=state.joinSpaces;options.textWidth=state.textWidth?state.textWidth:79;
-    const auto eol=editorConfig_.eol.value_or(SmartEditing::eol(buffer_));const auto anchors=VimState::Session::instance().anchors(this);std::vector<std::size_t> positions;for(const auto& anchor:anchors)positions.push_back(anchor->offset);auto projected=std::make_shared<std::vector<std::size_t>>();auto bounds=std::make_shared<std::optional<std::pair<std::size_t,std::size_t>>>();
+    const auto eol=editorConfig_.eol.value_or(SmartEditing::eol(buffer_));const auto anchors=VimState::Session::instance().anchors(document_.get());std::vector<std::size_t> positions;for(const auto& anchor:anchors)positions.push_back(anchor->offset);auto projected=std::make_shared<std::vector<std::size_t>>();auto bounds=std::make_shared<std::optional<std::pair<std::size_t,std::size_t>>>();
     switchVimMode(VimController::Mode::Normal);history_.beginGroup(true);auto after=std::make_shared<std::size_t>(begin);
     runBulkOperation(QStringLiteral("Vim…"),[begin,end,operation,linewise,options,eol,original,first,last,after,positions,projected,bounds](PieceTreeBuffer& buffer,EditHistory& history,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
         auto plan=operation==C::AutoIndent?VimNormal::indent(buffer,first,last,options,[&]{step(30);}):operation==C::Format?VimNormal::format(buffer,first,last,options,eol,[&]{step(30);}):VimNormal::changeCase(buffer,{{begin,begin,end,true,linewise}},operation,begin,[&]{step(30);});
@@ -59,14 +59,14 @@ void EditorWidget::transformVimRange(std::size_t begin,std::size_t end,VimContro
 }
 void EditorWidget::setVimEditMarks(std::size_t begin,std::size_t end){
     auto& state=VimState::Session::instance();auto& marks=state.marks(vimMarkKey());begin=std::min(begin,buffer_.size());end=std::min(end,buffer_.size());
-    marks['[']=state.anchor(this,filePath_,begin,QPoint(1,1));marks[']']=state.anchor(this,filePath_,end>begin?graphemeBoundaryAt(end,false):begin,QPoint(1,1));marks['.']=marks['['];vimPendingChange_=marks['.'];
+    marks['[']=state.anchor(document_.get(),filePath_,begin,QPoint(1,1));marks[']']=state.anchor(document_.get(),filePath_,end>begin?graphemeBoundaryAt(end,false):begin,QPoint(1,1));marks['.']=marks['['];vimPendingChange_=marks['.'];
 }
 void EditorWidget::noteVimEdit(std::size_t begin,std::size_t length){
     if(!vim_.enabled() || vimApplyingHistory_)return;
     begin=std::min(begin,buffer_.size());const auto end=std::min(begin+length,buffer_.size());const auto last=end>begin?graphemeBoundaryAt(end,false):begin;
     auto& state=VimState::Session::instance();auto& marks=state.marks(vimMarkKey());
-    if(!vimPendingChange_)marks['[']=state.anchor(this,filePath_,begin,QPoint(1,1));
-    marks[']']=state.anchor(this,filePath_,vim_.acceptsText()?end:last,QPoint(1,1));marks['.']=marks['['];vimPendingChange_=marks['.'];
+    if(!vimPendingChange_)marks['[']=state.anchor(document_.get(),filePath_,begin,QPoint(1,1));
+    marks[']']=state.anchor(document_.get(),filePath_,vim_.acceptsText()?end:last,QPoint(1,1));marks['.']=marks['['];vimPendingChange_=marks['.'];
     if(!vimChangeActive_ && !vimExExecuting_ && !isVimReplaying())commitVimChangeLocation();
 }
 void EditorWidget::commitVimChangeLocation(){

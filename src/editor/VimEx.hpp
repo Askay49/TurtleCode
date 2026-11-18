@@ -34,6 +34,7 @@ struct Invocation {
     int count{0};
     qint64 destination{};
     bool silent{false},ignoreErrors{false},keepJumps{false},keepPatterns{false};
+    bool vertical{false};
 };
 struct Parsed {
     Invocation command;

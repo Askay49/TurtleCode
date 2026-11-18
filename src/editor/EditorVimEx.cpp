@@ -204,7 +204,7 @@ void EditorWidget::finishVimEx(const QString& error,bool fatal){
             while(vimExFrames_.size()>keep){normalFrames+=vimExFrames_.back().kind==ExFrame::Normal;restoreVimExScope(vimExFrames_.back().scope);vimExFrames_.pop_back();}
             if(normalFrames){
                 while(normalFrames && !vimReplay_.empty()){normalFrames-=vimReplay_.back().exNormal;vimReplay_.pop_back();}
-                if(vimReplay_.empty())history_.endCompoundGroup();
+                if(vimReplay_.empty())endVimReplayGroup();
                 vimExNormal_=false;resetVimMode();
             }
             vimExRemaining_.clear();vimSubPlan_.reset();vimSubConfirm_=false;scheduleVimEx();return;
@@ -235,7 +235,7 @@ void EditorWidget::continueVimEx(){
     QHash<QChar,qint64> marks;
     for(const auto name:QStringLiteral("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ<>'[].^\"")){
         auto& state=VimState::Session::instance();const auto mark=name=='\''?state.jumps(window()).previous:name.isUpper()?state.globalMarks.value(name):state.marks(vimMarkKey()).value(name);
-        if(mark && (mark->owner==this || (!mark->path.isEmpty() && mark->path==filePath_)))marks[name]=qint64(buffer_.lineIndexAt(std::min(mark->offset,buffer_.size()))+1);
+        if(mark && (mark->owner==document_.get() || (!mark->path.isEmpty() && mark->path==filePath_)))marks[name]=qint64(buffer_.lineIndexAt(std::min(mark->offset,buffer_.size()))+1);
     }
     context.mark=[marks](QChar name)->std::optional<qint64>{return marks.contains(name)?std::optional<qint64>(marks[name]):std::nullopt;};
     const auto line=std::exchange(vimExRemaining_,{});
@@ -280,7 +280,7 @@ void EditorWidget::executeVimExParsed(const VimEx::Parsed& parsed){
     if(name=="read"){readVimExFile(command);return;}
     if(name=="mark" || name=="k"){
         if(command.registerName.isNull() || !command.registerName.isLetter()){finishVimEx("E191: Argument must be a letter");return;}
-        auto& state=VimState::Session::instance();auto location=state.anchor(this,filePath_,vimLineStart(last),QPoint(int(last+1),1));
+        auto& state=VimState::Session::instance();auto location=state.anchor(document_.get(),filePath_,vimLineStart(last),QPoint(int(last+1),1));
         if(command.registerName.isUpper())state.globalMarks[command.registerName]=location;else state.marks(vimMarkKey())[command.registerName]=location;
         scheduleVimEx();return;
     }

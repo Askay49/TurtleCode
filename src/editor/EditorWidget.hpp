@@ -56,6 +56,8 @@ public:
     ~EditorWidget() override;
     explicit EditorWidget(QWidget* parent = nullptr, DocumentPtr document = std::make_shared<Document>());
     [[nodiscard]] DocumentPtr document() const { return document_; }
+    void initializeSharedView(const EditorWidget& source);
+    void copyViewPosition(const EditorWidget& source);
     void loadBuffer(PieceTreeBuffer buffer, const QString& path);
     void restoreBuffer(PieceTreeBuffer buffer, const QString& path);
     void reloadBuffer(PieceTreeBuffer buffer, const QString& path);
@@ -70,6 +72,7 @@ public:
     void stopVimExecution() {vimExRemaining_.clear();cancelVimExFrames();cancelVimReplay();}
     bool isVimReplaying() const {return !vimReplay_.empty() || vimReplayScheduled_;}
     void recordVimJump() {pushVimJump();}
+    void discardVimBufferMarks();
     void resetVimMode() {if(vim_.enabled()){switchVimMode(VimController::Mode::Normal);finishVimChange();}}
     void transferVimReplay(EditorWidget* target);
     void transferVimEx(EditorWidget* target);
@@ -108,7 +111,7 @@ public:
     void moveLines(int direction);
     void copySelection(bool cut = false);
     void completeAsyncSave(const QString& path);
-    void setBusy(bool busy) noexcept { busy_ = busy; if (busy) hideCompletions(); }
+    void setBusy(bool busy);
     [[nodiscard]] bool isBusy() const noexcept { return busy_; }
     bool findText(const QString& query, bool forward = true,
                   Qt::CaseSensitivity sensitivity = Qt::CaseSensitive);
@@ -162,6 +165,9 @@ signals:
     void vimExInterruptRequested();
     void vimExRequested(const VimEx::Invocation& command, std::function<void(QString)> completed);
     void vimNavigateRequested(const QString& path,int line,int column);
+    void vimBufferNavigateRequested(Document* document,int line,int column);
+    void vimWorkspaceRequested(const QString& command,int count,bool explicitCount);
+    void viewFocused();
     void vimModeChanged();
     void vimCompletionRequested();
     void debugAnchorsMoved(const QMap<int,int>& anchors);
@@ -310,7 +316,8 @@ private:
     bool vimChangeInserted_{false};std::string vimInsertedText_;
     struct ReplayFrame {QVector<VimState::Input> inputs;qsizetype index{};int remaining{1};bool exNormal{false};};
     std::vector<ReplayFrame> vimReplay_;
-    int vimReplaySteps_{};bool vimReplayCancel_{false},vimReplayScheduled_{false};
+    int vimReplaySteps_{};bool vimReplayCancel_{false},vimReplayScheduled_{false},vimReplayGroupActive_{false};
+    void endVimReplayGroup();
     QChar vimReplayRegister_;
     struct ReplaceStep {std::size_t begin;std::string before,after;};
     std::vector<ReplaceStep> vimReplaced_;
@@ -343,7 +350,7 @@ private:
     QString vimMarkKey() const;
     VimState::Anchor vimLocation();
     void attachVimAnchors();
-    void projectVimAnchors(std::size_t at,std::size_t removed,std::size_t inserted);
+    static void projectVimAnchors(Document& document,std::size_t at,std::size_t removed,std::size_t inserted);
     void saveVimMark(QChar name);
     void jumpVimMark(QChar name,bool linewise,VimController::Command operation=VimController::Command::Consume,bool keepJumps=false);
     void applyVimMark(const VimState::Anchor&,bool linewise,VimController::Command,bool keepJumps);
@@ -361,7 +368,6 @@ private:
     bool vimVisualLine_{false};
     // A file terminator and an empty logical last line share the same bytes.
     // Keep the loaded Vim EOL convention while edits add/remove blank lines.
-    bool vimFinalNewline_{false};
     VimController::Command vimLastFind_{VimController::Command::Consume};
     QChar vimFindCharacter_;
     int vimInsertCount_{1};
@@ -488,7 +494,9 @@ private:
     void ensureCursorVisible(bool centerVertically = false);
     [[nodiscard]] int textAreaWidth() const;
     [[nodiscard]] int cursorPixelColumn() const;
-    void setModified(bool modified);
+    void setModified(bool modified, bool replaced = false);
+    void notifyDocumentChanged(bool modified);
+    void refreshSharedView(bool modified, bool replaced, const std::vector<Document::Edit>& edits);
     int lineHeight() const;
     int gutterWidth() const;
     int lineAtY(int y) const;
@@ -520,6 +528,7 @@ private:
     DocumentPtr document_;
     PieceTreeBuffer& buffer_;
     QString& filePath_;
+    bool& vimFinalNewline_;
     QSet<int> debugBreakpoints_,debugDisabledBreakpoints_;
     int debugLine_{0};
     std::size_t cursorPosition_{0}; // UTF-8 byte offset
@@ -546,7 +555,8 @@ private:
     std::size_t lineSelectionEnd_{0};
     QElapsedTimer tripleClickClock_;
     QPoint lastDoubleClickPoint_;
-    bool busy_{false};
+    bool& busy_;
+    QString observedPath_;
     bool horizontalExtentDirty_{true};
     std::size_t cachedHorizontalLine_{static_cast<std::size_t>(-1)};
     int cachedHorizontalWidth_{0};

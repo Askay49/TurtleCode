@@ -100,6 +100,9 @@ ShortcutManager::ShortcutManager() {
     add("editor.cursorAbove", "Add cursor above", "Editor", "Ctrl+Shift+Up", "Editor");
     add("editor.cursorBelow", "Add cursor below", "Editor", "Ctrl+Shift+Down", "Editor");
     add("editor.nextOccurrence", "Select next occurrence", "Editor", "Ctrl+D", "Editor");
+    add("editor.splitBelow", "Split Editor Below", "Editor");
+    add("editor.splitRight", "Split Editor Right", "Editor");
+    add("editor.closePane", "Close Editor Pane", "Editor");
 
     add("navigation.commands", "Command palette", "Navigation", "Ctrl+Shift+P");
     add("settings.editor", "Editor settings", "Settings");

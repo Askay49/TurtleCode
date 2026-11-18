@@ -76,6 +76,7 @@
 #include <QScreen>
 #include <QPushButton>
 #include <QHBoxLayout>
+#include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QPointer>
 #include <QSet>
@@ -93,6 +94,7 @@
 #include "editor/EditorWidget.hpp"
 #include "editor/OutlinePanel.hpp"
 #include "editor/EditorTabs.hpp"
+#include "editor/EditorPaneWorkspace.hpp"
 #include "project/ProjectExplorer.hpp"
 #include "project/WorkspaceIndex.hpp"
 #include "search/SearchPanel.hpp"
@@ -136,7 +138,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     statusBar()->addPermanentWidget(vimStatus_);vimStatus_->hide();
     connect(qApp,&QApplication::focusChanged,this,[this](QWidget*,QWidget*){updateVimIndicator();});
     connect(lsp_, &LspManager::statusChanged, this, [this](const QString&) {
-        auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+        auto* editor=activeEditor();
         lspStatus_->setText(lsp_->status(editor?editor->filePath():QString{}));
     });
     connect(lsp_, &LspManager::clientStateChanged, this, [this](LspClient* client) {
@@ -144,21 +146,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         for(int i=0;i<tabs_->count();++i) if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i))) {
             if(!lsp_->serves(client,editor->filePath())) continue;
             if(!client->ready()) {editor->clearSemanticHighlighting();editor->lspPolicy().reset();editor->setProperty("semanticPending",false);}
-            else if(tabs_->currentWidget()==editor) requestSemanticHighlighting(editor);
+            else if(activeEditor()==editor) requestSemanticHighlighting(editor);
         }
     });
     connect(lsp_, &LspManager::semanticTokensRefresh, this, [this](LspClient* client) {
-        auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+        auto* editor=activeEditor();
         if(editor && lsp_->serves(client,editor->filePath())) requestSemanticHighlighting(editor,true);
     });
     configureLsp();
     lspStatus_->setText(lsp_->status());
     connect(lsp_, &LspManager::diagnostics, this, [this](const QString& path, const QJsonArray& items) {
         if (items.isEmpty()) lspProblems_.remove(path); else lspProblems_[path] = items;
-        for (int i = 0; i < tabs_->count(); ++i) {
-            auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
-            if (editor && editor->filePath() == path) editor->setDiagnostics(items);
-        }
+        for (auto* editor : findChildren<EditorWidget*>())
+            if (editor->filePath() == path) editor->setDiagnostics(items);
     });
     connect(lsp_, &LspManager::error, this, [this](const QString& message) {
         statusBar()->showMessage(message, 6000);
@@ -168,7 +168,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     navigationPollTimer_->setInterval(250);
     connect(navigationPollTimer_, &QTimer::timeout, this, [this] {
         if (restoringNavigation_) return;
-        auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+        auto* editor = activeEditor();
         if (!editor || editor->isBusy() || editor->filePath().isEmpty()) return;
         const QPoint position = editor->navigationPosition();
         const NavigationLocation current{editor->filePath(), position.x(), position.y()};
@@ -196,10 +196,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(grammarManager_, &GrammarManager::installationFinished, this,
             [this](const QString& id, bool installed) {
         if (!installed) return;
-        for (int i = 0; i < tabs_->count(); ++i) {
-            if (auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i)))
-                editor->refreshSyntaxHighlighting();
-        }
+        for (auto* editor : findChildren<EditorWidget*>()) editor->refreshSyntaxHighlighting();
         const auto* language = LanguageRegistry::language(id);
         statusBar()->showMessage((language ? language->name : id) + I18n::text(" highlighting is ready"), 5000);
     });
@@ -221,6 +218,8 @@ MainWindow::~MainWindow() {
     }
     delete takeCentralWidget();
     tabs_ = nullptr;
+    paneWorkspace_ = nullptr;
+    vimPageTabs_ = nullptr;
     delete lsp_;
     lsp_ = nullptr;
     delete grammarManager_;
@@ -439,6 +438,8 @@ void MainWindow::createUi() {
                 tabs_->setTabText(tabs_->indexOf(editor),QFileInfo(path).fileName());
             }
             if(editor) {
+                editor = activateEditor(editor, true);
+                removeVimDiffView(editor);
                 live.available=[editor,path] { return editor && editor->filePath()==path && !editor->isBusy() && editor->byteSize()<=8*1024*1024; };
                 live.read=[editor] { if(!editor || editor->byteSize()>8*1024*1024) return QByteArray{}; return QByteArray::fromStdString(editor->snapshotBuffer().text()); };
                 live.replace=[editor,path](const QByteArray& before,const QByteArray& after) {
@@ -471,7 +472,6 @@ void MainWindow::createUi() {
                     }
                     editor->setDiffHighlights(highlights);
                 };
-                tabs_->setCurrentWidget(editor); editor->setFocus();
             }
         }
         gitDiff_->displayVersions(snapshot,std::move(live));
@@ -486,10 +486,10 @@ void MainWindow::createUi() {
     });
     connect(debugPanel_, &DebugPanel::configurationRequested, this, [this](const QString& path){openFile(path);});
     connect(debugPanel_, &DebugPanel::currentFileRequested, this, [this] {
-        if(auto* e=qobject_cast<EditorWidget*>(tabs_->currentWidget())) debugPanel_->useFile(e->filePath());
+        if(auto* e=activeEditor()) debugPanel_->useFile(e->filePath());
     });
     connect(debugPanel_, &DebugPanel::breakpointRequested, this, [this] {
-        if(auto* e=qobject_cast<EditorWidget*>(tabs_->currentWidget())) debugPanel_->toggleBreakpoint(e->filePath(),e->navigationPosition().x());
+        if(auto* e=activeEditor()) debugPanel_->toggleBreakpoint(e->filePath(),e->navigationPosition().x());
     });
     connect(debugPanel_, &DebugPanel::breakpointsChanged, this, [this](const QString& path) {
         for(auto* e:findChildren<EditorWidget*>()) if(e->filePath()==path) e->setDebugBreakpoints(debugPanel_->breakpoints(path),debugPanel_->disabledBreakpoints(path));
@@ -578,6 +578,7 @@ void MainWindow::createUi() {
                 tabs_->setTabToolTip(i, I18n::text("Original file was deleted. Use Save As to keep this buffer."));
             } else {
                 QWidget* page = tabs_->widget(i);
+                removeBufferViews(editor);
                 tabs_->removeTab(i);
                 page->deleteLater();
             }
@@ -592,8 +593,28 @@ void MainWindow::createUi() {
     connect(debugPanel_,&DebugPanel::terminalStopRequested,this,[this]{ if(terminalPanel_) terminalPanel_->stopDebugProgram(); });
     editorArea_->setWindowFlags(Qt::Widget);
     editorArea_->setObjectName("editorArea");
-    tabs_ = new EditorTabs(editorArea_);
-    editorArea_->setCentralWidget(tabs_);
+    auto* documentArea = new QWidget(editorArea_);
+    auto* documentLayout = new QVBoxLayout(documentArea);
+    documentLayout->setContentsMargins(0, 0, 0, 0);
+    documentLayout->setSpacing(0);
+    tabs_ = new EditorTabs(documentArea);
+    paneWorkspace_ = new EditorPaneWorkspace(documentArea);
+    vimPageTabs_ = new QTabBar(documentArea);
+    vimPageTabs_->setObjectName("vimPageTabs");
+    vimPageTabs_->setAccessibleName(I18n::text("Vim tab pages"));
+    vimPageTabs_->setExpanding(false);
+    vimPageTabs_->setElideMode(Qt::ElideMiddle);
+    vimPageTabs_->hide();
+    connect(vimPageTabs_, &QTabBar::currentChanged, this, [this](int index) {
+        if (closing_ || !paneWorkspace_->selectPage(index)) return;
+        const QScopedValueRollback changing(updatingWorkspace_, true);
+        updateWorkspaceFocus(true);
+    });
+    paneWorkspace_->hide();
+    documentLayout->addWidget(vimPageTabs_);
+    documentLayout->addWidget(tabs_, 1);
+    documentLayout->addWidget(paneWorkspace_, 1);
+    editorArea_->setCentralWidget(documentArea);
     tabs_->setTabsClosable(false);
     tabs_->setMovable(false);
     tabs_->setDocumentMode(true);
@@ -617,7 +638,7 @@ void MainWindow::createUi() {
     connect(tabs_, &QTabWidget::currentChanged, this, [this,tabBar](int index) {
         updateVimIndicator();
         scheduleOutline();
-        if(gitDiff_ && gitDiff_->isVisible() && gitDiff_->nativeEditor() && gitDiff_->nativeEditor()!=tabs_->widget(index)) gitDiff_->hide();
+        if(gitDiff_ && gitDiff_->isVisible() && gitDiff_->nativeEditor() && gitDiff_->nativeEditor()!=activeEditor()) gitDiff_->hide();
         if(tabSwitcher_ && tabSwitcher_->isVisible()) finishTabSwitch(false);
         if(index<0 && tabs_->count()>0) {
             tabs_->setTabVisible(0,true);tabs_->setCurrentIndex(0);return;
@@ -628,15 +649,21 @@ void MainWindow::createUi() {
         for(int i=0;i<tabs_->count();++i)
             if(i!=index && tabBar->isTabVisible(i)) tabs_->setTabVisible(i,false);
         if(lsp_ && lspStatus_) {
-            auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(index));
+            auto* editor=activeEditor();
             lspStatus_->setText(lsp_->status(editor?editor->filePath():QString{}));
         }
         if (index >= 0) {
             alignCurrentTabTitle();
             QTimer::singleShot(0,this,&MainWindow::alignCurrentTabTitle);
             updateTabMru(tabs_->widget(index));
-            requestSemanticHighlighting(qobject_cast<EditorWidget*>(tabs_->widget(index)));
+            requestSemanticHighlighting(activeEditor());
         } else tabs_->findChild<QWidget*>("tabGutter")->hide();
+        if (!paneWorkspace_->count()) {
+            auto* current = activeEditor();
+            if (current && current != vimLastEditor_) { vimAlternateEditor_ = vimLastEditor_; vimLastEditor_ = current; }
+            if (current) current->setProperty("vimAlternatePath", vimAlternateEditor_ ? vimAlternateEditor_->filePath() : QString{});
+        }
+        updateEditorPaneActions();
     });
 
     splitter->addWidget(sidebar_);
@@ -661,7 +688,7 @@ void MainWindow::updateSidebarActivities() {
 void MainWindow::setSidebarVisible(bool visible) {
     sidebar_->setVisible(visible);
     updateSidebarActivities();
-    if (!visible && tabs_ && tabs_->currentWidget()) tabs_->currentWidget()->setFocus();
+    if (!visible && tabs_ && activeEditor()) activeEditor()->setFocus();
 }
 
 void MainWindow::createMenus() {
@@ -699,23 +726,23 @@ void MainWindow::createMenus() {
     auto* findAction = searchMenu->addAction(Codicons::icon("search"), I18n::text("Find in Current File..."));
     ShortcutManager::instance().bind("search.find", findAction);
     connect(findAction, &QAction::triggered, this, [this] {
-        auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+        auto* editor = activeEditor();
         if (editor) editor->showFindBar();
     });
     auto* nextFindAction = searchMenu->addAction(Codicons::icon("arrow-down"), I18n::text("Find Next"));
     ShortcutManager::instance().bind("search.next", nextFindAction);
     connect(nextFindAction, &QAction::triggered, this, [this] {
-        if (auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget())) editor->findNext();
+        if (auto* editor = activeEditor()) editor->findNext();
     });
     auto* previousFindAction = searchMenu->addAction(Codicons::icon("arrow-up"), I18n::text("Find Previous"));
     ShortcutManager::instance().bind("search.previous", previousFindAction);
     connect(previousFindAction, &QAction::triggered, this, [this] {
-        if (auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget())) editor->findNext(true);
+        if (auto* editor = activeEditor()) editor->findNext(true);
     });
     auto* replaceAction = searchMenu->addAction(Codicons::icon("replace"), I18n::text("Replace in Current File..."));
     ShortcutManager::instance().bind("search.replace", replaceAction);
     connect(replaceAction, &QAction::triggered, this, [this] {
-        auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+        auto* editor = activeEditor();
         if (!editor) return;
         editor->showFindBar(true);
     });
@@ -726,7 +753,7 @@ void MainWindow::createMenus() {
         const auto id=block?"editor.toggleBlockComment":"editor.toggleLineComment";
         action->setObjectName(id);ShortcutManager::instance().bind(id,action);action->setShortcutContext(Qt::WidgetShortcut);
         connect(action,&QAction::triggered,this,[this,block] {
-            if(auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget())) {
+            if(auto* editor=activeEditor()) {
                 if(block)editor->toggleBlockComment();else editor->toggleLineComment();
             }
         });
@@ -742,7 +769,7 @@ void MainWindow::createMenus() {
         // Editor-owned shortcuts handle typing focus; this binding displays the key in the menu.
         action->setShortcutContext(Qt::WidgetShortcut);
         connect(action,&QAction::triggered,this,[this,operation] {
-            if(auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget())) {
+            if(auto* editor=activeEditor()) {
                 if(operation.second)editor->copyLines(operation.first);else editor->moveLines(operation.first);
             }
         });
@@ -755,7 +782,7 @@ void MainWindow::createMenus() {
     auto* completeAction = codeMenu->addAction(Codicons::icon("symbol-method"), I18n::text("Complete"));
     ShortcutManager::instance().bind("code.complete", completeAction);
     connect(completeAction, &QAction::triggered, this, [this] {
-        requestCompletion(qobject_cast<EditorWidget*>(tabs_->currentWidget()), false);
+        requestCompletion(activeEditor(), false);
     });
     auto* hoverAction = codeMenu->addAction(Codicons::icon("info"), I18n::text("Symbol information"));
     ShortcutManager::instance().bind("code.hover", hoverAction);
@@ -837,13 +864,23 @@ void MainWindow::createMenus() {
     connect(languagesAction, &QAction::triggered, this, &MainWindow::showLanguageSettings);
 
     auto* viewMenu = menuBar()->addMenu(I18n::text("&View"));
+    auto addPaneAction = [this, viewMenu](const QString& id, const QString& label, const QString& icon, auto action) {
+        auto* item = viewMenu->addAction(Codicons::icon(icon), I18n::text(label));
+        item->setObjectName(id);
+        ShortcutManager::instance().bind(id, item);
+        connect(item, &QAction::triggered, this, action);
+    };
+    addPaneAction("editor.splitBelow", "Split Editor Below", "split-horizontal", [this] { splitEditor(Qt::Vertical); });
+    addPaneAction("editor.splitRight", "Split Editor Right", "split-vertical", [this] { splitEditor(Qt::Horizontal); });
+    addPaneAction("editor.closePane", "Close Editor Pane", "close", [this] { closeEditorPane(activeEditor()); });
+    updateEditorPaneActions();
     outline_=new OutlinePanel(editorArea_);
     editorArea_->addDockWidget(Qt::RightDockWidgetArea,outline_);
     editorArea_->resizeDocks({outline_},{280},Qt::Horizontal);
     outlineTimer_=new QTimer(this); outlineTimer_->setSingleShot(true); outlineTimer_->setInterval(350);
     connect(outlineTimer_,&QTimer::timeout,this,&MainWindow::refreshOutline);
     outline_->navigate=[this](int line,int column) {
-        auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+        auto* editor=activeEditor();
         if(editor && editor==outlineEditor_ && !editor->isBusy()) {
             editor->revealMatch(line,column,0,true); editor->setFocus();
         }
@@ -889,7 +926,7 @@ void MainWindow::createMenus() {
         ensureTerminal();
         QString directory = projectRoots_.value(0);
         if (!explicitProject_) {
-            if (auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget()); editor && !editor->filePath().isEmpty())
+            if (auto* editor = activeEditor(); editor && !editor->filePath().isEmpty())
                 directory = QFileInfo(editor->filePath()).absolutePath();
         }
         terminalPanel_->open(directory.isEmpty() ? QDir::homePath() : directory);
@@ -1010,7 +1047,7 @@ void MainWindow::rememberRecentFile(const QString& path) {
 
 void MainWindow::commandPalette() {
     QPointer<QWidget> previousFocus = QApplication::focusWidget();
-    QPointer<EditorWidget> editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    QPointer<EditorWidget> editor = activeEditor();
     QVector<PaletteCommand> entries;
     auto& manager = ShortcutManager::instance();
     for (const auto& command : manager.commands()) {
@@ -1044,7 +1081,7 @@ void MainWindow::commandPalette() {
         }
         if (!entry.enabled && entry.reason.isEmpty()) entry.reason = I18n::text("Command is unavailable");
         entry.execute = [this, target, editor, needsEditor, id=command.id] {
-            if (needsEditor && id != "code.problems" && (!editor || editor->isBusy() || tabs_->currentWidget() != editor)) return;
+            if (needsEditor && id != "code.problems" && (!editor || editor->isBusy() || activeEditor() != editor)) return;
             if (id.startsWith("debug.") && !debugPanel_->commandAvailable(id.mid(6))) return;
             if (needsEditor && editor) editor->setFocus(Qt::OtherFocusReason);
             if (auto* action = qobject_cast<QAction*>(target)) { if (action->isEnabled()) action->trigger(); }
@@ -1146,7 +1183,8 @@ void MainWindow::requestClose(QVector<QPointer<EditorWidget>> editors,bool windo
         statusBar()->showMessage(I18n::text("Wait for the current operation to finish before closing."),6000);return;
     }
     closing_=true;closingWindow_=window;closingIndex_=0;
-    menuBar()->setEnabled(false);sidebar_->setEnabled(false);
+    menuBar()->setEnabled(false);sidebar_->setEnabled(false);paneWorkspace_->setEnabled(false);
+    vimPageTabs_->setEnabled(false);
     findChild<QWidget*>("activityBar")->setEnabled(false);
     closingEditors_=std::move(editors);discardedRevisions_.clear();
     if(discard)for(const auto& editor:closingEditors_)if(editor)discardedRevisions_[editor]=editor->lspRevision();
@@ -1159,7 +1197,7 @@ void MainWindow::advanceClose() {
         auto editor=closingEditors_[closingIndex_++];
         if(!editor || !editor->isModified())continue;
         if(discardedRevisions_.contains(editor) && discardedRevisions_.value(editor)==editor->lspRevision())continue;
-        tabs_->setCurrentWidget(editor);
+        activateEditor(editor);
         const auto answer=IconDialogs::MessageBox::warning(this,I18n::text("Unsaved changes"),
             I18n::text("Save changes to “%1” before closing?").arg(editor->filePath().isEmpty()?I18n::text("Untitled"):QFileInfo(editor->filePath()).fileName()),
             QMessageBox::Save|QMessageBox::Discard|QMessageBox::Cancel,QMessageBox::Save);
@@ -1179,10 +1217,11 @@ void MainWindow::finishClose(bool accepted) {
         statusBar()->showMessage(I18n::text("Finishing recovery checkpoint…"));
         QTimer::singleShot(50,this,[this]{finishClose(true);});return;
     }
-    menuBar()->setEnabled(true);sidebar_->setEnabled(true);
+    menuBar()->setEnabled(true);sidebar_->setEnabled(true);paneWorkspace_->setEnabled(true);
+    vimPageTabs_->setEnabled(true);
     findChild<QWidget*>("activityBar")->setEnabled(true);
     for(const auto& editor:closingEditors_)if(editor)editor->setEnabled(true);
-    if(!accepted){closing_=false;closingEditors_.clear();return;}
+    if(!accepted){closing_=false;closingEditors_.clear();closingVimBuffer_.clear();updateEditorPaneActions();updateVimPageTabs();return;}
     finishTabSwitch(false);
     if(closingWindow_) {
         // Modified documents explicitly discarded by the user are reopened from disk.
@@ -1214,17 +1253,28 @@ void MainWindow::finishClose(bool accepted) {
         recoveredRevisions_.remove(editor);
         externalFileStates_.remove(editor);
         externallyReloading_.remove(editor);
+        if (closingVimBuffer_ == editor) {
+            if (wipeVimBuffer_) editor->discardVimBufferMarks();
+            else unloadedVimBuffers_.append({editor->property("vimBufferId").toULongLong(), editor->filePath()});
+            closingVimBuffer_.clear();
+        }
+        removeBufferViews(editor);
         tabs_->removeTab(tabs_->indexOf(editor));editor->deleteLater();
     }
     closingEditors_.clear();closing_=false;
-    if(auto* current=tabs_->currentWidget())current->setFocus();
+    if(auto* current=activeEditor())current->setFocus();
+    updateEditorPaneActions();
     updateWindowTitle();checkpointRecovery();
 }
 
 void MainWindow::alignCurrentTabTitle() {
     if(!tabs_) return;
-    auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor=activeEditor();
     if(!editor) return;
+    if (paneWorkspace_->count()) {
+        tabs_->setHeaderGutter(editor->lineNumberAreaWidth(), tabs_->tabBar()->height());
+        return;
+    }
     const auto boundary=editor->viewport()->mapTo(tabs_,QPoint(editor->lineNumberAreaWidth(),0));
     tabs_->setHeaderGutter(boundary.x(),boundary.y());
 }
@@ -1244,7 +1294,7 @@ void MainWindow::positionTabSwitcher() {
 
 void MainWindow::switchRecentTab(int direction) {
     if(!tabSwitcher_ || !tabSwitcher_->isVisible()) {
-        updateTabMru(tabs_->currentWidget());
+        updateTabMru(documentEditor(activeEditor()));
         if(tabMru_.isEmpty()) return;
         tabSwitchOrder_=tabMru_;tabSwitchIndex_=0;
         if(!tabSwitcher_) {
@@ -1281,7 +1331,7 @@ void MainWindow::finishTabSwitch(bool accept) {
     qApp->removeEventFilter(this);tabSwitcher_->hide();
     tabSwitchOrder_.clear();tabSwitchIndex_=-1;
     if(target && tabs_->indexOf(target)>=0) {
-        tabs_->setCurrentWidget(target);target->setFocus();
+        activateEditor(qobject_cast<EditorWidget*>(target.data()), true);
     } else if(tabSwitchFocus_ && isActiveWindow()) tabSwitchFocus_->setFocus();
     tabSwitchFocus_.clear();
 }
@@ -1312,7 +1362,7 @@ bool MainWindow::eventFilter(QObject* watched,QEvent* event) {
 }
 
 void MainWindow::goToLine() {
-    auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor = activeEditor();
     if (!editor) return;
     bool accepted = false;
     const int line = IconDialogs::InputDialog::getInt(this, I18n::text("Go to Line"),
@@ -1335,7 +1385,7 @@ void MainWindow::commitPendingNavigationLocation() {
 
 void MainWindow::recordNavigationLocation() {
     if (navigationCommitTimer_) navigationCommitTimer_->stop();
-    auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor = activeEditor();
     if (!editor || editor->isBusy() || editor->filePath().isEmpty()) {
         commitPendingNavigationLocation();
         return;
@@ -1396,24 +1446,24 @@ void MainWindow::openFile() {
 void MainWindow::openFile(const QString& inputPath, int line, int column, int length, bool centerTarget) {
     if(closing_)return;
     const QString path = QDir::cleanPath(QFileInfo(inputPath).absoluteFilePath());
-    if(!property("vimRestoringLocation").toBool())if(auto* current=qobject_cast<EditorWidget*>(tabs_->currentWidget());current && (line>0 || current->filePath()!=path))current->recordVimJump();
+    if(!property("vimRestoringLocation").toBool())if(auto* current=activeEditor();current && (line>0 || current->filePath()!=path))current->recordVimJump();
     for (int i = 0; i < tabs_->count(); ++i) {
         auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
         if (editor && (editor->filePath()==path ||
             (editor->isBusy() && editor->filePath().isEmpty() && editor->property("openingPath").toString()==path))) {
-            tabs_->setCurrentIndex(i);
+            auto* view = activateEditor(editor);
             rememberRecentFile(path);
-            if (line > 0) editor->revealMatch(line, column, length, centerTarget);
+            if (line > 0 && view) view->revealMatch(line, column, length, centerTarget);
             return;
         }
     }
 
     auto* editor = createEditor(path);
 
-    QPointer<EditorWidget> editorGuard(editor);
+    QPointer<EditorWidget> editorGuard(editor), viewGuard(activeEditor());
     auto* watcher = new QFutureWatcher<LoadedFile>(this);
     connect(watcher, &QFutureWatcher<LoadedFile>::finished, this,
-            [this, watcher, editorGuard, path, line, column, length, centerTarget] {
+            [this, watcher, editorGuard, viewGuard, path, line, column, length, centerTarget] {
         if(watcher->future().resultCount()==0) { watcher->deleteLater();return; }
         const LoadedFile result = watcher->future().resultAt(watcher->future().resultCount()-1);
         watcher->deleteLater();
@@ -1421,6 +1471,7 @@ void MainWindow::openFile(const QString& inputPath, int line, int column, int le
         const int tabIndex = tabs_->indexOf(editorGuard);
         if (tabIndex < 0) return;
         if (!result.buffer) {
+            removeBufferViews(editorGuard);
             tabs_->removeTab(tabIndex);
             editorGuard->deleteLater();
             if(result.error!="Loading cancelled")IconDialogs::MessageBox::critical(this, I18n::text("Open failed"), result.error + "\n" + path);
@@ -1440,12 +1491,16 @@ void MainWindow::openFile(const QString& inputPath, int line, int column, int le
         }
         if(lsp_ && lsp_->available() && lsp_->supports(path) && !editorGuard->lspAutomaticEligible())
             statusBar()->showMessage(I18n::text("Automatic language-server loading deferred; use a manual language command to start it."),8000);
-        if(lsp_ && tabs_->currentWidget()==editorGuard) lspStatus_->setText(lsp_->status(path));
-        if (line > 0) editorGuard->revealMatch(line, column, length, centerTarget);
+        if (lsp_ && documentEditor(activeEditor()) == editorGuard) {
+            lspStatus_->setText(lsp_->status(path));
+            requestSemanticHighlighting(activeEditor());
+        }
+        if (line > 0 && viewGuard) viewGuard->revealMatch(line, column, length, centerTarget);
         tabs_->setTabText(tabIndex, QFileInfo(path).fileName());
         if(editorGuard->property("restoreVertical").isValid())editorGuard->verticalScrollBar()->setValue(editorGuard->property("restoreVertical").toInt());
         if(editorGuard->property("restoreHorizontal").isValid())editorGuard->horizontalScrollBar()->setValue(editorGuard->property("restoreHorizontal").toInt());
-        if(editorGuard->property("restoreActive").toBool())tabs_->setCurrentWidget(editorGuard);
+        if(editorGuard->property("restoreActive").toBool())activateEditor(editorGuard);
+        updateWindowTitle();
     });
     auto loadCancelled=std::make_shared<std::atomic<bool>>(false);
     connect(editor,&QObject::destroyed,[loadCancelled]{loadCancelled->store(true);});
@@ -1742,7 +1797,7 @@ void MainWindow::reloadExternalFile(EditorWidget* editor, const QString& path, c
 }
 
 void MainWindow::saveCurrentFile() {
-    saveEditor(qobject_cast<EditorWidget*>(tabs_->currentWidget()));
+    saveEditor(activeEditor());
 }
 
 void MainWindow::saveAllFiles() {
@@ -1813,7 +1868,7 @@ void MainWindow::writeEditor(EditorWidget* editor,const QString& path,const QByt
             else lsp_->change(path,guard->lspText());
             lsp_->saved(path);
         }
-        const auto index=tabs_->indexOf(guard);
+        const auto index=tabs_->indexOf(documentEditor(guard));
         if(index>=0){tabs_->setTabText(index,QFileInfo(path).fileName());tabs_->setTabToolTip(index,path);}
         updateWindowTitle();statusBar()->showMessage(I18n::text("Saved"),2000);
         checkpointRecovery();
@@ -1858,11 +1913,12 @@ void MainWindow::writeEditor(EditorWidget* editor,const QString& path,const QByt
 }
 
 void MainWindow::saveCurrentFileAs() {
-    saveEditor(qobject_cast<EditorWidget*>(tabs_->currentWidget()),{},true);
+    saveEditor(activeEditor(),{},true);
 }
 
 void MainWindow::updateWindowTitle() {
-    auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    updateVimPageTabs();
+    auto* editor = activeEditor();
     QString projectName;
     if (!projectRoots_.isEmpty()) {
         projectName = QFileInfo(projectRoots_.front()).fileName();
@@ -2076,7 +2132,7 @@ void MainWindow::configureLsp() {
     for(int i=0;i<tabs_->count();++i)
         if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i));editor && !editor->isBusy() && editor->lspAutomaticEligible() && lsp_->supports(editor->filePath()))
             lsp_->open(editor->filePath(),editor->lspText());
-    requestSemanticHighlighting(qobject_cast<EditorWidget*>(tabs_->currentWidget()),true);
+    requestSemanticHighlighting(activeEditor(),true);
     scheduleOutline();
 }
 void MainWindow::showLspSettings() {
@@ -2088,7 +2144,7 @@ void MainWindow::showLspSettings() {
         if(!semantic) {lsp_->cancelSemanticTokens(editor->filePath());editor->clearSemanticHighlighting();}
     }
     if(dialog.serverChanged) configureLsp();
-    else requestSemanticHighlighting(qobject_cast<EditorWidget*>(tabs_->currentWidget()),true);
+    else requestSemanticHighlighting(activeEditor(),true);
 }
 bool MainWindow::ensureManualLsp(EditorWidget* editor,std::function<void()> retry) {
     if(!editor || editor->isBusy() || !lsp_ || !lsp_->supports(editor->filePath())) return false;
@@ -2107,7 +2163,7 @@ bool MainWindow::ensureManualLsp(EditorWidget* editor,std::function<void()> retr
     *connection=connect(lsp_,&LspManager::statusChanged,this,[this,guard,path,revision,serial,retry,connection](const QString&) {
         if(!lsp_->ready(path)) return;
         disconnect(*connection);
-        if(guard && tabs_->currentWidget()==guard && guard->filePath()==path && guard->lspRevision()==revision
+        if(guard && activeEditor()==guard && guard->filePath()==path && guard->lspRevision()==revision
             && guard->property("manualLspWait").toULongLong()==serial) retry();
     });
     QTimer::singleShot(15000,this,[connection]{QObject::disconnect(*connection);});
@@ -2116,7 +2172,7 @@ bool MainWindow::ensureManualLsp(EditorWidget* editor,std::function<void()> retr
 
 void MainWindow::formatDocument() {
     if(closing_ || renameInProgress_ || !replaceLockedEditors_.isEmpty()) return;
-    auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor=activeEditor();
     if(!editor || editor->isBusy()) return;
     if(editor->filePath().isEmpty() || !lsp_->supports(editor->filePath())) {
         statusBar()->showMessage(I18n::text("Formatting is unavailable for this document. Save it with a supported extension first."),6000);return;
@@ -2134,7 +2190,7 @@ void MainWindow::formatDocument() {
     statusBar()->showMessage(I18n::text("Formatting document…"),10000);
     editor->refreshEditorConfig();
     lsp_->formatDocument(path,editor->tabSize(),editor->insertsSpaces(),[this,guard,path,revision,generation,before](QJsonValue result) {
-        if(closing_ || renameInProgress_ || !replaceLockedEditors_.isEmpty() || !guard || tabs_->currentWidget()!=guard || guard->isBusy() || guard->filePath()!=path
+        if(closing_ || renameInProgress_ || !replaceLockedEditors_.isEmpty() || !guard || activeEditor()!=guard || guard->isBusy() || guard->filePath()!=path
             || guard->lspRevision()!=revision || guard->property("formatGeneration").toULongLong()!=generation) return;
         if(result.isUndefined()) return; // Preserve the protocol error shown by LspClient.
         if(result.isNull()) {statusBar()->showMessage(I18n::text("No formatting changes needed."),4000);return;}
@@ -2150,7 +2206,7 @@ void MainWindow::formatDocument() {
 }
 
 void MainWindow::requestSemanticHighlighting(EditorWidget* editor, bool force) {
-    if (!lsp_ || !editor || tabs_->currentWidget()!=editor || editor->isBusy()
+    if (!lsp_ || !editor || activeEditor()!=editor || editor->isBusy()
         || !editor->lspAutomaticEligible() || !lsp_->supports(editor->filePath())
         || !QSettings().value("lsp/semanticHighlighting",true).toBool()
         || !lsp_->ready(editor->filePath()) || !lsp_->semanticTokensAvailable(editor->filePath())) return;
@@ -2252,7 +2308,7 @@ void MainWindow::requestCompletion(EditorWidget* editor, bool automatic) {
     lsp_->change(path, editor->lspText());
     QPointer<EditorWidget> guard(editor);
     lsp_->completion(path, position.x(), position.y(), [this, guard, path, revision, position, automatic](QJsonValue result) {
-        if (!guard || guard->filePath() != path || tabs_->currentWidget() != guard || guard->lspRevision() != revision || guard->lspPosition() != position || !guard->hasFocus()) return;
+        if (!guard || guard->filePath() != path || activeEditor() != guard || guard->lspRevision() != revision || guard->lspPosition() != position || !guard->hasFocus()) return;
         if (automatic && !QSettings().value("lsp/autoCompletion", true).toBool()) return;
         auto items = result.isArray() ? result.toArray() : result.toObject().value("items").toArray();
         const auto defaults = result.toObject().value("itemDefaults").toObject();
@@ -2279,13 +2335,13 @@ void MainWindow::requestCompletion(EditorWidget* editor, bool automatic) {
     });
 }
 void MainWindow::showCodeHelp(bool signature) {
-    auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor = activeEditor();
     if (!editor) return;
     if(!ensureManualLsp(editor,[this,signature]{showCodeHelp(signature);})) return;
     const auto path=editor->filePath(); const auto revision=editor->lspRevision(); const auto pos=editor->lspPosition();
     lsp_->change(path, editor->lspText()); QPointer<EditorWidget> guard(editor);
     auto callback = [this, guard, path, revision, pos, signature](QJsonValue value) {
-        if (!guard || tabs_->currentWidget()!=guard || guard->filePath()!=path || guard->lspRevision()!=revision || guard->lspPosition()!=pos) return;
+        if (!guard || activeEditor()!=guard || guard->filePath()!=path || guard->lspRevision()!=revision || guard->lspPosition()!=pos) return;
         QString text;
         auto documentation = [](QJsonValue v) { return v.isString() ? v.toString() : v.toObject().value("value").toString(); };
         if (signature) {
@@ -2334,37 +2390,76 @@ void MainWindow::showLspProblems() {
 
 EditorWidget* MainWindow::createEditor(const QString& path) {
     auto* editor = new EditorWidget(this, std::make_shared<Document>());
-    editor->setProperty("vimBufferId",qulonglong(vimNextBufferId_++));
-    if(!tabs_->property("vimBufferTracking").toBool()){
-        tabs_->setProperty("vimBufferTracking",true);
-        connect(tabs_,&QTabWidget::currentChanged,this,[this](int index){
-            auto* current=qobject_cast<EditorWidget*>(tabs_->widget(index));if(current && current!=vimLastEditor_){vimAlternateEditor_=vimLastEditor_;vimLastEditor_=current;}
-            if(current)current->setProperty("vimAlternatePath",vimAlternateEditor_?vimAlternateEditor_->filePath():QString{});
-        });
+    auto id = vimNextBufferId_++;
+    if (!path.isEmpty()) {
+        const auto entry = std::find_if(unloadedVimBuffers_.begin(), unloadedVimBuffers_.end(),
+                                       [&](const auto& buffer) { return buffer.path == path; });
+        if (entry != unloadedVimBuffers_.end()) {
+            id = entry->id;
+            unloadedVimBuffers_.erase(entry);
+        }
     }
+    editor->setProperty("vimBufferId", qulonglong(id));
+    editor->setProperty("openingPath", path);
+    editor->setBusy(true);
+    connectEditor(editor, path, true);
+    const int index = tabs_->addTab(editor, QFileInfo(path).fileName() + I18n::text(" (loading…)"));
+    tabs_->setTabToolTip(index, path);
+    activateEditor(editor);
+    return editor;
+}
+
+EditorWidget* MainWindow::createUntitledEditor() {
+    auto* editor = createEditor({});
+    editor->loadBuffer(PieceTreeBuffer(), {});
+    editor->setProperty("openingPath", QVariant{});
+    editor->setBusy(false);
+    tabs_->setTabText(tabs_->indexOf(editor), I18n::text("Untitled"));
+    return editor;
+}
+
+void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool primary) {
+    if (primary) connect(editor->document().get(), &Document::busyChanged, editor, [this, editor](bool) {
+        if (documentEditor(activeEditor()) == editor) updateEditorPaneActions();
+    });
+    connect(editor, &EditorWidget::viewFocused, this, [this, editor] { viewFocused(editor); });
+    connect(editor, &EditorWidget::vimWorkspaceRequested, this, [this, editor](const QString& key, int count, bool explicitCount) {
+        executeVimWorkspaceKey(editor, key, count, explicitCount);
+    });
+    connect(editor, &EditorWidget::vimBufferNavigateRequested, this, [this, editor](Document* document, int line, int column) {
+        if (auto* target = activateEditor(documentEditor(document), true)) {
+            target->resetVimMode();
+            target->setNavigationPosition(line, column);
+            editor->transferVimReplay(target);
+        }
+    });
     connect(editor,&EditorWidget::vimExRequested,this,[this,editor](const VimEx::Invocation& command,std::function<void(QString)> completed){executeVimEx(editor,command,std::move(completed));});
     connect(editor,&EditorWidget::vimNavigateRequested,this,[this,editor](const QString& file,int line,int column){
         setProperty("vimRestoringLocation",true);openFile(file,line,column);setProperty("vimRestoringLocation",false);
-        if(auto* target=qobject_cast<EditorWidget*>(tabs_->currentWidget())){target->resetVimMode();target->setFocus();editor->transferVimReplay(target);}
+        if(auto* target=activeEditor()){target->resetVimMode();target->setFocus();editor->transferVimReplay(target);}
     });
     connect(editor,&EditorWidget::vimModeChanged,this,&MainWindow::updateVimIndicator);
     editor->setDebugBreakpoints(debugPanel_->breakpoints(path),debugPanel_->disabledBreakpoints(path));
+    connect(editor, &EditorWidget::contentChanged, this, [this, editor, observedPath = path]() mutable {
+        if (observedPath == editor->filePath()) return;
+        observedPath = editor->filePath();
+        editor->setDebugBreakpoints(debugPanel_->breakpoints(observedPath), debugPanel_->disabledBreakpoints(observedPath));
+        editor->setDebugLine(observedPath == debugPath_ ? debugLine_ : 0);
+    });
     connect(editor,&EditorWidget::debugAnchorsMoved,this,[this,editor](const QMap<int,int>& anchors){debugPanel_->remapBreakpoints(editor->filePath(),anchors);});
     connect(editor,&EditorWidget::debugLinesEdited,this,[this,editor](int row,int column,int removed,int inserted){debugPanel_->moveBreakpoints(editor->filePath(),row,column,removed,inserted);});
     editor->setDebugLine(path==debugPath_?debugLine_:0);
     connect(editor,&EditorWidget::breakpointToggled,this,[this,editor](int line) {
         debugPanel_->toggleBreakpoint(editor->filePath(),line);
     });
-    // Identify the tab before the asynchronous load assigns Document::filePath.
-    editor->setProperty("openingPath",path);
     const auto alignTitle=[this,editor] {
-        if(tabs_->currentWidget()==editor) alignCurrentTabTitle();
+        if(activeEditor()==editor) alignCurrentTabTitle();
     };
     connect(editor,&EditorWidget::gutterWidthChanged,this,alignTitle);
     connect(editor,&EditorWidget::semanticViewportChanged,this,alignTitle);
     connect(editor,&EditorWidget::vimCompletionRequested,this,[this,editor]{requestCompletion(editor,false);});
     connect(editor, &EditorWidget::codeContextMenuRequested, this, [this, editor](const QPoint& global) {
-        tabs_->setCurrentWidget(editor);
+        activateEditor(editor);
         auto* menu = new QMenu(editor);
         menu->setObjectName("editorCodeContextMenu");
         menu->setAttribute(Qt::WA_DeleteOnClose);
@@ -2372,14 +2467,13 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
             if (auto* action = findChild<QAction*>(id)) menu->addAction(action);
         menu->popup(global);
     });
-    editor->setBusy(true);
     connect(editor, &EditorWidget::hoverRequested, this, [this, editor](int line, int column, const QPoint& global) {
         if (!lsp_ || !lsp_->ready(editor->filePath()) || !editor->lspEligible() || !lsp_->supports(editor->filePath())
             || !editor->lspPolicy().automaticFeatures(editor->byteSize(),QDateTime::currentMSecsSinceEpoch())) return;
         const auto path = editor->filePath(); const auto revision = editor->lspRevision();
         lsp_->change(path, editor->lspText()); QPointer<EditorWidget> guard(editor);
         lsp_->hover(path, line, column, [this, guard, path, revision, global](QJsonValue value) {
-            if (!guard || tabs_->currentWidget()!=guard || guard->filePath()!=path || guard->lspRevision()!=revision || (QCursor::pos()-global).manhattanLength()>12) return;
+            if (!guard || activeEditor()!=guard || guard->filePath()!=path || guard->lspRevision()!=revision || (QCursor::pos()-global).manhattanLength()>12) return;
             const auto contents=value.toObject().value("contents"); QString text;
             auto plain=[](QJsonValue item) { return item.isString()?item.toString():item.toObject().value("value").toString(); };
             if (contents.isArray()) for (const auto& item:contents.toArray()) text+=plain(item)+"\n";
@@ -2388,7 +2482,7 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
         });
     });
     connect(editor,&EditorWidget::highlightingStatusChanged,this,[this,editor](const QString& message) {
-        if(tabs_->currentWidget()==editor) statusBar()->showMessage(message,8000);
+        if(activeEditor()==editor) statusBar()->showMessage(message,8000);
     });
     auto* semanticSync=new QTimer(editor); semanticSync->setObjectName("semanticSync"); semanticSync->setSingleShot(true);
     connect(semanticSync,&QTimer::timeout,this,[this,editor]{requestSemanticHighlighting(editor);});
@@ -2403,10 +2497,11 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
     auto* lspSync = new QTimer(editor);
     lspSync->setSingleShot(true);
     lspSync->setInterval(200);
-    connect(editor, &EditorWidget::contentChanged, lspSync, [this, editor, lspSync] {
-        if(tabs_->currentWidget()==editor) scheduleOutline();
+    connect(editor, &EditorWidget::contentChanged, lspSync, [this, editor, lspSync, primary] {
+        if (activeEditor() == editor) scheduleOutline();
         if (editor->filePath().isEmpty()) return;
         editor->setDiagnostics({});
+        if (!primary) return;
         if(lsp_) lsp_->cancelSemanticTokens(editor->filePath());
         editor->setProperty("semanticPending",false);
         lspSync->start(editor->lspPolicy().syncDelay(editor->byteSize()));
@@ -2418,7 +2513,9 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
         if (!lsp_->supports(path) || (!editor->lspAutomaticEligible() && lsp_->documentVersion(path)==0)) return;
         lsp_->change(path, editor->lspText());
         editor->setProperty("semanticSyncedRevision",editor->lspRevision());
-        requestSemanticHighlighting(editor);
+        auto* active = activeEditor();
+        if (active && active->document() == editor->document()) requestSemanticHighlighting(active);
+        else requestSemanticHighlighting(editor);
     });
     auto* completionTimer = new QTimer(editor);
     completionTimer->setSingleShot(true);
@@ -2428,8 +2525,14 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
             completionTimer->start(std::clamp(QSettings().value("lsp/completionDelayMs", 150).toInt(), 50, 2000));
     });
     connect(completionTimer, &QTimer::timeout, this, [this, editor] {
-        if (tabs_->currentWidget() == editor) requestCompletion(editor, true);
+        if (activeEditor() == editor) requestCompletion(editor, true);
     });
+    if (!primary) {
+        connect(editor, &EditorWidget::contentChanged, this, [this, editor] {
+            if (gitDiff_ && gitDiff_->nativeEditor() == editor) gitDiff_->documentChanged();
+        });
+        return;
+    }
     editor->setProperty("recoveryId",QUuid::createUuid().toString(QUuid::WithoutBraces));
     connect(editor,&EditorWidget::contentChanged,this,[this,editor] {
         if(documentChangeTimer_) documentChangeTimer_->start();
@@ -2446,10 +2549,6 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
         if (lsp_) lsp_->close(document->filePath());
     });
 
-    const int index = tabs_->addTab(editor, QFileInfo(path).fileName() + I18n::text(" (loading…)"));
-    tabs_->setTabToolTip(index, path);
-    tabs_->setCurrentIndex(index);
-
     connect(editor, &EditorWidget::modifiedChanged, this, [this, editor] {
         const int index = tabs_->indexOf(editor);
         if (index >= 0) {
@@ -2460,18 +2559,17 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
         }
         updateWindowTitle();
     });
-    return editor;
 }
 
 void MainWindow::navigateSymbol(const QString& method) {
-    auto* editor = qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor = activeEditor();
     if (!ensureManualLsp(editor, [this, method] { navigateSymbol(method); })) return;
     const auto path = editor->filePath(); const auto revision = editor->lspRevision();
     const auto position = editor->lspPosition(); QPointer<EditorWidget> guard(editor);
     lsp_->change(path, editor->lspText());
     statusBar()->showMessage(I18n::text("Searching for symbol locations…"), 10000);
     auto callback = [this, guard, path, revision, position, method](QJsonValue result) {
-        if (!guard || tabs_->currentWidget()!=guard || guard->filePath()!=path || guard->lspRevision()!=revision || guard->lspPosition()!=position) return;
+        if (!guard || activeEditor()!=guard || guard->filePath()!=path || guard->lspRevision()!=revision || guard->lspPosition()!=position) return;
         const auto values = result.isArray() ? result.toArray() : QJsonArray{result};
         struct Location { QString path; QPoint position; };
         QVector<Location> locations;
@@ -2527,7 +2625,7 @@ void MainWindow::navigateSymbol(const QString& method) {
 
 void MainWindow::renameSymbol() {
     if (renameInProgress_) return;
-    auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor=activeEditor();
     if (!editor || editor->isBusy() || editor->cursorCount()!=1) return;
     if(!ensureManualLsp(editor,[this]{renameSymbol();})) return;
     if (!lsp_->canRename(editor->filePath())) { statusBar()->showMessage(I18n::text("The language server is not ready or does not support rename."),6000); return; }
@@ -2544,7 +2642,7 @@ void MainWindow::renameSymbol() {
     QPointer<EditorWidget> guard(editor); editor->hideCompletions();
     statusBar()->showMessage(I18n::text("Checking whether the symbol can be renamed…"),10000);
     lsp_->prepareRename(path,position.x(),position.y(),[this,guard,path,revision,position,source,operation](QJsonValue prepared) {
-        if (!guard || tabs_->currentWidget()!=guard || guard->filePath()!=path || guard->lspRevision()!=revision || guard->lspPosition()!=position) return;
+        if (!guard || activeEditor()!=guard || guard->filePath()!=path || guard->lspRevision()!=revision || guard->lspPosition()!=position) return;
         if (!prepared.isObject()) { IconDialogs::MessageBox::information(this,I18n::text("Rename symbol"),I18n::text("The language server cannot rename this symbol.")); return; }
         QString oldName,error; const auto object=prepared.toObject();
         if (object.value("defaultBehavior").toBool()) {
@@ -2656,7 +2754,7 @@ void MainWindow::renameSymbol() {
                 file.editor->applyWorkspaceEdits(std::move(file.changes));
                 if (file.editor->lspEligible() && lsp_->supports(file.editor->filePath())) lsp_->change(file.editor->filePath(),file.editor->lspText());
             }
-            if (guard) { tabs_->setCurrentWidget(guard); guard->setFocus(); }
+            if (guard) activateEditor(guard, true);
             statusBar()->showMessage(QString(I18n::text("Renamed %1 references in %2 files. Changes are not saved yet.")).arg(edits).arg(plan.size()),8000);
         });
     });
@@ -2694,7 +2792,7 @@ void MainWindow::applyVimSettings() {
 }
 void MainWindow::updateVimIndicator() {
     if(!vimStatus_ || !tabs_)return;
-    auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor=activeEditor();
     for(auto* widget=QApplication::focusWidget();widget;widget=widget->parentWidget())
         if(auto* focused=qobject_cast<EditorWidget*>(widget);focused && isAncestorOf(focused)){editor=focused;break;}
     const bool visible=editor && editor->vimEnabled();vimStatus_->setVisible(visible);
@@ -2864,12 +2962,14 @@ QJsonObject MainWindow::sessionState(bool clean) const {
         const auto id=editor->property("recoveryId").toString();
         const bool hasCopy=recovery_ && QFileInfo::exists(recovery_->directory()+"/"+id+".json");
         if(!clean && !backupsEnabled && path.isEmpty() && !hasCopy)continue;
-        const auto position=editor->navigationPosition();
+        const auto* view = activeEditor();
+        if (!view || view->document() != editor->document()) view = editor;
+        const auto position=view->navigationPosition();
         QJsonObject entry{{"id",id},{"path",path},{"line",position.x()},{"column",position.y()},
-            {"vertical",editor->verticalScrollBar()->value()},{"horizontal",editor->horizontalScrollBar()->value()},
+            {"vertical",view->verticalScrollBar()->value()},{"horizontal",view->horizontalScrollBar()->value()},
             {"modified",!clean && editor->isModified() && (backupsEnabled || hasCopy)}};
         documents.append(entry);
-        if(tabs_->currentWidget()==editor)active=id;
+        if(view==activeEditor())active=id;
     }
     return {{"documents",documents},{"roots",QJsonArray::fromStringList(explicitProject_?projectRoots_:QStringList{})},
             {"active",active},{"clean",clean},{"time",QString::number(QDateTime::currentMSecsSinceEpoch())}};
@@ -3007,7 +3107,7 @@ void MainWindow::restorePreviousSession(bool restoreClean) {
             if(!entry["modified"].toBool()) {
                 if(!QFileInfo::exists(path)){recoveryMigrationFailed_=true;continue;}
                 openFile(path,entry["line"].toInt(1),entry["column"].toInt(1));
-                auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+                auto* editor=activeEditor();
                 if(editor){editor->setProperty("recoveryOrigin",candidate.directory);editor->setProperty("recoveryOriginId",id);editor->setProperty("restoreVertical",entry["vertical"].toInt());editor->setProperty("restoreHorizontal",entry["horizontal"].toInt());}
                 if(id==candidate.state["active"].toString() && editor)editor->setProperty("restoreActive",true);
                 continue;
@@ -3034,7 +3134,7 @@ void MainWindow::restorePreviousSession(bool restoreClean) {
                 guard->setNavigationPosition(entry["line"].toInt(1),entry["column"].toInt(1));
                 guard->verticalScrollBar()->setValue(entry["vertical"].toInt());
                 guard->horizontalScrollBar()->setValue(entry["horizontal"].toInt());
-                if(id==candidate.state["active"].toString())tabs_->setCurrentWidget(guard);
+                if(id==candidate.state["active"].toString())activateEditor(guard);
                 recoveryTimer_->start();
             });
             watcher->setFuture(QtConcurrent::run([directory,id] {
@@ -3060,7 +3160,7 @@ void MainWindow::ensureTerminal() {
     connect(terminalPanel_,&QDockWidget::visibilityChanged,this,[this](bool visible){
         if(!visible) {
             if(terminalPreviousFocus_ && terminalPreviousFocus_->isVisible()) terminalPreviousFocus_->setFocus();
-            else if(tabs_->currentWidget()) tabs_->currentWidget()->setFocus();
+            else if(activeEditor()) activeEditor()->setFocus();
         }
     });
     editorArea_->resizeDocks({terminalPanel_},{qMax(180,editorArea_->height()/3)},Qt::Vertical);
@@ -3070,7 +3170,7 @@ void MainWindow::scheduleOutline() {
     if(!outline_ || !outlineTimer_) return;
     ++outlineGeneration_; outlineTimer_->stop();
     if(!outline_->isVisible()) return;
-    auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor=activeEditor();
     const bool changed=outlineEditor_!=editor; outlineEditor_=editor;
     if(!editor) { outline_->showMessage(I18n::text("Open a file to see its outline.")); return; }
     outline_->pending(changed);
@@ -3079,7 +3179,7 @@ void MainWindow::scheduleOutline() {
 
 void MainWindow::refreshOutline() {
     if(!outline_ || !outline_->isVisible() || !lsp_) return;
-    auto* editor=qobject_cast<EditorWidget*>(tabs_->currentWidget());
+    auto* editor=activeEditor();
     if(!editor) { outline_->showMessage(I18n::text("Open a file to see its outline.")); return; }
     if(editor->isBusy()) { outlineTimer_->start(); return; }
     const auto path=editor->filePath();
@@ -3101,7 +3201,7 @@ void MainWindow::refreshOutline() {
     QPointer<EditorWidget> guard(editor); QPointer<MainWindow> owner(this);
     lsp_->documentSymbols(path,[owner,guard,path,generation,revision](QJsonValue result) {
         if(!owner || !owner->tabs_ || !guard || generation!=owner->outlineGeneration_ || guard->lspRevision()!=revision
-            || guard->filePath()!=path || owner->tabs_->currentWidget()!=guard || !owner->outline_->isVisible()) return;
+            || guard->filePath()!=path || owner->activeEditor()!=guard || !owner->outline_->isVisible()) return;
         if(result.isUndefined() || (!result.isNull() && !result.isArray())) {
             owner->outline_->showMessage(I18n::text("Could not load outline.")); return;
         }

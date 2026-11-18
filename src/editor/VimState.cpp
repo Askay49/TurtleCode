@@ -103,5 +103,26 @@ void Session::rename(QObject* owner,const QString& oldKey,const QString& newKey,
     for(auto it=old.cbegin();it!=old.cend();++it)if(it.value()->owner==owner){moved.insert(it.key(),it.value());marks_[oldKey].remove(it.key());}
     auto& destination=marks(newKey);for(auto it=moved.cbegin();it!=moved.cend();++it)destination.insert(it.key(),it.value());
 }
+void Session::discardBufferMarks(QObject* owner, const QString& key, const QString& path) {
+    const auto belongsToBuffer = [&](const Anchor& anchor) {
+        return anchor && (anchor->owner ? anchor->owner == owner : !path.isEmpty() && anchor->path == path);
+    };
+    globalMarks.removeIf([&](auto it) { return belongsToBuffer(it.value()); });
+    if (auto it = marks_.find(key); it != marks_.end()) {
+        it.value().removeIf([&](auto mark) { return belongsToBuffer(mark.value()); });
+        if (it.value().isEmpty()) {
+            marks_.erase(it);
+            markFiles_.removeAll(key);
+        }
+    }
+    for (auto& jumps : jumps_) {
+        if (belongsToBuffer(jumps.previous)) jumps.previous.reset();
+        for (qsizetype i = jumps.entries.size(); i-- > 0;) {
+            if (!belongsToBuffer(jumps.entries[i])) continue;
+            jumps.entries.removeAt(i);
+            if (i < jumps.index) --jumps.index;
+        }
+    }
+}
 std::size_t Session::project(std::size_t p,std::size_t at,std::size_t removed,std::size_t inserted){if(p<at)return p;if(p<at+removed)return at;return p-std::min(removed,p-at)+(p>at || removed?inserted:0);}
 }

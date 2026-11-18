@@ -205,12 +205,13 @@ void EditorWidget::repeatVimChange(int count,bool explicitCount) {
 void EditorWidget::replayVim(QVector<VimState::Input> inputs,int count) {
     if(inputs.isEmpty())return;
     if(vimReplay_.size()>=100){cancelVimReplay();emit highlightingStatusChanged(I18n::text("Vim: macro recursion limit reached"));return;}
-    if(vimReplay_.empty()){history_.beginCompoundGroup();vimReplaySteps_=0;vimReplayCancel_=false;}
+    if(vimReplay_.empty()){if(!vimReplayGroupActive_)history_.beginCompoundGroup();vimReplayGroupActive_=true;vimReplaySteps_=0;vimReplayCancel_=false;}
     vimReplay_.push_back({std::move(inputs),0,count});
     if(!vimReplayScheduled_){vimReplayScheduled_=true;QTimer::singleShot(0,this,&EditorWidget::continueVimReplay);}
 }
 void EditorWidget::continueVimReplay() {
     vimReplayScheduled_=false;
+    if (!vimReplayGroupActive_ && !vimExNormal_) return;
     if(busy_ || (vimExExecuting_ && !vimSubConfirm_ && !vimExNormal_)){vimReplayScheduled_=true;QTimer::singleShot(5,this,&EditorWidget::continueVimReplay);return;}
     const bool cancelled=vimReplayCancel_ || !vim_.enabled() || !vimOwnsFocus();
     if(cancelled){vimReplay_.clear();if(vimExNormal_)finishVimEx(I18n::text("Vim: command cancelled"),true);}
@@ -222,15 +223,26 @@ void EditorWidget::continueVimReplay() {
         vimSendingReplay_=true;applyVimInput(input);vimSendingReplay_=false;
         if(vimReplayCancel_ || !vimOwnsFocus())break;
     }
+    if (!vimReplayGroupActive_ && !vimExNormal_) return;
     if(!vimReplay_.empty()){vimReplayScheduled_=true;QTimer::singleShot(0,this,&EditorWidget::continueVimReplay);return;}
     if(vimExNormal_)finishVimEx(I18n::text("Vim: command cancelled"),true);
-    history_.endCompoundGroup();vimRepeatingDot_=false;vimReplayCancel_=false;if(cancelled)switchVimMode(VimController::Mode::Normal);
+    endVimReplayGroup();vimRepeatingDot_=false;vimReplayCancel_=false;if(cancelled)switchVimMode(VimController::Mode::Normal);
     finishVimChange();vimCommandKeys_.clear();refreshVimPresentation();
 }
-void EditorWidget::cancelVimReplay(){if(vimReplay_.empty() && !vimReplayScheduled_)return;vimReplayCancel_=true;if(!busy_){vimReplay_.clear();history_.endCompoundGroup();vimRepeatingDot_=false;switchVimMode(VimController::Mode::Normal);finishVimChange();}}
+void EditorWidget::endVimReplayGroup() {
+    if (vimReplayGroupActive_) history_.endCompoundGroup();
+    vimReplayGroupActive_ = false;
+}
+void EditorWidget::cancelVimReplay(){if(vimReplay_.empty() && !vimReplayScheduled_)return;vimReplayCancel_=true;if(!busy_){vimReplay_.clear();endVimReplayGroup();vimRepeatingDot_=false;switchVimMode(VimController::Mode::Normal);finishVimChange();}}
 void EditorWidget::transferVimReplay(EditorWidget* target) {
     if(!target || target==this || vimReplay_.empty())return;
-    history_.endCompoundGroup();target->history_.beginCompoundGroup();target->vimReplay_=std::move(vimReplay_);target->vimReplaySteps_=vimReplaySteps_;target->vimRepeatingDot_=vimRepeatingDot_;target->vimReplayCancel_=false;
+    if (document_ != target->document_) {
+        endVimReplayGroup();
+        target->history_.beginCompoundGroup();
+    }
+    vimReplayGroupActive_ = false;
+    target->vimReplayGroupActive_ = true;
+    target->vimReplay_=std::move(vimReplay_);target->vimReplaySteps_=vimReplaySteps_;target->vimRepeatingDot_=vimRepeatingDot_;target->vimReplayCancel_=false;
     vimRepeatingDot_=false;vimReplay_.clear();
     if(!target->vimReplayScheduled_){target->vimReplayScheduled_=true;QTimer::singleShot(0,target,&EditorWidget::continueVimReplay);}
 }
@@ -276,18 +288,30 @@ void EditorWidget::playVimMacro(QChar name,int count) {
     if(value.text->size()>1024*1024){if(!vimReplay_.empty())vimReplayCancel_=true;emit highlightingStatusChanged(I18n::text("Vim: macro is too large"));return;}
     const auto bytes=value.text->read(0,value.text->size());replayVim(textKeys(QString::fromUtf8(bytes.data(),qsizetype(bytes.size()))),count);
 }
-QString EditorWidget::vimMarkKey() const{return filePath_.isEmpty()?QStringLiteral("buffer:%1").arg(quintptr(this)):filePath_;}
-VimState::Anchor EditorWidget::vimLocation(){return VimState::Session::instance().anchor(this,filePath_,cursorPosition_,navigationPosition());}
-void EditorWidget::attachVimAnchors(){buffer_.editObserver=[this](std::size_t at,std::size_t removed,std::size_t inserted){projectVimAnchors(at,removed,inserted);};buffer_.lineEditObserver=[this](std::size_t row,std::size_t column,std::size_t removed,std::size_t inserted){projectVimExLines(row,column,removed,inserted);adjustScreenWraps(row,removed,inserted);};VimState::Session::instance().attach(this,filePath_);}
-void EditorWidget::projectVimAnchors(std::size_t at,std::size_t removed,std::size_t inserted){for(auto& p:VimState::Session::instance().anchors(this)){
-    if(removed && p->offset>=at && p->offset<=at+removed && !p->lostPositions.contains(history_.stateId())){p->lostPositions.insert(history_.stateId(),p->offset);if(p->lostPositions.size()>256)p->lostPositions.erase(p->lostPositions.begin());}
-    p->offset=VimState::Session::project(p->offset,at,removed,inserted);
-}}
-void EditorWidget::persistVimAnchors(){VimState::Session::instance().marks(vimMarkKey())['"']=vimLocation();for(auto& p:VimState::Session::instance().anchors(this)){const auto at=std::min(p->offset,buffer_.size()),row=buffer_.lineIndexAt(at),start=buffer_.lineStart(row);p->path=filePath_;p->position=QPoint(int(row+1),int(buffer_.utf16Before(at)-buffer_.utf16Before(start)+1));}}
+QString EditorWidget::vimMarkKey() const{return filePath_.isEmpty()?QStringLiteral("buffer:%1").arg(quintptr(document_.get())):filePath_;}
+void EditorWidget::discardVimBufferMarks() {
+    document_->keepVimMarks = false;
+    VimState::Session::instance().discardBufferMarks(document_.get(), vimMarkKey(), filePath_);
+}
+VimState::Anchor EditorWidget::vimLocation(){return VimState::Session::instance().anchor(document_.get(),filePath_,cursorPosition_,navigationPosition());}
+void EditorWidget::attachVimAnchors() {
+    VimState::Session::instance().attach(document_.get(), filePath_);
+}
+void EditorWidget::projectVimAnchors(Document& document, std::size_t at, std::size_t removed, std::size_t inserted) {
+    const auto state = document.history().stateId();
+    for (auto& anchor : VimState::Session::instance().anchors(&document)) {
+        if (removed && anchor->offset >= at && anchor->offset <= at + removed && !anchor->lostPositions.contains(state)) {
+            anchor->lostPositions.insert(state, anchor->offset);
+            if (anchor->lostPositions.size() > 256) anchor->lostPositions.erase(anchor->lostPositions.begin());
+        }
+        anchor->offset = VimState::Session::project(anchor->offset, at, removed, inserted);
+    }
+}
+void EditorWidget::persistVimAnchors(){VimState::Session::instance().marks(vimMarkKey())['"']=vimLocation();for(auto& p:VimState::Session::instance().anchors(document_.get())){const auto at=std::min(p->offset,buffer_.size()),row=buffer_.lineIndexAt(at),start=buffer_.lineStart(row);p->path=filePath_;p->position=QPoint(int(row+1),int(buffer_.utf16Before(at)-buffer_.utf16Before(start)+1));}}
 void EditorWidget::saveVimMark(QChar name){if(!name.isLetter() || name.unicode()>127)return;auto& shared=VimState::Session::instance();if(name.isUpper())shared.globalMarks[name]=vimLocation();else shared.marks(vimMarkKey())[name]=vimLocation();}
 void EditorWidget::pushVimJump(){if(!vim_.enabled())return;if(vimExScope_ && vimExScope_->keepJumps)return;for(const auto& frame:vimExFrames_)if(frame.kind==ExFrame::Global || (frame.scope && frame.scope->keepJumps))return;auto& jumps=VimState::Session::instance().jumps(window());auto here=vimLocation();jumps.previous=here;
     while(jumps.entries.size()>jumps.index)jumps.entries.removeLast();
-    if(jumps.entries.isEmpty() || jumps.entries.back()->owner!=this || jumps.entries.back()->offset!=cursorPosition_)jumps.entries.append(here);
+    if(jumps.entries.isEmpty() || jumps.entries.back()->owner!=document_.get() || jumps.entries.back()->offset!=cursorPosition_)jumps.entries.append(here);
     if(jumps.entries.size()>500)jumps.entries.removeFirst();
     jumps.index=jumps.entries.size();
 }
@@ -295,7 +319,7 @@ void EditorWidget::jumpVimMark(QChar name,bool linewise,VimController::Command o
     if(QStringLiteral("(){}").contains(name)){
         VimController::Action action;action.command=name=='('?VimController::Command::SentenceBack:name==')'?VimController::Command::SentenceNext:name=='{'?VimController::Command::ParagraphBack:VimController::Command::ParagraphNext;
         const auto current=cursorPosition_;const auto finalNewline=vimFinalNewline_;auto offset=std::make_shared<std::size_t>(current);
-        runBulkOperation(QStringLiteral("Vim…"),[offset,action,current,finalNewline](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step){*offset=VimMotions::resolve(buffer,current,action,[&]{step(50);},finalNewline).target;return HistoryResult{current,{current}};},false,{},[this,offset,linewise,operation,keepJumps](bool ok){if(ok)applyVimMark(VimState::Session::instance().anchor(this,filePath_,std::min(*offset,buffer_.size()),QPoint(1,1)),linewise,operation,keepJumps);});return;
+        runBulkOperation(QStringLiteral("Vim…"),[offset,action,current,finalNewline](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step){*offset=VimMotions::resolve(buffer,current,action,[&]{step(50);},finalNewline).target;return HistoryResult{current,{current}};},false,{},[this,offset,linewise,operation,keepJumps](bool ok){if(ok)applyVimMark(VimState::Session::instance().anchor(document_.get(),filePath_,std::min(*offset,buffer_.size()),QPoint(1,1)),linewise,operation,keepJumps);});return;
     }
     auto& shared=VimState::Session::instance();const auto target=name=='\'' || name=='`'?shared.jumps(window()).previous:name.isUpper()?shared.globalMarks.value(name):shared.marks(vimMarkKey()).value(name);
     applyVimMark(target,linewise,operation,keepJumps);
@@ -303,14 +327,14 @@ void EditorWidget::jumpVimMark(QChar name,bool linewise,VimController::Command o
 void EditorWidget::applyVimMark(const VimState::Anchor& target,bool linewise,VimController::Command operation,bool keepJumps){
     if(!target){if(!vimReplay_.empty())vimReplayCancel_=true;emit highlightingStatusChanged(I18n::text("Vim: mark is not set"));return;}
     if(operation!=VimController::Command::Consume) {
-        if(target->owner!=this){if(!vimReplay_.empty())vimReplayCancel_=true;emit highlightingStatusChanged(I18n::text("Vim: operator mark must be in this buffer"));return;}
+        if(target->owner!=document_.get()){if(!vimReplay_.empty())vimReplayCancel_=true;emit highlightingStatusChanged(I18n::text("Vim: operator mark must be in this buffer"));return;}
         auto begin=std::min(cursorPosition_,target->offset),end=std::min(buffer_.size(),std::max(cursorPosition_,target->offset));
         if(linewise){const auto first=buffer_.lineIndexAt(begin),last=buffer_.lineIndexAt(end);begin=vimLineStart(first);end=last+1<buffer_.lineCount()?buffer_.lineStart(last+1):buffer_.size();}
         if(operation==VimController::Command::Indent || operation==VimController::Command::Unindent)indentVim(buffer_.lineIndexAt(begin),buffer_.lineIndexAt(end>begin?end-1:begin),operation==VimController::Command::Unindent);
         else {vimForceNumbered_=true;editVimRange(begin,end,operation,linewise);}
         return;
     }
-    if(!keepJumps || target->owner!=this)pushVimJump();
+    if(!keepJumps || target->owner!=document_.get())pushVimJump();
     restoreVimLocation(target,linewise);
 }
 void EditorWidget::jumpVimHistory(int direction,int count){auto& jumps=VimState::Session::instance().jumps(window());if(jumps.entries.isEmpty())return;
@@ -320,12 +344,19 @@ void EditorWidget::jumpVimHistory(int direction,int count){auto& jumps=VimState:
 void EditorWidget::restoreVimLocation(const VimState::Anchor& location,bool linewise) {
     if(!location)return;
     switchVimMode(VimController::Mode::Normal);
-    if(auto* editor=qobject_cast<EditorWidget*>(location->owner.data())) {
-        const auto at=std::min(location->offset,editor->buffer_.size());auto row=editor->buffer_.lineIndexAt(at);
-        if(editor==this){moveCursor(linewise?VimMotions::firstText(buffer_,row):at,false);return;}
-        const auto start=editor->buffer_.lineStart(row);const int column=linewise?1:int(editor->buffer_.utf16Before(at)-editor->buffer_.utf16Before(start)+1);
-        if(!editor->filePath_.isEmpty()){emit vimNavigateRequested(editor->filePath_,int(row+1),column);return;}
-        for(auto* parent=editor->parentWidget();parent;parent=parent->parentWidget())if(auto* tabs=qobject_cast<QTabWidget*>(parent)){tabs->setCurrentWidget(editor);editor->resetVimMode();editor->moveCursor(linewise?VimMotions::firstText(editor->buffer_,row):at,false);editor->window()->activateWindow();editor->setFocus();transferVimReplay(editor);return;}
+    if (auto* document = qobject_cast<Document*>(location->owner.data())) {
+        const auto& buffer = document->buffer();
+        const auto at = std::min(location->offset, buffer.size());
+        const auto row = buffer.lineIndexAt(at);
+        if (document == document_.get()) {
+            moveCursor(linewise ? VimMotions::firstText(buffer_, row) : at, false);
+            return;
+        }
+        const auto start = buffer.lineStart(row);
+        const auto column = linewise ? 1 : int(buffer.utf16Before(at) - buffer.utf16Before(start) + 1);
+        if (!document->filePath().isEmpty()) emit vimNavigateRequested(document->filePath(), int(row + 1), column);
+        else emit vimBufferNavigateRequested(document, int(row + 1), column);
+        return;
     }
     if(!location->path.isEmpty() && QFileInfo::exists(location->path))emit vimNavigateRequested(location->path,location->position.x(),linewise?1:location->position.y());
     else {if(!vimReplay_.empty())vimReplayCancel_=true;emit highlightingStatusChanged(I18n::text("Vim: marked file no longer exists"));}

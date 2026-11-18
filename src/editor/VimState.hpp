@@ -64,6 +64,7 @@ public:
     QVector<Anchor> anchors(QObject* owner);
     void attach(QObject* owner,const QString& path);
     void rename(QObject* owner,const QString& oldKey,const QString& newKey,const QString& path);
+    void discardBufferMarks(QObject* owner, const QString& key, const QString& path);
     static std::size_t project(std::size_t position,std::size_t at,std::size_t removed,std::size_t inserted);
 private:
     QHash<QChar,Register> registers_;

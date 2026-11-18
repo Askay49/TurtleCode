@@ -38,9 +38,9 @@ void EditorWidget::editVimExLines(const VimEx::Invocation& command,bool normal){
     QVector<std::pair<VimState::Anchor,QPoint>> movedAnchors;
     if(name=="move" || name=="join"){
         for(auto& frame:vimExFrames_)if(frame.marks){trackers.push_back(frame.marks);moved.push_back(*frame.marks);if(name=="move")moved.back().move(qint64(first),qint64(last),qint64(destination));else moved.back().edit(qint64(first+1),0,qint64(last-first),0);}
-        if(name=="move")for(const auto& anchor:VimState::Session::instance().anchors(this)){const auto row=buffer_.lineIndexAt(anchor->offset);if(row>=first && row<=last)movedAnchors.append({anchor,QPoint(int(row-first),int(buffer_.utf16Before(anchor->offset)-buffer_.utf16Before(buffer_.lineStart(row))))});}
+        if(name=="move")for(const auto& anchor:VimState::Session::instance().anchors(document_.get())){const auto row=buffer_.lineIndexAt(anchor->offset);if(row>=first && row<=last)movedAnchors.append({anchor,QPoint(int(row-first),int(buffer_.utf16Before(anchor->offset)-buffer_.utf16Before(buffer_.lineStart(row))))});}
     }
-    const auto joinAnchors=VimState::Session::instance().anchors(this);std::vector<std::size_t> joinPositions;for(const auto& anchor:joinAnchors)joinPositions.push_back(anchor->offset);auto joinedPositions=std::make_shared<std::vector<std::size_t>>();
+    const auto joinAnchors=VimState::Session::instance().anchors(document_.get());std::vector<std::size_t> joinPositions;for(const auto& anchor:joinAnchors)joinPositions.push_back(anchor->offset);auto joinedPositions=std::make_shared<std::vector<std::size_t>>();
     auto insertedRow=std::make_shared<std::size_t>(0);
     runBulkOperation(I18n::text("Editing lines…"),[command,name,first,last,destination,original,finalNewline,eol,insertedRow,previousPattern,ignoreCase,normal,joinSpaces,joinPositions,joinedPositions](PieceTreeBuffer& buffer,EditHistory& history,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
         const auto begin=VimMotions::lineStart(buffer,first),end=last+1<buffer.lineCount()?buffer.lineStart(last+1):buffer.size();

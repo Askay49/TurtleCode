@@ -19,7 +19,7 @@ void EditorWidget::vimExMessage(const QString& message){
 }
 void EditorWidget::projectVimExLines(std::size_t row,std::size_t column,std::size_t removed,std::size_t inserted){for(auto& frame:vimExFrames_)if(frame.marks)frame.marks->edit(qint64(row),qint64(column),qint64(removed),qint64(inserted));}
 void EditorWidget::cancelVimExFrames(){for(auto it=vimExFrames_.rbegin();it!=vimExFrames_.rend();++it)restoreVimExScope(it->scope);vimExFrames_.clear();}
-void EditorWidget::renameVimAnchors(const QString& path){const auto key=path.isEmpty()?QStringLiteral("buffer:%1").arg(quintptr(this)):path;VimState::Session::instance().rename(this,vimMarkKey(),key,path);}
+void EditorWidget::renameVimAnchors(const QString& path){const auto key=path.isEmpty()?QStringLiteral("buffer:%1").arg(quintptr(document_.get())):path;VimState::Session::instance().rename(document_.get(),vimMarkKey(),key,path);}
 bool EditorWidget::nextVimExFrame(){
     while(!vimExFrames_.empty()){
         auto& frame=vimExFrames_.back();
@@ -104,11 +104,16 @@ void EditorWidget::executeVimExRegister(const VimEx::Invocation& command){
 void EditorWidget::transferVimEx(EditorWidget* target){
     if(!target || target==this || !vimExExecuting_)return;
     if(!target->vimExBar_){target->showVimCommandLine();target->closeVimCommandLine();}
-    transferVimReplay(target);history_.endCompoundGroup();
+    const bool sameDocument = document_ == target->document_;
+    transferVimReplay(target);
+    if (!sameDocument) {
+        history_.endCompoundGroup();
+        target->history_.beginCompoundGroup();
+    }
     target->vimExRemaining_=std::move(vimExRemaining_);target->vimExScope_=std::move(vimExScope_);target->vimExSteps_=vimExSteps_;
-    target->vimExExecuting_=true;++target->vimExGeneration_;target->history_.beginCompoundGroup();
+    target->vimExExecuting_=true;++target->vimExGeneration_;
     // Line selections belong to this document; register programs can continue in another.
-    for(auto& frame:vimExFrames_)if(frame.kind!=ExFrame::Register)frame.marks=std::make_shared<VimEx::LineMarks>();
+    if (!sameDocument) for(auto& frame:vimExFrames_)if(frame.marks)frame.marks=std::make_shared<VimEx::LineMarks>();
     target->vimExFrames_=std::move(vimExFrames_);target->vimExNormal_=vimExNormal_;vimExNormal_=false;
     vimExExecuting_=false;++vimExGeneration_;target->scheduleVimEx();emit vimModeChanged();
 }

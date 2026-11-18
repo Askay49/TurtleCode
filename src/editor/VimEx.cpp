@@ -60,11 +60,13 @@ struct Reader {
 Registry::Registry(){
     // Order follows Vim's preferred abbreviations (not ambiguous-prefix errors).
     add({"close",3,false,true});
+    add({"only",2,false,true});
     add({"copy",2,true,false,false,Arguments::Address});
     add({"t",1,true,false,false,Arguments::Address});
     add({"delete",1,true,false,false,Arguments::RegisterCount});
     add({"edit",1,false,true,false,Arguments::File});
     add({"enew",3,false,true});
+    add({"hide",3});
     add({"file",1,false,true,false,Arguments::File});
     add({"fold",2,true});
     add({"global",1,true,true,false,Arguments::Global,DefaultRange::Whole,false,false});
@@ -90,12 +92,35 @@ Registry::Registry(){
     add({"registers",3,false,false,false,Arguments::Raw});
     add({"display",2,false,false,false,Arguments::Raw});
     add({"sort",3,true,true,false,Arguments::Raw,DefaultRange::Whole});
+    add({"split",2,false,false,false,Arguments::File});
+    add({"vsplit",2,false,false,false,Arguments::File});
+    add({"new",3,false,false,false,Arguments::File});
+    add({"vnew",3,false,false,false,Arguments::File});
+    add({"wincmd",4,false,false,false,Arguments::Raw});
+    add({"tabnext",4,false,false,false,Arguments::Raw});
+    add({"tabprevious",4,false,false,false,Arguments::Raw});
+    add({"tabNext",4,false,false,false,Arguments::Raw});
+    add({"tabfirst",4});
+    add({"tabrewind",4});
+    add({"tablast",4});
+    add({"tabnew",4,false,false,false,Arguments::File});
+    add({"tabedit",4,false,false,false,Arguments::File});
+    add({"tabclose",4,false,true,false,Arguments::Raw});
+    add({"tabonly",4,false,true});
+    add({"tabmove",4,false,false,false,Arguments::Raw});
+    add({"tabs",4});
+    add({"diffsplit",5,false,false,false,Arguments::File});
+    add({"diffthis",5});
+    add({"diffoff",5,false,true});
+    add({"diffupdate",5,false,true});
+    add({"diffget",5,true,false,false,Arguments::Raw});
+    add({"diffput",5,true,false,false,Arguments::Raw});
     add({"saveas",3,false,true,false,Arguments::File});
     add({"buffer",1,false,true,false,Arguments::Raw});
     add({"bnext",2,false,true});add({"bprevious",2,false,true});add({"bNext",2,false,true});
     add({"bfirst",2,false,true});add({"blast",2,false,true});
     add({"bdelete",2,false,true,false,Arguments::Raw});add({"bwipeout",2,false,true,false,Arguments::Raw});
-    add({"buffers",7});add({"ls",2});add({"files",5});
+    add({"buffers",7,false,true});add({"ls",2,false,true});add({"files",5,false,true});
     add({"@",1,true,false,false,Arguments::Register});
     add({"&",1,true,false,false,Arguments::Substitute});
     add({"~",1,true,false,false,Arguments::Substitute});
@@ -126,6 +151,7 @@ Parsed Registry::parse(const QString& line,const Context& context) const {
         if(word=="silent" || word=="sil"){result.command.silent=true;if(reader.peek()=='!'){result.command.ignoreErrors=true;++reader.at;}}
         else if(word=="keepjumps")result.command.keepJumps=true;
         else if(word=="keeppatterns")result.command.keepPatterns=true;
+        else if(word=="vertical" || word=="vert")result.command.vertical=true;
         else {reader.at=begin;break;}
         reader.spaces();
         while(reader.peek()==':'){++reader.at;reader.spaces();}
@@ -185,7 +211,9 @@ Parsed Registry::parse(const QString& line,const Context& context) const {
                 if(sortPattern){argument+=ch;if(ch==sortDelimiter)sortPattern=false;continue;}
                 if(!sortSeen && !ch.isLetter() && !ch.isSpace() && ch!='|' && ch!='"'){sortDelimiter=ch;sortPattern=sortSeen=true;argument+=ch;continue;}
             }
-            if(ch=='|' && definition->bars){result.rest=line.mid(reader.at);break;}
+            if(ch=='|' && definition->bars && !(definition->name=="wincmd" && argument.isEmpty())){
+                result.rest=line.mid(reader.at);break;
+            }
             if(ch=='"' && definition->comments)break;
             argument+=ch;
         }
@@ -210,7 +238,7 @@ Parsed Registry::parse(const QString& line,const Context& context) const {
     }
     invocation.first=first;invocation.last=last;
     if(first>last)result.error="E493: Backwards range given";
-    else if(first<0 || last>context.last)result.error="E16: Invalid range";
+    else if(first<0 || last>context.last+(invocation.definition.name=="diffget"))result.error="E16: Invalid range";
     if(!invocation.definition.zero){invocation.first=std::max<qint64>(1,first);invocation.last=std::max<qint64>(1,last);}
     if(invocation.count){invocation.first=invocation.last;invocation.last=std::min(context.last,invocation.last+invocation.count-1);}
     return result;

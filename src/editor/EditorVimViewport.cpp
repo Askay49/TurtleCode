@@ -28,8 +28,8 @@ void EditorWidget::createVimFold(int first, int last) {
     });
     if (existing != vimFolds_.end()) existing->closed = true;
     else vimFolds_.push_back({
-        session.anchor(this,filePath_,buffer_.lineStart(first),QPoint(first+1,1)),
-        session.anchor(this,filePath_,lineContentEnd(last),QPoint(last+1,1)), true
+        session.anchor(document_.get(),filePath_,buffer_.lineStart(first),QPoint(first+1,1)),
+        session.anchor(document_.get(),filePath_,lineContentEnd(last),QPoint(last+1,1)), true
     });
     vimFoldEnabled_ = true;
     refreshScreenLayout(top);

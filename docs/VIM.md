@@ -1,4 +1,4 @@
-# Vim mode — stages 1–9
+# Vim mode — stages 1–10
 
 Enable **Settings → Vim mode / Настройки → Режим Vim**, or search for `Vim`
 in the command palette (**Ctrl+Shift+P**, command ID `settings.vimMode`).
@@ -450,13 +450,14 @@ Unsupported forms report an error. Stage 6 extends the same interpreter as follo
 | `:[address]@a`, `:@@` | Execute register text as Ex command lines; repeat the last Ex register |
 | `:[address]read [file]`, `:r` | Read a file after the address; `:0r` inserts before line 1 |
 | `:edit[!] [file]`, `:e` | Open/select a file; no argument reloads the current document, requiring `!` for unsaved changes |
-| `:enew` | Open an empty untitled tab |
+| `:enew` | Select a new untitled buffer in the current pane |
 | `:file {file}` | Rename the buffer without writing it |
 | `:saveas[!] {file}` | Write the complete document and assign its new path |
-| `:buffers`, `:ls`, `:files` | List open buffers with stable session numbers, current/alternate and modified flags |
-| `:buffer [number/name/#]`, `:b` | Select an open buffer; ambiguous names fail |
-| `:bnext`, `:bprevious`, `:bNext`, `:bfirst`, `:blast` | Navigate open tabs |
-| `:bdelete[!] [buffer]`, `:bwipeout[!] [buffer]` | Close a buffer tab; unsaved changes require `!` |
+| `:buffers[!]`, `:ls[!]`, `:files[!]` | List buffers with session numbers and current, alternate, displayed, hidden and modified flags. Add `!` to include unlisted buffers |
+| `:buffer [number/name/#]`, `:b` | Select a buffer in the current pane, reopening an unlisted buffer if needed |
+| `:bnext`, `:bprevious`, `:bNext`, `:bfirst`, `:blast` | Navigate listed buffers |
+| `:bdelete[!] [buffer]` | Unload the buffer, close its views and unlist it. Its number can still be used to reopen it |
+| `:bwipeout[!] [buffer]` | Remove the buffer number and its marks as well as unloading it |
 
 Sort compares UTF-8 bytes; `i` ignores ASCII case, matching Neovim's default
 (non-locale) sort behavior.
@@ -480,12 +481,12 @@ existing replay queue and wait for background work. Recording another macro
 inside `:normal` is disabled, as in Vim. There are no user mappings yet, so
 `:normal` and `:normal!` currently use the same input.
 
-Turtle Code maps buffers to tabs: opening another document keeps the previous
-tab, and both `bdelete` and `bwipeout` close it. There is no hidden/unlisted buffer
-pool. Buffer changes carry the remaining Ex chain, register program and macro
-into the selected tab, waiting for file loading. Line selections stay with their
-original document. Undo groups belong to each edited document. File names and
-buffer numbers are local to the current window.
+Unsaved modifications require `!` for `:bdelete` and `:bwipeout`. A hidden
+buffer keeps its edits and Undo history. Buffer changes carry the remaining Ex
+chain, register program and macro into the selected editor, waiting for file
+loading. Line selections stay with their original document. Undo groups belong
+to each edited document. Buffer numbers belong to the current Turtle Code
+window.
 
 Global and ranged Normal execution select at most 100,000 lines, nested programs
 are limited to 100 levels, and an invocation permits at most 100,000 Ex commands.
@@ -497,6 +498,35 @@ use copy-on-write snapshots and logarithmic row shifts. These bounds report an
 error rather than silently processing a partial selection. Behavior is based on
 the [Vim Ex command reference](https://vimhelp.org/change.txt.html) and
 [global/normal reference](https://vimhelp.org/repeat.txt.html).
+
+## Editor panes, Vim tab pages and diff
+
+**Split Editor Below**, **Split Editor Right** and **Close Editor Pane** are
+available in the View menu and command palette with or without Vim mode.
+When two panes show the same buffer, they share text, dirty state and Undo.
+Each pane has its own cursor and scroll position. Drag a divider to resize the
+panes. Closing a pane leaves its buffer available.
+
+| Command | Behavior |
+| --- | --- |
+| `:split [file]`, `:vsplit [file]`, `Ctrl+W s/v` | Split below or right, optionally opening a different file |
+| `:new [file]`, `:vnew [file]`, `Ctrl+W n` | Open a file or new untitled buffer in a split |
+| `Ctrl+W h/j/k/l`, arrows, `w/W`, `t/b`, `p` | Focus by direction, cycle, select the first or last pane, or return to the previous pane |
+| `:hide`, `:close`, `Ctrl+W c/q` | Close the pane. `:hide` keeps unsaved edits in the buffer and requires another pane or tab page |
+| `:only`, `Ctrl+W o` | Keep the current pane on this page |
+| `Ctrl+W +/−/</>`, `_/\|`, `=` | Resize by lines or columns, maximize or set a dimension, or equalize |
+| `Ctrl+W r/R`, `x`, `H/J/K/L`, `T` | Rotate or exchange panes, move a pane to an edge, or move it to a new tab page |
+| `:wincmd {key}` | Run a supported `Ctrl+W` action from Ex |
+| `:tabnew [file]`, `:tabedit [file]` | Open a tab page with its own arrangement of panes |
+| `gt`, `gT`, `:tabnext`, `:tabprevious`, `:tabfirst`, `:tablast` | Navigate tab pages. `{count}gt` selects a page by number. Pages can also be selected in the tab bar |
+| `:tabs`, `:tabmove [position]`, `:tabclose [page]`, `:tabonly` | List, reorder or close tab pages |
+| `:diffsplit {file}`, `:vertical diffsplit {file}`, `:diffthis` | Compare two buffers in a tab page with aligned lines and synchronized vertical scrolling |
+| `[c`, `]c` | Move to the previous or next change |
+| `do`, `dp`, `:[range]diffget [buffer]`, `:[range]diffput [buffer]` | Pull changes into the current buffer or send them to the compared buffer. Edits can be undone in the destination buffer |
+| `:diffupdate`, `:diffoff[!]` | Recompute the comparison or turn diff off for the current pane. `!` turns it off for both panes on the page |
+
+Vim diff compares two buffers at a time, up to 8 MiB and 30,000 lines per
+buffer. Pane layouts and Vim tab pages are local to the current session.
 
 ## Vim search and substitution
 
@@ -617,7 +647,7 @@ Build `turtle-code`, `turtle-code-editor-tests` and `turtle-code-window-tests`,
 then run:
 
 ```sh
-ctest --test-dir build -R '^vim-(editor|viewport|insert|insert-window|normal|session|ex|ex-extended|search|search-core|window)$' --output-on-failure
+ctest --test-dir build -R '^vim-(editor|viewport|insert|insert-window|normal|session|ex|ex-extended|search|search-core|window|workspace)$' --output-on-failure
 ```
 
 Tests cover mode transitions, inclusive selections, Unicode/CRLF, input methods,

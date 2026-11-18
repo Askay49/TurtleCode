@@ -23,6 +23,9 @@ VimController::Command VimController::command(const QKeyEvent& event) const {
         if(event.key()==Qt::Key_Insert && modifiers==Qt::NoModifier)return mode_==Mode::Replace?Command::Insert:Command::ReplaceMode;
         return Command::Pass;
     }
+    if (modifiers == Qt::ControlModifier &&
+        (event.key() == Qt::Key_W || (waiting_ == Command::Workspace && event.key() >= Qt::Key_A && event.key() <= Qt::Key_Z)))
+        return Command::Workspace;
     if(event.key()==Qt::Key_V && modifiers==Qt::ControlModifier)return Command::VisualBlock;
     if(event.key()==Qt::Key_O && modifiers==Qt::ControlModifier)return Command::JumpBack;
     if((event.key()==Qt::Key_I && modifiers==Qt::ControlModifier) || (event.key()==Qt::Key_Tab && modifiers==Qt::NoModifier))return Command::JumpForward;
@@ -90,6 +93,37 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
         Action action{cmd,operation_,std::min(10000,std::max(1,count_)*operatorCount_),explicitCount_,around_,arg};
         action.registerName=selectedRegister_;action.text=event.text();resetPending();return action;
     };
+    const auto workspace = [&](const QString& command) {
+        auto action = finish(C::Workspace);
+        action.text = command;
+        return action;
+    };
+    if (waiting_ == C::Workspace) {
+        if (character.isDigit()) {
+            count_ = std::min(10000, count_ * 10 + character.digitValue());
+            explicitCount_ = true;
+            return {C::Pending};
+        }
+        QChar windowKey = character;
+        if (event.modifiers() == Qt::ControlModifier && event.key() >= Qt::Key_A && event.key() <= Qt::Key_Z)
+            windowKey = QChar(event.key()).toLower();
+        switch (event.key()) {
+        case Qt::Key_Left: windowKey = 'h'; break;
+        case Qt::Key_Right: windowKey = 'l'; break;
+        case Qt::Key_Up: windowKey = 'k'; break;
+        case Qt::Key_Down: windowKey = 'j'; break;
+        default: break;
+        }
+        return workspace(QStringLiteral("^W") + windowKey);
+    }
+    if (key == C::Workspace) {
+        if (operation_ != C::Consume || prefixG_ || !bracketPrefix_.isNull() || waiting_ != C::Consume) return finish(C::Consume);
+        operatorCount_ = std::max(1, count_);
+        count_ = 0;
+        waiting_ = C::Workspace;
+        pending_ += QStringLiteral("^W");
+        return {C::Pending};
+    }
     if(key==C::Scroll)return finish(C::Scroll,QChar(event.key()));
     if(waiting_==C::ZCommand) {
         if(character=='f' && operation_==C::Consume && mode_!=Mode::Visual) {
@@ -125,6 +159,7 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
     };
     if(!bracketPrefix_.isNull()){
         const bool forward=bracketPrefix_==']';
+        if (character == 'c' && operation_ == C::Consume) return workspace(forward ? QStringLiteral("]c") : QStringLiteral("[c"));
         if(character=='z')return finish(C::FoldJump,bracketPrefix_);
         if(character=='[' || character==']')return finish(forward?C::SectionNext:C::SectionBack,character);
         if((forward && (character==')' || character=='}')) || (!forward && (character=='(' || character=='{')))return finish(forward?C::UnclosedNext:C::UnclosedBack,character);
@@ -132,6 +167,7 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
     }
     if(prefixG_){
         prefixG_=false;
+        if ((character == 't' || character == 'T') && operation_ == C::Consume) return workspace(QStringLiteral("g") + character);
         switch(character.unicode()) {
         case 'j': return finish(C::ScreenDown);
         case 'k': return finish(C::ScreenUp);
@@ -149,6 +185,8 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
         if(character=='J'){auto action=finish(C::Join);action.around=true;return action;}
         auto action=finish(character=='g'?C::FirstLine:character=='e'?C::WordEndBack:character=='E'?C::BigWordEndBack:character==';'?C::ChangeBack:character==','?C::ChangeForward:character=='_'?C::LastText:character=='*'?C::SearchWord:character=='#'?C::SearchWordBack:character=='&'?C::RepeatSubstitute:C::Consume);action.around=true;return action;
     }
+    if (mode_ == Mode::Normal && operation_ == C::Delete && (character == 'o' || character == 'p'))
+        return workspace(QStringLiteral("d") + character);
     const auto op=[&](QChar c) {
         switch(c.unicode()){case 'd':return C::Delete;case 'c':return C::Change;case 'y':return C::Yank;case '>':return C::Indent;case '<':return C::Unindent;case '=':return C::AutoIndent;default:return C::Consume;}
     }(character);

@@ -1,5 +1,6 @@
 #include "MainWindow.hpp"
 #include "editor/EditorTabs.hpp"
+#include "editor/EditorPaneWorkspace.hpp"
 #include "editor/EditorWidget.hpp"
 #include "document/FileState.hpp"
 #include "git/GitPanel.hpp"
@@ -18,51 +19,126 @@
 
 void MainWindow::executeVimEx(EditorWidget* editor,const VimEx::Invocation& command,std::function<void(QString)> completed){
     if(!editor || editor->isBusy() || closing_){completed(I18n::text("Vim: the document is busy"));return;}
-    const auto name=command.definition.name;
-    const auto alternate=vimAlternateEditor_?vimAlternateEditor_->filePath():QString{};
-    const auto activate=[this,editor,completed](EditorWidget* target){
-        if(!target){completed("E86: Buffer does not exist");return;}
-        if(target!=editor && (target->vimCommandExecuting() || (target->isBusy() && !target->property("openingPath").isValid()))){completed(I18n::text("Vim: the document is busy"));return;}
-        tabs_->setCurrentWidget(target);target->resetVimMode();target->setFocus();editor->transferVimEx(target);completed({});
+    if (executeVimWorkspaceEx(editor, command, completed)) return;
+    const auto name = command.definition.name;
+    auto* primary = documentEditor(editor);
+    auto* alternateEditor = alternateBuffer(editor);
+    const auto alternate = alternateEditor ? alternateEditor->filePath() : QString{};
+    const auto activate = [this, editor, completed](EditorWidget* target) {
+        if (!target) { completed(QStringLiteral("E86: Buffer does not exist")); return; }
+        const auto* primary = documentEditor(target);
+        if (target != editor && (target->vimCommandExecuting() ||
+            (target->isBusy() && primary && !primary->property("openingPath").isValid()))) {
+            completed(I18n::text("Vim: the document is busy")); return;
+        }
+        target = activateEditor(target, true);
+        if (!target) { completed(QStringLiteral("E86: Buffer does not exist")); return; }
+        target->resetVimMode();
+        editor->transferVimEx(target);
+        completed({});
     };
-    const auto untitled=[this]{auto* fresh=createEditor({});fresh->loadBuffer(PieceTreeBuffer(),{});fresh->setProperty("openingPath",QVariant{});fresh->setBusy(false);tabs_->setTabText(tabs_->indexOf(fresh),I18n::text("Untitled"));return fresh;};
-    if(name=="buffers" || name=="ls" || name=="files"){
-        QString output;for(int i=0;i<tabs_->count();++i)if(auto* open=qobject_cast<EditorWidget*>(tabs_->widget(i))){output+=QStringLiteral("%1 %2%3 %4\n").arg(open->property("vimBufferId").toULongLong()).arg(open==editor?"%":open==vimAlternateEditor_?"#":" ").arg(open->isModified()?"+":" ").arg(open->filePath().isEmpty()?I18n::text("Untitled"):open->filePath());if(output.size()>4096)break;}editor->reportVimExMessage(output.left(4096));completed({});return;
+    if (name == "buffers" || name == "ls" || name == "files") {
+        QString output;
+        for (int i = 0; i < tabs_->count(); ++i) if (auto* open = qobject_cast<EditorWidget*>(tabs_->widget(i))) {
+            bool displayed = open == primary;
+            for (auto* pane : paneWorkspace_->panes(true))
+                if (pane->editor() && pane->editor()->document() == open->document()) { displayed = true; break; }
+            output += QStringLiteral("%1 %2%3%4 %5\n").arg(open->property("vimBufferId").toULongLong())
+                .arg(open == primary ? "%" : open == alternateEditor ? "#" : " ", displayed ? "a" : "h", open->isModified() ? "+" : " ",
+                     open->filePath().isEmpty() ? I18n::text("Untitled") : open->filePath());
+            if (output.size() > 4096) break;
+        }
+        if (command.bang) for (const auto& unloaded : unloadedVimBuffers_) {
+            output += QStringLiteral("%1  u  %2\n").arg(unloaded.id)
+                .arg(unloaded.path.isEmpty() ? I18n::text("Untitled") : unloaded.path);
+            if (output.size() > 4096) break;
+        }
+        editor->reportVimExMessage(output.left(4096));
+        completed({});
+        return;
     }
-    const bool bufferCommand=name=="buffer" || name=="bnext" || name=="bprevious" || name=="bNext" || name=="bfirst" || name=="blast" || name=="bdelete" || name=="bwipeout";
-    if(bufferCommand){
-        EditorWidget* target=nullptr;const auto argument=command.arguments.trimmed();
-        if(name=="bnext" || name=="bprevious" || name=="bNext"){
-            const auto index=(tabs_->indexOf(editor)+(name=="bnext"?1:tabs_->count()-1))%std::max(1,tabs_->count());target=qobject_cast<EditorWidget*>(tabs_->widget(index));
-        }else if(name=="bfirst" || name=="blast")target=qobject_cast<EditorWidget*>(tabs_->widget(name=="bfirst"?0:tabs_->count()-1));
-        else if(argument.isEmpty() || argument=="%")target=editor;
-        else if(argument=="#")target=vimAlternateEditor_;
-        else{
-            bool number=false;const auto id=argument.toULongLong(&number);QString error;const auto path=number?QString{}:VimEx::fileArgument(argument,editor->filePath(),&error,alternate);
-            if(!error.isEmpty()){completed(error);return;}
-            for(int i=0;i<tabs_->count();++i)if(auto* open=qobject_cast<EditorWidget*>(tabs_->widget(i))){
-                const bool exact=number?open->property("vimBufferId").toULongLong()==id:open->filePath()==path;
-                if(exact){target=open;break;}
-                if(!number && open->filePath().contains(argument)){if(target){completed("E93: More than one match for buffer");return;}target=open;}
+    const bool deletion = name == "bdelete" || name == "bwipeout";
+    if (deletion || name == "buffer" || name == "bnext" || name == "bprevious" ||
+        name == "bNext" || name == "bfirst" || name == "blast") {
+        EditorWidget* target = nullptr;
+        auto unloaded = unloadedVimBuffers_.end();
+        const auto argument = command.arguments.trimmed();
+        if (name == "bnext" || name == "bprevious" || name == "bNext") {
+            const int size = tabs_->count();
+            if (size) target = qobject_cast<EditorWidget*>(tabs_->widget((tabs_->indexOf(primary) + (name == "bnext" ? 1 : size - 1)) % size));
+        } else if (name == "bfirst" || name == "blast") {
+            target = qobject_cast<EditorWidget*>(tabs_->widget(name == "bfirst" ? 0 : tabs_->count() - 1));
+        } else if (argument.isEmpty() || argument == "%") {
+            target = primary;
+        } else if (argument == "#") {
+            target = alternateEditor;
+        } else {
+            bool number = false;
+            const auto id = argument.toULongLong(&number);
+            QString error;
+            const auto path = number ? QString{} : VimEx::fileArgument(argument, editor->filePath(), &error, alternate);
+            if (!error.isEmpty()) { completed(error); return; }
+            int matches = 0;
+            for (int i = 0; i < tabs_->count(); ++i) if (auto* open = qobject_cast<EditorWidget*>(tabs_->widget(i))) {
+                const bool exact = number ? open->property("vimBufferId").toULongLong() == id : open->filePath() == path;
+                if (exact) { target = open; matches = 1; break; }
+                if (!number && open->filePath().contains(argument)) { target = open; ++matches; }
+            }
+            if (matches > 1) { completed(QStringLiteral("E93: More than one match for buffer")); return; }
+            if (!target) {
+                unloaded = std::find_if(unloadedVimBuffers_.begin(), unloadedVimBuffers_.end(), [&](const auto& buffer) {
+                    return number ? buffer.id == id : buffer.path == path;
+                });
             }
         }
-        if(!target){completed("E86: Buffer does not exist");return;}
-        if(name=="bdelete" || name=="bwipeout"){
-            if(target->isBusy() || renameInProgress_ || !replaceLockedEditors_.isEmpty()){completed(I18n::text("Vim: the document is busy"));return;}
-            if(target->isModified() && !command.bang){completed("E89: No write since last change (add ! to override)");return;}
-            if(target==editor){auto* next=qobject_cast<EditorWidget*>(tabs_->widget((tabs_->indexOf(target)+1)%tabs_->count()));if(next==target)next=untitled();tabs_->setCurrentWidget(next);next->setFocus();editor->transferVimEx(next);}
-            completed({});requestClose({QPointer<EditorWidget>(target)},false,command.bang);return;
+        if (unloaded != unloadedVimBuffers_.end()) {
+            if (name == "bwipeout") {
+                VimState::Session::instance().discardBufferMarks(nullptr, unloaded->path, unloaded->path);
+                unloadedVimBuffers_.erase(unloaded);
+                completed({});
+            } else if (name == "bdelete") {
+                completed({});
+            } else if (unloaded->path.isEmpty()) {
+                const auto id = unloaded->id;
+                unloadedVimBuffers_.erase(unloaded);
+                auto* fresh = createUntitledEditor();
+                fresh->setProperty("vimBufferId", qulonglong(id));
+                activate(fresh);
+            } else {
+                const auto path = unloaded->path;
+                activate(openVimFile(path));
+            }
+            return;
         }
-        activate(target);return;
+        if (!target) { completed(QStringLiteral("E86: Buffer does not exist")); return; }
+        if (deletion) {
+            if (target->isBusy() || renameInProgress_ || !replaceLockedEditors_.isEmpty()) {
+                completed(I18n::text("Vim: the document is busy")); return;
+            }
+            if (target->isModified() && !command.bang) {
+                completed(QStringLiteral("E89: No write since last change (add ! to override)")); return;
+            }
+            if (target == primary) {
+                hideEditorView(editor);
+                if (auto* next = activeEditor(); next && next->document() != editor->document()) editor->transferVimEx(next);
+            }
+            closingVimBuffer_ = target;
+            wipeVimBuffer_ = name == "bwipeout";
+            completed({});
+            requestClose({target}, false, command.bang);
+            return;
+        }
+        activate(target);
+        return;
     }
-    if(name=="enew"){activate(untitled());return;}
+    if (name == "enew") { activate(createUntitledEditor()); return; }
     if(name=="edit" || (name=="file" && !command.arguments.isEmpty())){
         QString error;auto path=VimEx::fileArgument(command.arguments,editor->filePath(),&error,alternate);if(!error.isEmpty()){completed(error);return;}
         if(path.isEmpty())path=editor->filePath();
         if(path.isEmpty()){completed("E32: No file name");return;}
         if(name=="file"){
-            for(int i=0;i<tabs_->count();++i)if(auto* other=qobject_cast<EditorWidget*>(tabs_->widget(i));other && other!=editor && other->filePath()==path){completed("E95: Buffer with this name already exists");return;}
-            if(path!=editor->filePath()){editor->updateFilePathAfterRename(path);editor->markDiskDiverged();tabs_->setTabText(tabs_->indexOf(editor),QFileInfo(path).fileName()+" •");tabs_->setTabToolTip(tabs_->indexOf(editor),path);updateWindowTitle();}completed({});return;
+            for(int i=0;i<tabs_->count();++i)if(auto* other=qobject_cast<EditorWidget*>(tabs_->widget(i));other && other!=primary && other->filePath()==path){completed("E95: Buffer with this name already exists");return;}
+            if(path!=editor->filePath()){editor->updateFilePathAfterRename(path);editor->markDiskDiverged();tabs_->setTabText(tabs_->indexOf(primary),QFileInfo(path).fileName()+" •");tabs_->setTabToolTip(tabs_->indexOf(primary),path);updateWindowTitle();}completed({});return;
         }
         if(path==editor->filePath()){
             if(editor->isModified() && !command.bang){completed("E37: No write since last change (add ! to override)");return;}
@@ -83,17 +159,22 @@ void MainWindow::executeVimEx(EditorWidget* editor,const VimEx::Invocation& comm
                 else if(diskFileState(path)!=before){result.buffer.reset();result.error=I18n::text("File changed while it was being loaded");}
                 result.state=diskFileState(path);return result;}));return;
         }
-        if(!QFileInfo::exists(path)){auto* fresh=createEditor(path);fresh->loadBuffer(PieceTreeBuffer(),path);fresh->setBusy(false);fresh->setProperty("openingPath",QVariant{});tabs_->setTabText(tabs_->indexOf(fresh),QFileInfo(path).fileName());activate(fresh);return;}
-        if(!QFileInfo(path).isFile() || !QFileInfo(path).isReadable()){completed("E484: Cannot open file");return;}
-        openFile(path);activate(qobject_cast<EditorWidget*>(tabs_->currentWidget()));return;
+        if (auto* target = openVimFile(path)) activate(target);
+        else completed(QStringLiteral("E484: Cannot open file"));
+        return;
     }
     const bool all=name=="qall";
     const bool close=name=="quit" || name=="close" || all;
     if(close){
         if(renameInProgress_ || !replaceLockedEditors_.isEmpty()){completed(I18n::text("Vim: the document is busy"));return;}
         if(all && gitPanel_ && gitPanel_->service()->writing()){completed(I18n::text("Wait for the Git operation to finish before closing."));return;}
+        if (!all && closeEditorPane(editor)) {
+            if (auto* next = activeEditor()) editor->transferVimEx(next);
+            completed({});
+            return;
+        }
         QVector<QPointer<EditorWidget>> editors;
-        if(all){for(int i=0;i<tabs_->count();++i)if(auto* open=qobject_cast<EditorWidget*>(tabs_->widget(i)))editors.append(open);}else editors.append(editor);
+        if(all){for(int i=0;i<tabs_->count();++i)if(auto* open=qobject_cast<EditorWidget*>(tabs_->widget(i)))editors.append(open);}else editors.append(primary);
         for(const auto& open:editors)if(open && open->isModified() && !command.bang){completed("E37: No write since last change (add ! to override)");return;}
         for(const auto& open:editors)if(open && open->isBusy()){completed(I18n::text("Vim: the document is busy"));return;}
         // Complete before a successful close destroys its originating editor.
@@ -105,7 +186,7 @@ void MainWindow::executeVimEx(EditorWidget* editor,const VimEx::Invocation& comm
     const auto done=[this,guard,completed,exit](QString error){
         if(!error.isEmpty() || !guard){completed(error);return;}
         if(exit)guard->stopVimExecution();
-        completed({});if(exit)requestClose({guard},false,true);
+        completed({});if(exit && !closeEditorPane(guard))requestClose({documentEditor(guard)},false,true);
     };
     if((name=="update" || name=="xit") && !editor->isModified()){done({});return;}
     QString error;auto path=VimEx::fileArgument(command.arguments,editor->filePath(),&error,alternate);
@@ -113,7 +194,7 @@ void MainWindow::executeVimEx(EditorWidget* editor,const VimEx::Invocation& comm
     if(path.isEmpty())path=editor->filePath();
     if(path.isEmpty()){done("E32: No file name");return;}
     if(command.arguments.trimmed().startsWith('!')){done(I18n::text("Vim: shell commands are not available yet"));return;}
-    if(name=="saveas")for(int i=0;i<tabs_->count();++i)if(auto* other=qobject_cast<EditorWidget*>(tabs_->widget(i));other && other!=editor && other->filePath()==path){done("E95: Buffer with this name already exists");return;}
+    if(name=="saveas")for(int i=0;i<tabs_->count();++i)if(auto* other=qobject_cast<EditorWidget*>(tabs_->widget(i));other && other!=primary && other->filePath()==path){done("E95: Buffer with this name already exists");return;}
     const bool own=path==editor->filePath();
     const auto last=VimMotions::lastLine(editor->document()->buffer(),editor->document()->buffer().size() && editor->document()->buffer().byteAt(editor->byteSize()-1)=='\n')+1;
     const bool whole=name=="saveas" || (command.first==1 && command.last>=qint64(last));

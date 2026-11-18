@@ -4,6 +4,7 @@
 #include <QTabBar>
 #include <QEvent>
 #include <QResizeEvent>
+#include <QStackedWidget>
 #include <algorithm>
 
 // Keep the header gutter and the real tab bar as separate, non-overlapping
@@ -16,6 +17,13 @@ public:
         tabBar()->installEventFilter(this);
     }
     ~EditorTabs() override { tabBar()->removeEventFilter(this); }
+
+    void setHeaderOnly(bool enabled) {
+        headerOnly_ = enabled;
+        auto* stack = findChild<QStackedWidget*>("qt_tabwidget_stackedwidget");
+        if (stack) stack->setVisible(!enabled);
+        updateHeaderHeight();
+    }
 
     void setHeaderGutter(int width,int bottom) {
         gutterWidth_=std::max(0,width);headerBottom_=std::max(0,bottom);
@@ -50,12 +58,14 @@ private:
             gutterWidth_=0;
             headerBottom_=0;
             gutter_->hide();
+            updateHeaderHeight();
             return;
         }
         auto* bar=tabBar();
         const QSize hint=bar->sizeHint();
         if(hint.isEmpty()) return;
         updating_=true;
+        updateHeaderHeight();
         const QRect barGeometry(gutterWidth_,0,std::max(0,width()-gutterWidth_),hint.height());
         const QRect gutterGeometry(0,0,gutterWidth_,headerBottom_);
         if(bar->geometry()!=barGeometry) bar->setGeometry(barGeometry);
@@ -63,8 +73,13 @@ private:
         gutter_->show();
         updating_=false;
     }
+    void updateHeaderHeight() {
+        const int maximum = headerOnly_ ? (count() ? std::max(0, tabBar()->sizeHint().height()) : 0) : QWIDGETSIZE_MAX;
+        if (maximumHeight() != maximum) setMaximumHeight(maximum);
+    }
     QWidget* gutter_{nullptr};
     int gutterWidth_{0};
     int headerBottom_{0};
     bool updating_{false};
+    bool headerOnly_{false};
 };

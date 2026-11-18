@@ -18,7 +18,7 @@ public:
         Join,ToggleCase,LowerCase,UpperCase,AutoIndent,Format,Increment,Decrement,
         RestoreVisual,InsertZero,InsertPrevious,SelectMatch,WordEndBack,BigWordEndBack,SentenceNext,SentenceBack,SectionNext,SectionBack,
         UnclosedNext,UnclosedBack,ChangeBack,ChangeForward,LineNext,LineBack,LineOffset,Column,LastText, ScreenHigh, ScreenMiddle, ScreenLow, ScreenDown, ScreenUp,
-        ScreenStart, ScreenFirstText, ScreenEnd, ScreenMiddleColumn, Scroll, ZCommand, Fold, FoldJump };
+        ScreenStart, ScreenFirstText, ScreenEnd, ScreenMiddleColumn, Scroll, ZCommand, Fold, FoldJump, Workspace };
     struct Action {
         Command command{Command::Consume}, operation{Command::Consume};
         int count{1};bool explicitCount{false}, around{false};QChar character;

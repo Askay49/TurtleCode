@@ -160,6 +160,9 @@ if(TURTLE_CODE_BUILD_APP)
         src/document/Document.hpp
         src/app/MainWindow.cpp
         src/app/MainWindowVim.cpp
+        src/app/MainWindowWorkspace.cpp
+        src/editor/EditorPaneWorkspace.cpp
+        src/editor/VimDiffSession.cpp
         src/app/MainWindow.hpp
         src/debug/DapClient.cpp
         src/debug/DapClient.hpp
@@ -311,6 +314,8 @@ if(TURTLE_CODE_BUILD_APP)
         add_test(NAME vim-insert-window COMMAND turtle-code-window-tests --vim-insert)
         set_tests_properties(vim-insert-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME vim-window COMMAND turtle-code-window-tests --vim)
+        add_test(NAME vim-workspace COMMAND turtle-code-window-tests --vim-workspace)
+        set_tests_properties(vim-workspace PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         set_tests_properties(vim-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME command-palette COMMAND turtle-code-window-tests --commands)
         set_tests_properties(command-palette PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
