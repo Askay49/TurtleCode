@@ -927,7 +927,9 @@ int main(int argc,char**argv) {
 
     {
         MainWindow window;window.show();
-        const auto third=write("third.txt");window.openPaths({cpp,text,third});
+        const auto third=directory.filePath("third.txt");
+        { QFile file(third); assert(file.open(QIODevice::WriteOnly)); assert(file.write(QByteArray("example text\n").repeated(160))>0); }
+        window.openPaths({cpp,text,third});
         auto* tabs=window.findChild<QTabWidget*>();assert(tabs && tabs->count()==3);
         assert(waitFor([&]{for(auto* editor:window.findChildren<EditorWidget*>())if(editor->isBusy())return false;return true;}));
         auto* header=window.findChild<QWidget*>("editorPaneHeader");
@@ -944,7 +946,15 @@ int main(int argc,char**argv) {
                 assert(header->geometry().bottom()+1==tabs->geometry().top());
             }
         };
-        checkHeader();QWidget* initial=tabs->currentWidget();
+        checkHeader();
+        auto* initial=qobject_cast<EditorWidget*>(tabs->currentWidget());
+        assert(initial && initial->filePath()==third);
+        const auto viewportGeometry=initial->viewport()->geometry();
+        const auto editorGeometry=tabs->geometry();
+        auto* scroll=initial->verticalScrollBar();
+        assert(scroll->maximum()>1);
+        scroll->setValue(scroll->maximum()/2);
+        const int scrollPosition=scroll->value();
         QTest::keyPress(initial,Qt::Key_Tab,Qt::ControlModifier);
         auto* popup=window.findChild<QFrame*>("openFileSwitcher");
         auto* list=window.findChild<QListWidget*>("openFileSwitchList");
@@ -956,9 +966,10 @@ int main(int argc,char**argv) {
         }
         QApplication::processEvents();
         assert(tabs->currentWidget()==initial && popup->parentWidget()==tabs->parentWidget());
-        assert(std::abs(popup->geometry().center().x()-popup->parentWidget()->rect().center().x())<=1);
-        assert(popup->geometry().top()>header->geometry().bottom());
-        assert(popup->geometry().bottom()<tabs->geometry().top());
+        assert(tabs->geometry()==editorGeometry && initial->viewport()->geometry()==viewportGeometry);
+        assert(scroll->value()==scrollPosition);
+        assert(editorGeometry.contains(popup->geometry()));
+        assert(std::abs(popup->geometry().center().x()-editorGeometry.center().x())<=1);
         if(qEnvironmentVariableIsSet("TURTLE_CODE_BACKGROUND_PREVIEW"))
             window.grab().save(qEnvironmentVariable("TURTLE_CODE_BACKGROUND_PREVIEW")+".switcher.png");
         QTest::keyPress(list,Qt::Key_Tab,Qt::ControlModifier);assert(list->currentRow()==2);

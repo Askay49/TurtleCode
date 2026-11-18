@@ -627,7 +627,6 @@ void MainWindow::createUi() {
     tabSwitchList_->setTextElideMode(Qt::ElideMiddle);
     tabSwitchList_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     switcherLayout->addWidget(tabSwitchList_);
-    documentLayout->addWidget(tabSwitcher_, 0, Qt::AlignHCenter);
     tabSwitcher_->hide();
     connect(tabSwitchList_, &QListWidget::itemClicked, this, [this] { finishTabSwitch(true); });
     documentLayout->addWidget(tabs_, 1);
@@ -1264,8 +1263,8 @@ void MainWindow::finishClose(bool accepted) {
     updateWindowTitle();checkpointRecovery();
 }
 
-void MainWindow::resizeTabSwitcher() {
-    const auto area = tabSwitcher_->parentWidget()->contentsRect();
+void MainWindow::positionTabSwitcher() {
+    const auto area = paneWorkspace_->isVisible() ? paneWorkspace_->geometry() : tabs_->geometry();
     const auto margins = tabSwitcher_->layout()->contentsMargins();
     const auto metrics = tabSwitchList_->fontMetrics();
     const int rowHeight = std::max(26, metrics.height() + 10);
@@ -1281,7 +1280,10 @@ void MainWindow::resizeTabSwitcher() {
         std::clamp((area.height() / 2 - verticalChrome) / (rowHeight + rowSpacing), 1, 6));
     const int preferredWidth = textWidth + tabSwitchList_->iconSize().width() + 58;
     const int panelWidth = std::min(std::clamp(preferredWidth, 280, 500), std::max(1, area.width() - 16));
-    tabSwitcher_->setFixedSize(panelWidth, verticalChrome + visibleRows * (rowHeight + rowSpacing));
+    const int panelHeight = std::min(std::max(1, area.height()), verticalChrome + visibleRows * (rowHeight + rowSpacing));
+    const int topOffset = std::clamp(area.height() - panelHeight, 0, 12);
+    tabSwitcher_->setGeometry(area.x() + (area.width() - panelWidth) / 2, area.y() + topOffset,
+                              panelWidth, panelHeight);
 }
 
 void MainWindow::switchRecentTab(int direction) {
@@ -1296,14 +1298,10 @@ void MainWindow::switchRecentTab(int direction) {
             new QListWidgetItem(FileIcons::icon(tabs_->tabToolTip(index)), tabs_->tabText(index), tabSwitchList_);
         }
         tabSwitchFocus_ = QApplication::focusWidget();
-        for (auto* editor : tabSwitcher_->parentWidget()->findChildren<EditorWidget*>()) {
-            if (!editor->isVisible()) continue;
-            for (auto* bar : {editor->verticalScrollBar(), editor->horizontalScrollBar()})
-                tabSwitchScroll_.append({bar, bar->value()});
-        }
         tabSwitcher_->ensurePolished();
-        resizeTabSwitcher();
+        positionTabSwitcher();
         tabSwitcher_->show();
+        tabSwitcher_->raise();
         qApp->installEventFilter(this);
         tabSwitchList_->setFocus();
     }
@@ -1319,10 +1317,6 @@ void MainWindow::finishTabSwitch(bool accept) {
     QPointer<QWidget> target=accept && row>=0 && row<tabSwitchOrder_.size()?tabSwitchOrder_.at(row):QPointer<QWidget>{};
     qApp->removeEventFilter(this);
     tabSwitcher_->hide();
-    tabSwitcher_->parentWidget()->layout()->activate();
-    for (const auto& [bar, value] : tabSwitchScroll_)
-        if (bar) bar->setValue(value);
-    tabSwitchScroll_.clear();
     tabSwitchOrder_.clear();
     if(target && tabs_->indexOf(target)>=0) {
         activateEditor(qobject_cast<EditorWidget*>(target.data()), true);
@@ -1332,8 +1326,9 @@ void MainWindow::finishTabSwitch(bool accept) {
 
 bool MainWindow::eventFilter(QObject* watched,QEvent* event) {
     if (!tabSwitcher_ || tabSwitcher_->isHidden()) return QMainWindow::eventFilter(watched, event);
-    if (watched == tabSwitcher_->parentWidget() && event->type() == QEvent::Resize)
-        resizeTabSwitcher();
+    if ((watched == tabs_ || watched == paneWorkspace_)
+        && (event->type() == QEvent::Move || event->type() == QEvent::Resize))
+        positionTabSwitcher();
     if(watched==this && (event->type()==QEvent::WindowDeactivate || event->type()==QEvent::Hide || event->type()==QEvent::Close)) finishTabSwitch(false);
     if(event->type()==QEvent::MouseButtonPress) {
         auto* widget=qobject_cast<QWidget*>(watched);

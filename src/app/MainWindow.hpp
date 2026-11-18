@@ -4,7 +4,6 @@
 #include <functional>
 #include <QStringList>
 #include <QPointer>
-#include <QPair>
 #include <QList>
 #include <QVector>
 #include <QHash>
@@ -45,7 +44,6 @@ class QFileSystemWatcher;
 class QMessageBox;
 class QFrame;
 class QListWidget;
-class QScrollBar;
 struct ProjectReplaceRequest;
 struct ProjectReplaceResult;
 
@@ -126,7 +124,7 @@ private:
     void navigateHistory(int direction);
     void switchRecentTab(int direction);
     void finishTabSwitch(bool accept);
-    void resizeTabSwitcher();
+    void positionTabSwitcher();
     bool closeTab(int index);
     void closeAllTabs();
     void updateTabMru(QWidget* current);
@@ -254,5 +252,4 @@ private:
     QFrame* tabSwitcher_{nullptr};
     QListWidget* tabSwitchList_{nullptr};
     QPointer<QWidget> tabSwitchFocus_;
-    QVector<QPair<QPointer<QScrollBar>, int>> tabSwitchScroll_;
 };
