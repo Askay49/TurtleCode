@@ -73,6 +73,7 @@ void EditorWidget::closeVimCommandLine(){
     if(active && vimCommandPrompt_!=':'){
         if(vimSearchCancelled_)vimSearchCancelled_->store(true);
         ++vimSearchGeneration_;vimSearchRunning_=false;
+        restoreVimPreviewFolds();
         cursorPosition_=std::min(vimSearchOrigin_,buffer_.size());anchor_=vimSearchOriginAnchor_;cursors_={cursorPosition_};cursorAnchors_={anchor_};
         verticalScrollBar()->setValue(vimSearchOriginTop_);horizontalScrollBar()->setValue(vimSearchOriginLeft_);viewport()->update();
     }
@@ -307,6 +308,21 @@ void EditorWidget::executeVimExParsed(const VimEx::Parsed& parsed){
             if(option.startsWith("textwidth=") || option.startsWith("tw=")){bool ok=false;const auto width=option.mid(option.indexOf('=')+1).toInt(&ok);if(!ok || width<0 || width>1000000){finishVimEx("E474: Invalid argument");return;}state.textWidth=width;continue;}
             if(option=="textwidth" || option=="tw"){vimExMessage("textwidth="+QString::number(state.textWidth));continue;}
             bool* target=nullptr;
+            if(option=="wrap" || option=="foldenable" || option=="fen"){
+                auto& setting=option=="wrap"?vimWrap_:vimFoldEnabled_;
+                if(report)vimExMessage((setting?QString{}:QStringLiteral("no"))+option);
+                else {
+                    const int top=documentLineForVisualRow(verticalScrollBar()->value());
+                    setting=toggle?!setting:value;
+                    refreshScreenLayout(top);
+                    const int line=documentLineForVisualRow(visualRowForLine(int(currentLine())));
+                    if(line!=int(currentLine()))moveCursor(VimMotions::firstText(buffer_,line),false);
+                    ensureCursorVisible();
+                }
+                continue;
+            }
+            if(option=="foldmethod=manual" || option=="fdm=manual")continue;
+            if(option=="foldmethod" || option=="fdm"){vimExMessage("foldmethod=manual");continue;}
             if(option=="joinspaces" || option=="js")target=&state.joinSpaces;
             else if(option=="ignorecase" || option=="ic")target=&state.searchOptions.ignoreCase;
             else if(option=="smartcase" || option=="scs")target=&state.searchOptions.smartCase;
@@ -321,6 +337,7 @@ void EditorWidget::executeVimExParsed(const VimEx::Parsed& parsed){
         }
         vimHighlightHidden_=false;invalidateVimSearch();
     }
+    else if(name=="fold"){createVimFold(int(first),int(last));}
     else if(name.isEmpty()){pushVimJump();moveCursor(VimMotions::firstText(buffer_,last),false);}
     else if(name=="undo" || name=="redo"){history_.endCompoundGroup();history_.endGroup();replayVimHistory(name=="redo",1);history_.beginCompoundGroup();}
     else if(name=="delete" || name=="yank"){

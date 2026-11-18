@@ -27,7 +27,10 @@ void EditorWidget::drawVimBlock(QPainter& painter) const {
     auto color=ThemeManager::instance().color("editor.selection");color.setAlpha(120);
     for(int visual=top;visual<=top+viewport()->height()/height;++visual){const auto row=documentLineForVisualRow(visual);if(row<0 || std::size_t(row)<first || std::size_t(row)>last)continue;
         const int end=right==INT_MAX?VimBlock::column(buffer_,std::size_t(row),lineContentEnd(std::size_t(row)),tabWidth_):right;
-        const qint64 x=qint64(gutterWidth()+12)+qint64(left)*cell-horizontalScrollBar()->value();const qint64 finish=qint64(gutterWidth()+12)+qint64(std::max(left+1,end))*cell-horizontalScrollBar()->value();
+        const auto slice=screenSlice(visual);
+        const int leftOffset=(slice.left || slice.right>=0) ? slice.left : horizontalScrollBar()->value();
+        const qint64 x=qint64(gutterWidth()+12)+qint64(left)*cell-leftOffset;
+        const qint64 finish=qint64(gutterWidth()+12)+qint64(std::max(left+1,end))*cell-leftOffset;
         painter.fillRect(QRect(int(std::clamp<qint64>(x,gutterWidth(),viewport()->width())),(visual-top)*height,std::max(0,int(std::min<qint64>(finish,viewport()->width())-std::max<qint64>(x,gutterWidth()))),height),color);
     }
 }

@@ -88,6 +88,7 @@ void EditorWidget::startVimSearch(const VimController::Action& action){
 }
 void EditorWidget::previewVimSearch(){
     if(!vimExActive_ || vimCommandPrompt_==':')return;
+    restoreVimPreviewFolds();
     if(vimSearchCancelled_)vimSearchCancelled_->store(true);
     const auto generation=++vimSearchGeneration_;vimSearchRunning_=false;
     if(!VimState::Session::instance().incrementalSearch || vimExInput_->text().isEmpty()){
@@ -218,7 +219,7 @@ void EditorWidget::updateVimSearchHighlights(){
         if(generation!=vimSearchGeneration_ || busy_ || vimExActive_ || vimHighlightHidden_ || !VimState::Session::instance().highlightSearch)return;
         const auto& state=VimState::Session::instance();const auto pattern=state.searchPattern;const auto options=state.searchOptions;
         const auto revision=lspRevision_;const auto old=vimSearchSubjectRevision_==revision?vimSearchSubject_:nullptr;
-        const auto first=std::size_t(std::max(0,documentLineForVisualRow(verticalScrollBar()->value()))),last=std::min(buffer_.lineCount()-1,first+std::size_t(viewport()->height()/lineHeight()+2));
+        const auto first=std::size_t(std::max(0,documentLineForVisualRow(verticalScrollBar()->value()))),last=std::min(buffer_.lineCount()-1,std::size_t(std::max(0,documentLineForVisualRow(verticalScrollBar()->value()+viewport()->height()/lineHeight()+2))));
         const auto snapshot=std::make_shared<PieceTreeBuffer>(buffer_.snapshot());const bool finalNewline=vimFinalNewline_;
         auto cancelled=std::make_shared<std::atomic<bool>>(false);vimSearchCancelled_=cancelled;
         auto* watcher=new QFutureWatcher<std::shared_ptr<SearchResult>>(this);

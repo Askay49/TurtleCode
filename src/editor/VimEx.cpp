@@ -66,6 +66,7 @@ Registry::Registry(){
     add({"edit",1,false,true,false,Arguments::File});
     add({"enew",3,false,true});
     add({"file",1,false,true,false,Arguments::File});
+    add({"fold",2,true});
     add({"global",1,true,true,false,Arguments::Global,DefaultRange::Whole,false,false});
     add({"vglobal",1,true,false,false,Arguments::Global,DefaultRange::Whole,false,false});
     add({"join",1,true,true,false,Arguments::RegisterCount});

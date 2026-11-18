@@ -55,6 +55,7 @@ void EditorWidget::setVimEnabled(bool enabled) {
     else if(selected){anchor_=reversed?selection.second:selection.first;cursorPosition_=reversed?selection.first:selection.second;cursors_={cursorPosition_};cursorAnchors_={anchor_};}
     for(auto* shortcut:findChildren<QShortcut*>())if(shortcut->objectName().startsWith("editor.vimDisabled."))shortcut->setEnabled(!enabled);
     refreshVimPresentation();
+    invalidateScreenMinimap();updateScrollBars();ensureCursorVisible();
 }
 void EditorWidget::switchVimMode(VimController::Mode mode,bool fromEscape) {
     const auto previous=vim_.mode();
@@ -118,6 +119,7 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
     }
     event->accept();
     if(command==C::Consume || command==C::Pending)return true;
+    if(command!=C::ScreenUp && command!=C::ScreenDown)vimScreenPreferredX_=-1;
     if(vimInsertNormal_)vimInsertNormalEnd_=command==C::End || command==C::LastText || ((command==C::Up || command==C::Down) && vimPreferredX_<0 && cursorPosition_==graphemeBoundaryAt(lineContentEnd(currentLine()),false));
     if(command==C::RestoreVisual) {
         if(vimPreviousVisualAnchor_ && vimPreviousVisualHead_) {
@@ -148,6 +150,7 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
     const bool mutating=transform(action.operation) || transform(command) || command==C::Join || command==C::Increment || command==C::Decrement ||action.operation==C::Delete || action.operation==C::Change || action.operation==C::Indent || action.operation==C::Unindent ||
         command==C::InsertZero || command==C::Insert || command==C::Append || command==C::InsertFirst || command==C::InsertLast || command==C::OpenAbove || command==C::OpenBelow || command==C::Delete || command==C::Change || command==C::Indent || command==C::Unindent || command==C::DeleteChar || command==C::DeleteBefore || command==C::Substitute || command==C::ChangeLine || command==C::ChangeEnd || command==C::DeleteEnd || command==C::PasteBefore || command==C::PasteAfter || command==C::ReplaceMode || command==C::ReplaceCharacter;
     if(mutating)beginVimChange();
+    if(handleVimViewport(action))return true;
     if(command==C::ChangeBack || command==C::ChangeForward){if(action.operation==C::Consume)jumpVimChange(command==C::ChangeBack?-1:1,action.count);return true;}
     if(command==C::Join || command==C::Increment || command==C::Decrement || (transform(command) && command!=C::AutoIndent && command!=C::Format)){editVimNormal(action);return true;}
     if((command==C::AutoIndent || command==C::Format) && vim_.mode()==Mode::Visual){const auto range=selectionRange();transformVimRange(range.first,range.second,command,vimVisualLine_);return true;}
@@ -213,7 +216,7 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
         editVimRange(vimLineStart(first),last+1<buffer_.lineCount()?buffer_.lineStart(last+1):buffer_.size(),command==C::YankLine?C::Yank:command==C::ChangeEnd || command==C::ChangeLine?C::Change:C::Delete,true);return true;
     }
     if(command==C::InsertZero || command==C::Insert || command==C::Append || command==C::InsertFirst || command==C::InsertLast || command==C::OpenAbove || command==C::OpenBelow) {
-        const auto row=currentLine();
+        const auto row=command==C::OpenBelow ? std::size_t(closedFoldEnd(int(currentLine()))) : currentLine();
         if(command==C::Append)cursorPosition_=std::min(lineContentEnd(row),graphemeBoundaryAt(cursorPosition_,true));
         if(command==C::InsertZero)cursorPosition_=vimLineStart(row);
         if(command==C::InsertFirst)cursorPosition_=VimMotions::firstText(buffer_,row);
@@ -290,6 +293,27 @@ void EditorWidget::replayVimHistory(bool redoEdit,int count) {
 void EditorWidget::resolveVimAction(VimController::Action action) {
     using C=VimController::Command;
     action.tabWidth=tabWidth_;
+    const int line=int(currentLine());
+    if (action.operation != C::Consume && screenLayoutActive() && !vimFolds_.empty() &&
+        (action.command == C::Line || action.command == C::Up || action.command == C::Down)) {
+        const int last=int(VimMotions::lastLine(buffer_,vimFinalNewline_));
+        const int direction=action.command==C::Up ? -1 : 1;
+        const int count=action.count-(action.command==C::Line ? 1 : 0);
+        int target=line;
+        for (int step=0;step<count;++step) {
+            const int candidate=direction>0 ? closedFoldEnd(target)+1 : target-1;
+            if (candidate<0 || candidate>last) break;
+            target=documentLineForVisualRow(visualRowForLine(candidate));
+        }
+        const int first=std::min(line,target), end=closedFoldEnd(std::max(line,target));
+        VimMotions::Range range;
+        range.target=VimMotions::firstText(buffer_,target);
+        range.begin=vimLineStart(first);
+        range.end=end+1<int(buffer_.lineCount()) ? buffer_.lineStart(end+1) : buffer_.size();
+        range.valid=range.linewise=true;
+        applyVimAction(action,range);
+        return;
+    }
     if(vimVisualBlock_ && action.operation==C::Consume && (action.command==C::Left || action.command==C::Right || action.command==C::Up || action.command==C::Down)) {
         auto row=currentLine();if(action.command==C::Up)row=row>std::size_t(action.count)?row-action.count:0;
         if(action.command==C::Down)row=std::min(VimMotions::lastLine(buffer_,vimFinalNewline_),row+action.count);
@@ -304,7 +328,21 @@ void EditorWidget::resolveVimAction(VimController::Action action) {
     if(action.operation==C::Consume && (action.command==C::Up || action.command==C::Down)) {
         if(vimPreferredX_<0)vimPreferredX_=cursorPixelColumn();
         const auto row=currentLine(),count=std::size_t(action.count);
-        const auto to=action.command==C::Up?(row>count?row-count:0):std::min(VimMotions::lastLine(buffer_,vimFinalNewline_),row+count);
+        const auto last=VimMotions::lastLine(buffer_,vimFinalNewline_);
+        auto to=action.command==C::Up?(row>count?row-count:0):std::min(last,row+count);
+        if (screenLayoutActive() && !vimFolds_.empty()) {
+            to=row;
+            for(std::size_t n=0;n<count;++n) {
+                if(action.command==C::Up) {
+                    if(!to)break;
+                    to=std::size_t(documentLineForVisualRow(visualRowForLine(int(to-1))));
+                } else {
+                    const auto next=std::size_t(closedFoldEnd(int(to)))+1;
+                    if(next>last)break;
+                    to=next;
+                }
+            }
+        }
         if(to==row && !vimReplay_.empty()){vimReplayCancel_=true;return;}
         const auto target=action.text=="\r" || action.text=="\n"?VimMotions::firstText(buffer_,to):buffer_.lineStart(to)+byteColumnAtX(gutterWidth()+12+vimPreferredX_-horizontalScrollBar()->value(),int(to));
         moveCursor(target,vim_.mode()==VimController::Mode::Visual);return;
@@ -322,6 +360,11 @@ void EditorWidget::applyVimAction(const VimController::Action& action,const VimM
     using C=VimController::Command;using Mode=VimController::Mode;
     if(!range.valid || !vim_.enabled()){if(!vimReplay_.empty())vimReplayCancel_=true;return;}
     if(action.operation==C::Consume && !range.object && (action.command==C::FirstLine || action.command==C::LastLine || action.command==C::ParagraphNext || action.command==C::ParagraphBack || action.command==C::SentenceNext || action.command==C::SentenceBack || action.command==C::SectionNext || action.command==C::SectionBack || action.command==C::Match))pushVimJump();
+    if(action.operation==C::Fold){
+        createVimFold(int(buffer_.lineIndexAt(range.begin)),
+                      int(buffer_.lineIndexAt(range.end>range.begin?range.end-1:range.end)));
+        return;
+    }
     if(action.operation==C::Indent || action.operation==C::Unindent){indentVim(buffer_.lineIndexAt(range.begin),buffer_.lineIndexAt(range.end>range.begin?range.end-1:range.begin),action.operation==C::Unindent);return;}
     if(action.operation!=C::Consume){editVimRange(range.begin,range.end,action.operation,range.linewise);return;}
     if(range.object) {

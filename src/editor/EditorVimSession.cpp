@@ -278,7 +278,7 @@ void EditorWidget::playVimMacro(QChar name,int count) {
 }
 QString EditorWidget::vimMarkKey() const{return filePath_.isEmpty()?QStringLiteral("buffer:%1").arg(quintptr(this)):filePath_;}
 VimState::Anchor EditorWidget::vimLocation(){return VimState::Session::instance().anchor(this,filePath_,cursorPosition_,navigationPosition());}
-void EditorWidget::attachVimAnchors(){buffer_.editObserver=[this](std::size_t at,std::size_t removed,std::size_t inserted){projectVimAnchors(at,removed,inserted);};buffer_.lineEditObserver=[this](std::size_t row,std::size_t column,std::size_t removed,std::size_t inserted){projectVimExLines(row,column,removed,inserted);};VimState::Session::instance().attach(this,filePath_);}
+void EditorWidget::attachVimAnchors(){buffer_.editObserver=[this](std::size_t at,std::size_t removed,std::size_t inserted){projectVimAnchors(at,removed,inserted);};buffer_.lineEditObserver=[this](std::size_t row,std::size_t column,std::size_t removed,std::size_t inserted){projectVimExLines(row,column,removed,inserted);adjustScreenWraps(row,removed,inserted);};VimState::Session::instance().attach(this,filePath_);}
 void EditorWidget::projectVimAnchors(std::size_t at,std::size_t removed,std::size_t inserted){for(auto& p:VimState::Session::instance().anchors(this)){
     if(removed && p->offset>=at && p->offset<=at+removed && !p->lostPositions.contains(history_.stateId())){p->lostPositions.insert(history_.stateId(),p->offset);if(p->lostPositions.size()>256)p->lostPositions.erase(p->lostPositions.begin());}
     p->offset=VimState::Session::project(p->offset,at,removed,inserted);

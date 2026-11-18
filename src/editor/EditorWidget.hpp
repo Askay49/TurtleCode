@@ -12,6 +12,8 @@
 #include <optional>
 #include <atomic>
 #include <vector>
+#include <map>
+#include <set>
 
 #include "core/text/PieceTreeBuffer.hpp"
 #include "core/text/EditHistory.hpp"
@@ -436,6 +438,52 @@ private:
     [[nodiscard]] QRect inputCursorRect() const;
     void adjustDiffHighlights(const HighlightEdit& edit);
     void adjustDiffAlignment(std::size_t firstLine, int removedLines, int insertedLines);
+    struct VimFold {
+        VimState::Anchor first, last;
+        bool closed{true};
+    };
+    struct WrapBreak { std::size_t byte; int pixel; };
+    struct ScreenSpan {
+        int firstLine, lastLine, firstRow, lastRow;
+        QVector<WrapBreak> breaks;
+    };
+    struct ScreenSlice {
+        int line{};
+        std::size_t begin{}, end{};
+        int left{}, right{-1};
+    };
+    std::vector<VimFold> vimFolds_;
+    std::vector<std::size_t> previewOpenedFolds_;
+    mutable std::vector<ScreenSpan> screenSpans_;
+    mutable std::map<int,QVector<WrapBreak>> screenWraps_;
+    mutable std::set<int> screenDirtyLines_;
+    mutable bool screenWrapFull_{true};
+    mutable bool screenLayoutDirty_{true};
+    mutable int screenLayoutWidth_{}, screenRowCount_{};
+    bool vimWrap_{false}, vimFoldEnabled_{true};
+    int vimHalfPage_{}, vimScrollPadding_{}, vimScreenPreferredX_{-1};
+
+    void rebuildScreenLayout() const;
+    void rebuildScreenWraps(int width) const;
+    void adjustScreenWraps(std::size_t row, std::size_t removed, std::size_t inserted);
+    int screenRowCount() const;
+    int screenRowForPosition(std::size_t position) const;
+    int screenOriginX(std::size_t position) const;
+    bool screenLayoutActive() const;
+    ScreenSlice screenSlice(int row) const;
+    std::size_t positionAtPoint(int x, int y, int line) const;
+    std::size_t screenPositionAtX(int row, int x, bool insert = false) const;
+    std::pair<int,int> foldLines(const VimFold& fold) const;
+    int closedFoldEnd(int line) const;
+    bool revealVimFolds(int line);
+    void restoreVimPreviewFolds();
+    void refreshScreenLayout(int topLine);
+    void invalidateScreenMinimap();
+    bool handleVimViewport(const VimController::Action& action);
+    void createVimFold(int first, int last);
+    void editVimFolds(QChar command, int count);
+    void moveToVimFold(QChar command, int count);
+
     void updateScrollBars();
     void ensureCursorVisible(bool centerVertically = false);
     [[nodiscard]] int textAreaWidth() const;

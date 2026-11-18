@@ -29,6 +29,14 @@ VimController::Command VimController::command(const QKeyEvent& event) const {
     if(event.key()==Qt::Key_R && modifiers==Qt::ControlModifier)return Command::Redo;
     if(event.key()==Qt::Key_A && modifiers==Qt::ControlModifier)return Command::Increment;
     if(event.key()==Qt::Key_X && modifiers==Qt::ControlModifier)return Command::Decrement;
+    if(modifiers==Qt::ControlModifier) {
+        switch(event.key()) {
+        case Qt::Key_D: case Qt::Key_U: case Qt::Key_F:
+        case Qt::Key_B: case Qt::Key_E: case Qt::Key_Y:
+            return Command::Scroll;
+        default: break;
+        }
+    }
     // Reserve native text-mutating shortcuts for future Vim bindings. Native
     // application shortcuts (save, palette, search, etc.) retain their scope.
     if(modifiers==Qt::ControlModifier && (event.key()==Qt::Key_V || event.key()==Qt::Key_X))return Command::Consume;
@@ -82,6 +90,14 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
         Action action{cmd,operation_,std::min(10000,std::max(1,count_)*operatorCount_),explicitCount_,around_,arg};
         action.registerName=selectedRegister_;action.text=event.text();resetPending();return action;
     };
+    if(key==C::Scroll)return finish(C::Scroll,QChar(event.key()));
+    if(waiting_==C::ZCommand) {
+        if(character=='f' && operation_==C::Consume && mode_!=Mode::Visual) {
+            operation_=C::Fold;operatorCount_=std::max(1,count_);count_=0;waiting_=C::Consume;
+            pending_+='f';return {C::Pending};
+        }
+        return finish(C::ZCommand,character);
+    }
     if(waiting_!=C::Consume) {
         pending_+=event.text();
         if(waiting_==C::SelectRegister){
@@ -109,12 +125,22 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
     };
     if(!bracketPrefix_.isNull()){
         const bool forward=bracketPrefix_==']';
+        if(character=='z')return finish(C::FoldJump,bracketPrefix_);
         if(character=='[' || character==']')return finish(forward?C::SectionNext:C::SectionBack,character);
         if((forward && (character==')' || character=='}')) || (!forward && (character=='(' || character=='{')))return finish(forward?C::UnclosedNext:C::UnclosedBack,character);
         return finish(C::Consume);
     }
     if(prefixG_){
         prefixG_=false;
+        switch(character.unicode()) {
+        case 'j': return finish(C::ScreenDown);
+        case 'k': return finish(C::ScreenUp);
+        case '0': return finish(C::ScreenStart);
+        case '^': return finish(C::ScreenFirstText);
+        case '$': return finish(C::ScreenEnd);
+        case 'm': return finish(C::ScreenMiddleColumn);
+        default: break;
+        }
         if(character=='v')return finish(C::RestoreVisual);
         if(character=='i')return finish(C::InsertPrevious);
         if(character=='I')return finish(C::InsertZero);
@@ -131,6 +157,7 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
     if((operation_!=C::Consume || mode_==Mode::Visual) && (character=='i' || character=='a')) {
         waiting_=C::Object;around_=character=='a';return {C::Pending};
     }
+    if(character=='z' && operation_==C::Consume){waiting_=C::ZCommand;return {C::Pending};}
     if(character=='g'){prefixG_=true;return {C::Pending};}
     if(character=='[' || character==']'){bracketPrefix_=character;return {C::Pending};}
     if(character=='f' || character=='F' || character=='t' || character=='T') {
@@ -144,6 +171,9 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
     case '(':cmd=C::SentenceBack;break;case ')':cmd=C::SentenceNext;break;
     case '+':cmd=C::LineNext;break;case '-':cmd=C::LineBack;break;case '_':cmd=C::LineOffset;break;case '|':cmd=C::Column;break;
     case '0':cmd=C::Start;break;case '^':cmd=C::FirstText;break;case '$':cmd=C::End;break;
+    case 'H':cmd=C::ScreenHigh;break;
+    case 'M':cmd=C::ScreenMiddle;break;
+    case 'L':cmd=C::ScreenLow;break;
     case 'G':cmd=C::LastLine;break;case '{':cmd=C::ParagraphBack;break;case '}':cmd=C::ParagraphNext;break;
     case ';':cmd=C::RepeatFind;break;case ',':cmd=C::ReverseFind;break;case '%':cmd=C::Match;break;
     case '/':cmd=C::SearchForward;break;case '?':cmd=C::SearchBackward;break;

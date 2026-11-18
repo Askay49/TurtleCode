@@ -61,7 +61,9 @@ static void vimTests() {
     Q_ASSERT(editor.vimMode()==Mode::Normal && editor.navigationPosition()==QPoint(1,1));
     QTest::keyClick(&editor,Qt::Key_Escape);Q_ASSERT(editor.navigationPosition()==QPoint(1,1));
     QTest::keyClick(&editor,Qt::Key_Z,Qt::ControlModifier);Q_ASSERT(editor.document()->buffer().text()=="abc\nxy" && !editor.isModified());
-    QTest::keyClick(&editor,Qt::Key_Y,Qt::ControlModifier);Q_ASSERT(editor.document()->buffer().text()=="Zabc\nxy");
+    QTest::keyClick(&editor,Qt::Key_Y,Qt::ControlModifier);
+    Q_ASSERT(editor.document()->buffer().text()=="abc\nxy"); // Normal Ctrl+Y scrolls.
+    vimKeys(editor,"<C-r>");Q_ASSERT(editor.document()->buffer().text()=="Zabc\nxy");
     load(editor,"abc\nxy");vimKeys(editor,"vl");Q_ASSERT(editor.vimMode()==Mode::Visual && editor.selectedText()=="ab");
     vimKeys(editor,"ll");Q_ASSERT(editor.selectedText()=="abc" && editor.navigationPosition()==QPoint(1,3));
     vimKeys(editor,"hh");Q_ASSERT(editor.selectedText()=="a");

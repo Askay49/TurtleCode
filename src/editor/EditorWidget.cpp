@@ -161,11 +161,11 @@ protected:
             const int samples=std::min(count,height());
             for (int i=0;i<samples;++i) {
                 const int row=count>height()?int(qint64(i)*count/height()):i;
-                const int line=editor_->diffRows_.isEmpty()?row:editor_->diffRows_[row];
+                const int line=editor_->diffRows_.isEmpty()?editor_->documentLineForVisualRow(row):editor_->diffRows_[row];
                 if (line<0) continue;
                 const auto& buffer=editor_->buffer_;
-                const auto start=buffer.lineStart(line);
-                const auto bytes=buffer.slice(start,std::min<std::size_t>(256,buffer.lineEnd(line)-start));
+                const auto slice=editor_->screenSlice(row);
+                const auto bytes=buffer.slice(slice.begin,std::min<std::size_t>(256,slice.end-slice.begin));
                 const auto text=QString::fromUtf8(bytes.data(),qsizetype(bytes.size()));
                 int column=0;
                 for (QChar ch:text) {
@@ -204,8 +204,7 @@ protected:
     }
 private:
     int rowCount() const {
-        return std::max(1,editor_->diffRows_.isEmpty()
-            ?int(std::min<std::size_t>(editor_->buffer_.lineCount(),INT_MAX-1)):int(editor_->diffRows_.size()));
+        return std::max(1,editor_->screenRowCount());
     }
     void scrollTo(qreal y) {
         const qreal scale=std::min(3.0,qreal(std::max(1,height()))/rowCount());
@@ -216,6 +215,10 @@ private:
     bool dirty_{true};
     qreal dragOffset_{0};
 };
+
+void EditorWidget::invalidateScreenMinimap() {
+    if (miniMap_) miniMap_->invalidate();
+}
 
 void EditorWidget::layoutMiniMap() {
     if (!miniMap_) return;
@@ -242,6 +245,7 @@ EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)
         if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual && vimHistoryState_!=history_.stateId())switchVimMode(VimController::Mode::Normal);
         vimHistoryState_=history_.stateId();
         for(const auto& p:VimState::Session::instance().anchors(this))if(p->lostPositions.contains(history_.stateId()))p->offset=std::min(buffer_.size(),p->lostPositions.value(history_.stateId()));
+        if (!vimFolds_.empty()) screenLayoutDirty_=true;
         normalizeVimCursor();
         // Ordinary edits project the alignment in invalidateSemanticLines().
         // Only bulk replacements without edit details need to discard the map.
@@ -423,11 +427,13 @@ void EditorWidget::loadBuffer(PieceTreeBuffer buffer, const QString& path) {
     for(const auto& p:VimState::Session::instance().anchors(this))p->lostPositions.clear();
     if(vim_.enabled())switchVimMode(VimController::Mode::Normal);
     vimPreviousVisualAnchor_.reset();vimPreviousVisualHead_.reset();
+    vimFolds_.clear();vimScrollPadding_=vimHalfPage_=0;vimScreenPreferredX_=-1;
     diffHighlights_.clear();
     setDiffAlignment({});
     clearSemanticHighlighting();
     lspPolicy_.reset();
     buffer_ = std::move(buffer);
+    screenWrapFull_=true;
     vimFinalNewline_=buffer_.size() && buffer_.byteAt(buffer_.size()-1)=='\n';
     invalidateLineCache();
     horizontalExtentDirty_ = true;
@@ -872,6 +878,7 @@ void EditorWidget::setNavigationPosition(int oneBasedLine, int oneBasedColumn) {
     preferredColumn_ = static_cast<std::size_t>(-1);
     history_.breakCoalescing();
     normalizeVimCursor();
+    updateScrollBars();
     ensureCursorVisible();
     viewport()->update();
 }
@@ -934,6 +941,7 @@ bool EditorWidget::saveFile(const QString& path) {
             const auto result=EditorConfig::normalize(staged,stagedHistory,cursors_,settings);
             if(stagedHistory.stateId()!=history_.stateId()) {
                 buffer_=std::move(staged);history_=std::move(stagedHistory);
+                screenWrapFull_=true;
                 cursors_=result.cursorPositions;cursorPosition_=result.cursorPosition;
                 clearAllSelections();invalidateLineCache();horizontalExtentDirty_=true;
                 clearSemanticHighlighting();highlighter_.setDocumentText(buffer_);setModified(history_.isModified());
@@ -971,6 +979,7 @@ const QString& EditorWidget::cachedLine(std::size_t line) const {
 }
 
 void EditorWidget::invalidateLineCache(std::size_t changedFrom) {
+    screenLayoutDirty_ = true;
     codeContext_.invalidate(changedFrom);
     bracketRevision_=~quint64(0);bracketMatch_={};
     if(findCancelled_)findCancelled_->store(true);
@@ -1041,18 +1050,6 @@ int EditorWidget::cursorPixelColumn() const {
     return textWidth(prefix);
 }
 
-int EditorWidget::visualRowForLine(int line) const {
-    return line >= 0 && line < diffLineRows_.size() ? diffLineRows_[line] : line;
-}
-int EditorWidget::documentLineForVisualRow(int row) const {
-    if (diffRows_.isEmpty()) return row;
-    if (row >= diffRows_.size()) return static_cast<int>(std::min<std::size_t>(buffer_.lineCount(), INT_MAX-1));
-    row = std::max(0, row);
-    // A click/viewport in padding resolves to the next real line, or EOF.
-    for (int i = row; i < diffRows_.size(); ++i) if (diffRows_[i] >= 0) return diffRows_[i];
-    for (int i = row; i >= 0; --i) if (diffRows_[i] >= 0) return diffRows_[i];
-    return 0;
-}
 void EditorWidget::setDiffAlignment(const QVector<int>& rows) {
     if (rows == diffRows_) return;
     const int oldTop = verticalScrollBar()->value();
@@ -1139,11 +1136,16 @@ void EditorWidget::adjustDiffAlignment(std::size_t firstLine, int removedLines, 
 }
 
 void EditorWidget::updateScrollBars() {
-    const auto maxLines = static_cast<std::size_t>(std::numeric_limits<int>::max() - 1);
-    const auto count = diffRows_.isEmpty() ? static_cast<int>(std::min(buffer_.lineCount(), maxLines)) : int(diffRows_.size());
+    const bool layoutChanged = screenLayoutActive() &&
+        (screenLayoutDirty_ || screenLayoutWidth_ != std::max(1,textAreaWidth()-8));
+    const int count = screenRowCount();
+    if (layoutChanged && miniMap_) miniMap_->invalidate();
     const int verticalPage = std::max(1, viewport()->height() / lineHeight());
     verticalScrollBar()->setPageStep(verticalPage);
-    verticalScrollBar()->setRange(0, std::max(0, count - verticalPage));
+    const int naturalEnd = std::max(0,count-verticalPage);
+    const int padding = vim_.enabled() && diffRows_.isEmpty()
+        ? std::clamp(vimScrollPadding_,0,std::max(0,count-1-naturalEnd)) : 0;
+    verticalScrollBar()->setRange(0,naturalEnd+padding);
     verticalScrollBar()->setSingleStep(1);
 
     const auto lineNo = currentLine();
@@ -1161,7 +1163,9 @@ void EditorWidget::updateScrollBars() {
     }
     horizontalScrollBar()->setPageStep(textAreaWidth());
     horizontalScrollBar()->setSingleStep(std::max(8, fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4));
-    horizontalScrollBar()->setRange(0, std::max(0, cachedHorizontalWidth_ - textAreaWidth()));
+    const bool wrapped = screenLayoutActive() && vimWrap_ &&
+        buffer_.lineEnd(lineNo)-buffer_.lineStart(lineNo)<=64u*1024u;
+    horizontalScrollBar()->setRange(0, wrapped ? 0 : std::max(0,cachedHorizontalWidth_-textAreaWidth()));
     const int gutter=gutterWidth();
     if(cachedGutterWidth_!=gutter) {
         cachedGutterWidth_=gutter;emit gutterWidthChanged();
@@ -1169,8 +1173,12 @@ void EditorWidget::updateScrollBars() {
 }
 
 void EditorWidget::ensureCursorVisible(bool centerVertically) {
-    const int line = visualRowForLine(static_cast<int>(std::min<std::size_t>(currentLine(),
-        static_cast<std::size_t>(std::numeric_limits<int>::max() - 1))));
+    if (revealVimFolds(int(currentLine()))) {
+        updateScrollBars();
+        viewport()->update();
+        emit semanticViewportChanged();
+    }
+    const int line = screenRowForPosition(cursorPosition_);
     const int page = std::max(1, verticalScrollBar()->pageStep());
     // Explicit navigation leaves context around the target. Typing and cursor
     // movement retain minimal scrolling; the scrollbar clamps near BOF/EOF.
@@ -1274,7 +1282,8 @@ std::pair<std::size_t, std::size_t> EditorWidget::cursorSelectionRange(std::size
 std::pair<std::size_t, std::size_t> EditorWidget::selectionRange() const {
     if (!hasSelection()) return {cursorPosition_, cursorPosition_};
     if(vim_.enabled() && vim_.mode()==VimController::Mode::Visual && vimVisualLine_) {
-        const auto first=buffer_.lineIndexAt(std::min(*anchor_,cursorPosition_)),last=buffer_.lineIndexAt(std::max(*anchor_,cursorPosition_));
+        const auto first=buffer_.lineIndexAt(std::min(*anchor_,cursorPosition_));
+        const auto last=std::size_t(closedFoldEnd(int(buffer_.lineIndexAt(std::max(*anchor_,cursorPosition_)))));
         return {vimLineStart(first),last+1<buffer_.lineCount()?buffer_.lineStart(last+1):buffer_.size()};
     }
     const auto last=std::max(*anchor_,cursorPosition_);
@@ -1331,16 +1340,15 @@ void EditorWidget::paintEvent(QPaintEvent*) {
     highlighter_.setVisibleRange(static_cast<std::size_t>(documentLineForVisualRow(firstLine)),
         static_cast<std::size_t>(documentLineForVisualRow(firstLine+visibleLines-1)));
     const int gutter = gutterWidth();
-    const int horizontalOffset = horizontalScrollBar()->value();
     WorkspaceBackground::instance().paint(viewport(), painter, QRect(0, 0, gutter, viewport()->height()), ThemeManager::instance().color("sidebar.background"));
     const auto [selBegin, selEnd] = selectionRange();
     const auto activeLine = currentLine();
     const auto [occurrence,wholeOccurrence] = occurrenceQuery();
 
-    const int visualCount = diffRows_.isEmpty() ? static_cast<int>(std::min<std::size_t>(buffer_.lineCount(), INT_MAX-1)) : int(diffRows_.size());
+    const int visualCount = screenRowCount();
     const int visibleEnd = static_cast<int>(std::min<long long>(visualCount, static_cast<long long>(firstLine) + visibleLines));
     for (int visualRow = firstLine; visualRow < visibleEnd; ++visualRow) {
-        const int lineIndex = diffRows_.isEmpty() ? visualRow : diffRows_[visualRow];
+        const int lineIndex = diffRows_.isEmpty() ? documentLineForVisualRow(visualRow) : diffRows_[visualRow];
         const int debugY = (visualRow - firstLine) * lh;
         if (lineIndex < 0) {
             painter.fillRect(QRect(gutter, debugY, viewport()->width()-gutter, lh), QColor(128,128,128,22));
@@ -1357,6 +1365,25 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         }
         const auto start = buffer_.lineStart(lineNo);
         const auto end = buffer_.lineEnd(lineNo);
+        const auto slice = screenSlice(visualRow);
+        const bool wrapped = slice.begin != start || slice.right >= 0;
+        const int horizontalOffset = wrapped ? slice.left : horizontalScrollBar()->value();
+        const int foldEnd=closedFoldEnd(lineIndex);
+        if (foldEnd>lineIndex) {
+            const auto fill = lineNo==activeLine ? currentLineBackground : ThemeManager::instance().color("sidebar.background");
+            painter.fillRect(QRect(gutter,debugY,viewport()->width()-gutter,lh),fill);
+            if (hasSelection() && selEnd>start && selBegin<buffer_.lineEnd(foldEnd))
+                painter.fillRect(QRect(gutter,debugY,viewport()->width()-gutter,lh),ThemeManager::instance().color("editor.selection"));
+            painter.setPen(ThemeManager::instance().color("text.muted"));
+            painter.drawText(QRect(8,debugY,gutter-14,lh),Qt::AlignVCenter|Qt::AlignRight,QString::number(lineIndex+1));
+            const auto prefix=buffer_.slice(start,std::min<std::size_t>(256,end-start));
+            int column=0;
+            const auto title=expandedTabs(QString::fromUtf8(prefix.data(),prefix.size()),column);
+            const QString summary=QStringLiteral("%1  ⋯ [%2]").arg(title).arg(foldEnd-lineIndex+1);
+            painter.drawText(QRect(gutter+12,debugY,textAreaWidth(),lh),Qt::AlignVCenter,
+                             fontMetrics().elidedText(summary,Qt::ElideRight,textAreaWidth()));
+            continue;
+        }
         if(end-start>64u*1024u) {
             const int y=(visualRow-firstLine)*lh,cell=std::max(1,fontMetrics().horizontalAdvance('M'));
             if(lineNo==activeLine && debugLine_!=lineIndex+1)painter.fillRect(QRect(gutter,y,viewport()->width()-gutter,lh),currentLineBackground);
@@ -1403,13 +1430,14 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         // overload treats y as the baseline, which clipped row zero and made
         // the cursor's top-relative geometry disagree with the glyphs.
         painter.setPen(ThemeManager::instance().color("text.muted"));
-        painter.drawText(QRect(8, y, gutter - 14, lh),
+        if (slice.begin==start) painter.drawText(QRect(8, y, gutter - 14, lh),
                          Qt::AlignVCenter | Qt::AlignRight,
                          QString::number(lineIndex + 1));
 
         painter.save();
-        painter.setClipRect(QRect(gutter, 0, viewport()->width() - gutter,
-                                  viewport()->height()), Qt::IntersectClip);
+        const int clipStart = slice.begin==start ? gutter : gutter+12;
+        const int clipEnd = slice.right<0 ? viewport()->width() : gutter+12+slice.right-slice.left;
+        painter.setClipRect(QRect(clipStart,y,std::max(0,clipEnd-clipStart),lh),Qt::IntersectClip);
         if (!occurrence.isEmpty()) {
             // Only visible ordinary lines are scanned. Cap geometry work for
             // highly repetitive lines; search/selection are painted on top.
@@ -1593,9 +1621,8 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         painter.restore();
     }
 
-    const auto lineNo = currentLine();
-    int cursorX=gutter+12+cursorPixelColumn()-horizontalOffset;
-    const int cursorY = (visualRowForLine(static_cast<int>(lineNo)) - firstLine) * lh;
+    int cursorX=gutter+12+cursorPixelColumn()-screenOriginX(cursorPosition_);
+    const int cursorY = (screenRowForPosition(cursorPosition_) - firstLine) * lh;
     const int glyphHeight = fontMetrics().height();
     const int cursorTop = cursorY + (lh - glyphHeight) / 2 + 1;
     const int cursorHeight = std::max(1, glyphHeight - 2);
@@ -1615,7 +1642,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             if (position == cursorPosition_) continue;
             const auto extraLine = buffer_.lineIndexAt(position);
             const auto extraStart = buffer_.lineStart(extraLine);
-            const int extraY=(visualRowForLine(static_cast<int>(extraLine))-firstLine)*lh;
+            const int extraY=(screenRowForPosition(position)-firstLine)*lh;
             if(extraY+lh<=0 || extraY>=viewport()->height())continue;
             int width=0;
             if(buffer_.lineEnd(extraLine)-extraStart>64u*1024u) {
@@ -1625,7 +1652,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
                 const auto prefixBytes=buffer_.slice(extraStart,position-extraStart);
                 width=textWidth(QString::fromUtf8(prefixBytes.data(),static_cast<qsizetype>(prefixBytes.size())));
             }
-            const int extraX=gutter+12+width-horizontalOffset;
+            const int extraX=gutter+12+width-screenOriginX(position);
             if (extraY + lh > 0 && extraY < viewport()->height())
                 painter.fillRect(QRect(extraX, extraY + (lh - glyphHeight) / 2 + 1, 2, cursorHeight),
                                  ThemeManager::instance().color("syntax.variable"));
@@ -1819,7 +1846,7 @@ void EditorWidget::moveCursor(std::size_t position, bool keepAnchor) {
 
     const bool scrolled = previousVerticalOffset != verticalScrollBar()->value() ||
                           previousHorizontalOffset != horizontalScrollBar()->value();
-    if (scrolled || previousSelection || hasSelection() || previousOccurrence!=occurrenceQuery()) {
+    if (scrolled || screenLayoutActive() || previousSelection || hasSelection() || previousOccurrence!=occurrenceQuery()) {
         viewport()->update();
     } else {
         const auto updateLine = [this](std::size_t line) {
@@ -2290,6 +2317,7 @@ bool EditorWidget::event(QEvent* event) {
     }
     if((vimExActive_ || vimSubConfirm_) && event->type()==QEvent::ShortcutOverride){event->accept();return true;}
     if((vimExActive_ || vimSubConfirm_) && event->type()==QEvent::KeyPress){keyPressEvent(static_cast<QKeyEvent*>(event));event->accept();return true;}
+    if(event->type()==QEvent::FontChange){screenLayoutDirty_=screenWrapFull_=true;hitTestLine_=-1;}
     if(event->type()==QEvent::FocusIn && !busy_){refreshEditorConfig();QTimer::singleShot(0,this,&EditorWidget::updateVimSearchHighlights);}
     if(event->type()==QEvent::FocusIn || event->type()==QEvent::FocusOut){if(vim_.enabled()){if(event->type()==QEvent::FocusOut && static_cast<QFocusEvent*>(event)->reason()!=Qt::PopupFocusReason){history_.endGroup();vimInsertCount_=1;if(!busy_)finishVimChange();}vim_.resetPending();}viewport()->update();}
     if(event->type()==QEvent::ShortcutOverride && hasFocus() && !busy_ && (vim_.reserves(*static_cast<QKeyEvent*>(event)) || (vim_.enabled() && (!vimLiteral_.isEmpty() || !vimDigraph_.isEmpty() || vimInsertCtrlX_ || vimInsertCtrlG_)))) {
@@ -2554,7 +2582,7 @@ void EditorWidget::contextMenuEvent(QContextMenuEvent* event) {
             event->accept(); return;
         }
         cursors_ = {cursorPosition_}; cursorAnchors_ = {std::nullopt};
-        moveCursor(buffer_.lineStart(line) + byteColumnAtX(point.x(), line), false);
+        moveCursor(positionAtPoint(point.x(),point.y(),line), false);
         viewport()->update();
     }
     setFocus();
@@ -2596,7 +2624,7 @@ void EditorWidget::mousePressEvent(QMouseEvent* event) {
                 return;
             }
             const auto pos = clickedLine >= static_cast<int>(buffer_.lineCount()) ? buffer_.size()
-                : buffer_.lineStart(static_cast<std::size_t>(lineNo)) + byteColumnAtX(event->position().toPoint().x(), lineNo);
+                : positionAtPoint(event->position().toPoint().x(),event->position().toPoint().y(),lineNo);
             if ((event->modifiers() & Qt::AltModifier) && !vim_.enabled()) {
                 history_.breakCoalescing();
                 clearAllSelections();
@@ -2635,7 +2663,13 @@ void EditorWidget::mouseDoubleClickEvent(QMouseEvent* event) {
     const int lineNo = lineAtY(event->position().toPoint().y());
     if (lineNo < 0 || static_cast<std::size_t>(lineNo) >= buffer_.lineCount()) return;
     const auto start = buffer_.lineStart(static_cast<std::size_t>(lineNo));
-    const auto column = byteColumnAtX(event->position().toPoint().x(), lineNo);
+    if (closedFoldEnd(lineNo)>lineNo) {
+        moveCursor(VimMotions::firstText(buffer_,lineNo),false);
+        editVimFolds('o',1);
+        event->accept();
+        return;
+    }
+    const auto column = positionAtPoint(event->position().toPoint().x(),event->position().toPoint().y(),lineNo)-start;
     const auto window=lineWindow(buffer_,static_cast<std::size_t>(lineNo),start+column);
     auto range=EditorUnicode::selectionRangeAt(window.bytes,start+column-window.begin);
     range.first+=window.begin-start;range.second+=window.begin-start;
@@ -2665,7 +2699,7 @@ void EditorWidget::mouseMoveEvent(QMouseEvent* event) {
         else if (point.x() >= viewport()->width())
             horizontalScrollBar()->setValue(horizontalScrollBar()->value() + horizontalScrollBar()->singleStep());
         const int lineNo = std::clamp(lineAtY(y), 0, static_cast<int>(buffer_.lineCount()) - 1);
-        const auto pos = buffer_.lineStart(static_cast<std::size_t>(lineNo)) + byteColumnAtX(point.x(), lineNo);
+        const auto pos = positionAtPoint(point.x(),point.y(),lineNo);
         if (draggingLines_) {
             const auto begin = buffer_.lineStart(static_cast<std::size_t>(lineNo));
             const auto end = lineSelectionEnd(static_cast<std::size_t>(lineNo));
@@ -2747,7 +2781,7 @@ bool EditorWidget::eventFilter(QObject* watched, QEvent* event) {
                 return true;
             }
             if (!busy_ && line >= 0 && static_cast<std::size_t>(line) < buffer_.lineCount()) {
-                const auto column = byteColumnAtX(help->pos().x(), line);
+                const auto column = positionAtPoint(help->pos().x(),help->pos().y(),line)-buffer_.lineStart(line);
                 const auto start=buffer_.lineStart(line);
                 const int utf16=static_cast<int>(std::min<std::size_t>(INT_MAX,buffer_.utf16Before(start+column)-buffer_.utf16Before(start)));
                 emit hoverRequested(line, utf16, help->globalPos());
@@ -2820,10 +2854,9 @@ void EditorWidget::inputMethodEvent(QInputMethodEvent* event) {
 }
 
 QRect EditorWidget::inputCursorRect() const {
-    const auto lineNo = currentLine();
-    int x=gutterWidth()+12+cursorPixelColumn()-horizontalScrollBar()->value();
+    int x=gutterWidth()+12+cursorPixelColumn()-screenOriginX(cursorPosition_);
     if (!preeditText_.isEmpty()) x += textWidth(preeditText_.left(preeditCursor_));
-    const int y = (visualRowForLine(static_cast<int>(lineNo)) - verticalScrollBar()->value()) * lineHeight();
+    const int y = (screenRowForPosition(cursorPosition_) - verticalScrollBar()->value()) * lineHeight();
     return QRect(x, y, vimCaretWidth(), lineHeight());
 }
 
@@ -2975,6 +3008,7 @@ void EditorWidget::refreshEditorConfig() {
     if(!editorConfig_.warning.isEmpty())emit highlightingStatusChanged(editorConfig_.warning);
     const int width=editorConfig_.tabSize();
     if(tabWidth_!=width) {
+        screenLayoutDirty_=screenWrapFull_=true;
         tabWidth_=width;hitTestLine_=-1;horizontalExtentDirty_=true;
         updateScrollBars();viewport()->update();
         if(miniMap_)miniMap_->invalidate();
@@ -3024,6 +3058,7 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
                 while(trackedVimAnchors[i]->lostPositions.size()>256)trackedVimAnchors[i]->lostPositions.erase(trackedVimAnchors[i]->lostPositions.begin());}
             diffHighlights_.clear();
             const auto top=verticalScrollBar()->value();buffer_=std::move(*result->buffer);history_=std::move(*result->history);
+            screenWrapFull_=true;
             if(!historyReplay && result->editBegin)noteVimEdit(*result->editBegin,result->editEnd.value_or(*result->editBegin)-*result->editBegin);
             cursorPosition_=std::min(result->cursor.cursorPosition,buffer_.size());cursors_=result->cursor.cursorPositions.empty()?std::vector<std::size_t>{cursorPosition_}:result->cursor.cursorPositions;
             cursorAnchors_.assign(cursors_.size(),std::nullopt);clearAllSelections();invalidateLineCache();horizontalExtentDirty_=true;

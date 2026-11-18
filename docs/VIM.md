@@ -1,4 +1,4 @@
-# Vim mode — stages 1–8
+# Vim mode — stages 1–9
 
 Enable **Settings → Vim mode / Настройки → Режим Vim**, or search for `Vim`
 in the command palette (**Ctrl+Shift+P**, command ID `settings.vimMode`).
@@ -143,6 +143,42 @@ C-style constructs and ordinary text; the full `cinoptions`, `indentexpr`,
 `formatexpr`, `formatprg`, custom `comments` and `formatoptions` configurations
 are not implemented. They must not be interpreted as supported Vim options.
 Reflow rejects indentation over 1 MiB to bound repeated-prefix allocation.
+
+## Screen navigation and folds
+
+| Keys | Action |
+| --- | --- |
+| `H`, `M`, `L` | Move to the top, middle or bottom of the viewport. Counts on `H/L` count inward from that edge. |
+| `gj/gk` | Move by displayed rows, including wrapped continuations. Ordinary `j/k` move by document lines and skip closed folds. |
+| `g0/g^/g$`, `gm` | Move to the start, first nonblank, end or middle of the visible row. |
+| `Ctrl+D/U` | Scroll down/up by half a page. A count sets the size for following half-page commands. |
+| `Ctrl+F/B`, `Ctrl+E/Y` | Scroll by a page or a single row. |
+| `zt/zz/zb` | Put the cursor row at the top, middle or bottom. A count selects the destination document line. |
+| `zh/zl`, `zH/zL`, `zs/ze` | Scroll horizontally by character widths or half a viewport, or align the viewport to the cursor. |
+| `zf{motion}`, Visual `zf`, `[count]zF`, `:[range]fold` | Create a closed manual fold. |
+| `za/zo/zc`, `zA/zO/zC` | Toggle, open or close a fold. Uppercase variants also affect children. |
+| `zM/zR`, `zn/zN/zi` | Close or open all folds, or control whether folding is displayed. |
+| `zd/zD/zE` | Delete the current fold, its subtree, or all folds. |
+| `zj/zk`, `[z/]z` | Jump between folds or to the boundaries of an open fold. Closed folds are represented by their header. |
+
+Use `:set wrap` to enable soft wrapping in the current editor and
+`:set nowrap` to turn it off. Wrapping starts off to match the editor's usual
+horizontal scrolling. Wraps use grapheme boundaries and account for tabs.
+Lines larger than 64 KiB retain the editor's horizontal scrolling path.
+The first wrap layout and changes to available width remeasure the document.
+While editing, unchanged wrap boundaries are reused. Screen motions respect
+the editor's measured viewport, so pixel widths and line breaks can differ
+from a terminal with fixed cell widths.
+
+Manual folds are local to the open editor and nest up to the total limit of
+2,048 configured ranges. Double-click a closed header to open it. The buffer,
+line numbers and saved bytes retain their original document positions. Fold
+boundaries follow edits and text Undo/Redo. Creating or removing a fold does
+not add a text Undo step. Accepted search and navigation reveal hidden
+destinations, while cancelling an incremental search restores its temporary
+fold openings. Built-in comparison views keep their alignment and temporarily
+suspend wrapping and folding. Automatic syntax/indent/marker folds and
+persistence across reloads are outside this manual-fold implementation.
 
 ## Registers
 
@@ -581,7 +617,7 @@ Build `turtle-code`, `turtle-code-editor-tests` and `turtle-code-window-tests`,
 then run:
 
 ```sh
-ctest --test-dir build -R '^vim-(editor|insert|insert-window|normal|session|ex|ex-extended|search|search-core|window)$' --output-on-failure
+ctest --test-dir build -R '^vim-(editor|viewport|insert|insert-window|normal|session|ex|ex-extended|search|search-core|window)$' --output-on-failure
 ```
 
 Tests cover mode transitions, inclusive selections, Unicode/CRLF, input methods,
