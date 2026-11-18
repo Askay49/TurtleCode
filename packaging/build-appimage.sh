@@ -43,6 +43,13 @@ download_tool linuxdeploy/linuxdeploy 1-alpha-20251107-1 linuxdeploy-x86_64.AppI
 download_tool linuxdeploy/linuxdeploy-plugin-qt 1-alpha-20250213-1 linuxdeploy-plugin-qt-x86_64.AppImage \
     15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
 
+# The AppImage runtime sets ARGV0 to the launcher path. Turtle Code does not
+# use it, and zsh would otherwise use it as argv[0] for external commands.
+mkdir -p "$app_dir/apprun-hooks"
+cat > "$app_dir/apprun-hooks/turtle-code-environment.sh" <<'EOF'
+unset ARGV0
+EOF
+
 # Extraction avoids requiring FUSE on the build runner. Bundle TLS libraries
 # explicitly because QtNetwork loads its SSL backend at runtime.
 export APPIMAGE_EXTRACT_AND_RUN=1
@@ -81,6 +88,19 @@ chmod 700 "$work_dir/runtime"
     printf '%s\n' "$packaged_version"
     if [[ -n "${APPIMAGE_RELEASE_TAG:-}" && "$packaged_version" != "Turtle Code $APPIMAGE_RELEASE_TAG" ]]; then
         echo "AppImage version does not match tag $APPIMAGE_RELEASE_TAG." >&2
+        exit 1
+    fi
+
+    # Inspect the environment handed to the payload by the generated launcher.
+    # Replace only the launcher symlink in this temporary extraction.
+    rm -- squashfs-root/AppRun.wrapped
+    cat > squashfs-root/AppRun.wrapped <<'EOF'
+#!/bin/sh
+test "${ARGV0+set}" != set
+EOF
+    chmod +x squashfs-root/AppRun.wrapped
+    if ! env ARGV0="$LDAI_OUTPUT" timeout 30 ./squashfs-root/AppRun; then
+        echo "AppRun did not clear ARGV0 before launching the payload." >&2
         exit 1
     fi
 )

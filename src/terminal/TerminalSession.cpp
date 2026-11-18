@@ -57,8 +57,6 @@ void TerminalSession::start(const QString& directory, const QString& program, co
         if (shell.isEmpty()) shell = QStringLiteral("/bin/sh");
     }
     auto environment = QProcessEnvironment::systemEnvironment();
-    // APPIMAGE identifies the editor's launcher and can interfere with host tools.
-    environment.remove("APPIMAGE");
     for(auto it=overrides.begin();it!=overrides.end();++it) {
         if(it.value().isNull()) environment.remove(it.key()); else environment.insert(it.key(),it.value().toString());
     }
