@@ -17,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFile>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <signal.h>
 #include <unistd.h>
@@ -218,6 +219,33 @@ private slots:
         output.clear(); session.start(directory.path(), "/bin/sh", {"-c", "printf restarted"});
         QTRY_VERIFY_WITH_TIMEOUT(output.contains("restarted"), 5000);
         QTRY_VERIFY_WITH_TIMEOUT(!session.isRunning(), 5000);
+    }
+    void appImageEnvironment() {
+        const auto previous = qgetenv("APPIMAGE");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull())
+                qunsetenv("APPIMAGE");
+            else
+                qputenv("APPIMAGE", previous);
+        });
+        QVERIFY(qputenv("APPIMAGE", "/tmp/Turtle_Code.AppImage"));
+
+        TerminalSession session;
+        QByteArray output;
+        QSignalSpy done(&session, &TerminalSession::finished);
+        connect(&session, &TerminalSession::output, this, [&](const QByteArray& bytes) { output += bytes; });
+        const QStringList arguments{"-c", "printf '%s' \"${APPIMAGE-unset}\""};
+        session.start({}, "/bin/sh", arguments);
+        QTRY_COMPARE_WITH_TIMEOUT(done.count(), 1, 5000);
+        QCOMPARE(done.takeFirst().at(0).toInt(), 0);
+        QCOMPARE(output, QByteArray("unset"));
+        QCOMPARE(qgetenv("APPIMAGE"), QByteArray("/tmp/Turtle_Code.AppImage"));
+
+        output.clear();
+        session.start({}, "/bin/sh", arguments, {{"APPIMAGE", "/tmp/child.AppImage"}});
+        QTRY_COMPARE_WITH_TIMEOUT(done.count(), 1, 5000);
+        QCOMPARE(done.takeFirst().at(0).toInt(), 0);
+        QCOMPARE(output, QByteArray("/tmp/child.AppImage"));
     }
     void interruptAndLiveResize() {
         TerminalWidget terminal; terminal.resize(800, 320); terminal.show();
