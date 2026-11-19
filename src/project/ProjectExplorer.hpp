@@ -17,11 +17,14 @@ public:
     void setRoots(const QStringList& roots);
     void setShowHidden(bool show);
     void setIncludeIgnored(bool include);
+    void revealPath(const QString& path, bool interactive = false);
+    void cancelAutomaticReveal();
     [[nodiscard]] QStringList roots() const { return roots_; }
 
 signals:
     void filesChanged();
     void backgroundError(const QString& error);
+    void revealFailed();
     void fileClicked(const QString& path);
     void fileActivated(const QString& path);
     void pathRenamed(const QString& oldPath, const QString& newPath);
@@ -31,14 +34,23 @@ signals:
 private:
     using Entry=DirectoryEntry;
     using Entries=QList<Entry>;
-    struct Page {Entries entries;std::shared_ptr<DirectoryListing> listing;qint64 offset{};QString error;};
+    struct Page {
+        Entries entries;
+        std::shared_ptr<DirectoryListing> listing;
+        qint64 offset{};
+        QString error;
+        bool targetMissing{false};
+    };
     std::shared_ptr<std::atomic_bool> scanCancel_{std::make_shared<std::atomic_bool>(false)};
     QHash<QString,std::shared_ptr<DirectoryListing>> listings_;
     QHash<QString,qint64> pageOffsets_;
 
     void addRoot(const QString& root);
     void addRootItem(const QString& path);
-    void loadDirectory(QTreeWidgetItem* item, bool force = false, bool pageOnly = false);
+    void loadDirectory(QTreeWidgetItem* item, bool force = false, bool pageOnly = false,
+                       const QString& revealChild = {});
+    void continueReveal();
+    void finishReveal(bool found);
     void refreshDirectory(const QString& path);
     void remapPathState(const QString& oldPath, const QString& newPath);
     void remapTreePaths(const QString& oldPath, const QString& newPath);
@@ -60,7 +72,8 @@ private:
     QHash<QString, bool> loading_;
     QHash<QString, bool> reloadPending_;
     QStringList pendingExpandedPaths_;
-    QString pendingSelectedPath_;
+    QStringList revealPaths_;
+    bool interactiveReveal_{false};
     quint64 generation_{0};
     bool showHidden_{false}, includeIgnored_{false};
 };

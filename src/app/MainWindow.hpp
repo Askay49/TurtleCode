@@ -231,6 +231,9 @@ private:
     QWidget* sidebar_{nullptr};
     void setSidebarVisible(bool visible);
     void updateSidebarActivities();
+    [[nodiscard]] QString activeExplorerPath() const;
+    void syncExplorerToActiveFile();
+    bool autoRevealActiveFile_{false};
     QToolButton* explorerActivity_{nullptr};
     QToolButton* searchActivity_{nullptr};
     QStringList projectRoots_;

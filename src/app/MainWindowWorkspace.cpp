@@ -131,6 +131,7 @@ void MainWindow::updateWorkspaceFocus(bool focus) {
     updateEditorPaneActions();
     updateWindowTitle();
     scheduleOutline();
+    syncExplorerToActiveFile();
     scheduleFilePreviewCleanup();
 }
 

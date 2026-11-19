@@ -303,8 +303,12 @@ void MainWindow::createUi() {
     explorerHeading->setObjectName("explorerHeading");
     explorerLayout->addWidget(explorerHeading);
     explorer_ = new ProjectExplorer(explorerPage);
+    autoRevealActiveFile_ = QSettings().value("view/autoRevealActiveFile", false).toBool();
     connect(explorer_, &ProjectExplorer::filesChanged, workspaceIndex_, &WorkspaceIndex::invalidate);
     connect(explorer_,&ProjectExplorer::backgroundError,this,[this](const QString& error){statusBar()->showMessage(error,10000);});
+    connect(explorer_, &ProjectExplorer::revealFailed, this, [this] {
+        statusBar()->showMessage(I18n::text("The active file is unavailable in the project tree."), 5000);
+    });
     explorerLayout->addWidget(explorer_, 1);
     searchPanel_ = new SearchPanel(sidebarStack_);
     sidebarStack_->addWidget(explorerPage);
@@ -506,7 +510,10 @@ void MainWindow::createUi() {
     connect(searchActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(1); });
     connect(gitActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(2); });
     connect(debugActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(3); });
-    connect(sidebarStack_, &QStackedWidget::currentChanged, this, [this] { updateSidebarActivities(); });
+    connect(sidebarStack_, &QStackedWidget::currentChanged, this, [this] {
+        updateSidebarActivities();
+        syncExplorerToActiveFile();
+    });
     connect(explorer_, &ProjectExplorer::fileClicked, this, [this](const QString& path) {
         const auto mode = QSettings().value("editor/previewFiles", false).toBool()
             ? FileOpenMode::Preview : FileOpenMode::Regular;
@@ -662,7 +669,10 @@ void MainWindow::createUi() {
             if (current) current->setProperty("vimAlternatePath", vimAlternateEditor_ ? vimAlternateEditor_->filePath() : QString{});
         }
         updateEditorPaneActions();
-        if (!paneWorkspace_->count()) updateEditorHeaders();
+        if (!paneWorkspace_->count()) {
+            updateEditorHeaders();
+            syncExplorerToActiveFile();
+        }
         scheduleFilePreviewCleanup();
     });
 
@@ -688,7 +698,26 @@ void MainWindow::updateSidebarActivities() {
 void MainWindow::setSidebarVisible(bool visible) {
     sidebar_->setVisible(visible);
     updateSidebarActivities();
+    syncExplorerToActiveFile();
     if (!visible && tabs_ && activeEditor()) activeEditor()->setFocus();
+}
+
+QString MainWindow::activeExplorerPath() const {
+    const auto* editor = activeEditor();
+    if (!editor) return {};
+    if (!editor->filePath().isEmpty()) return editor->filePath();
+    // A newly opened file can become active before its document is loaded.
+    const auto* primary = documentEditor(editor);
+    return primary ? primary->property("openingPath").toString() : QString{};
+}
+
+void MainWindow::syncExplorerToActiveFile() {
+    if (closing_ || !autoRevealActiveFile_ || sidebar_->isHidden() ||
+        sidebarStack_->currentWidget() != explorer_->parentWidget()) {
+        explorer_->cancelAutomaticReveal();
+        return;
+    }
+    explorer_->revealPath(activeExplorerPath());
 }
 
 void MainWindow::createMenus() {
@@ -968,6 +997,19 @@ void MainWindow::createMenus() {
     connect(explorerAction, &QAction::triggered, this, [this] {
         setSidebarVisible(sidebar_->isHidden());
     });
+    auto* revealAction = viewMenu->addAction(Codicons::icon("target"), I18n::text("Reveal Active File in Project Tree"));
+    revealAction->setObjectName("view.revealActiveFile");
+    ShortcutManager::instance().bind("view.revealActiveFile", revealAction);
+    connect(revealAction, &QAction::triggered, this, [this] {
+        const auto path = activeExplorerPath();
+        if (path.isEmpty()) {
+            statusBar()->showMessage(I18n::text("No active file to show in the project tree."), 5000);
+            return;
+        }
+        sidebarStack_->setCurrentWidget(explorer_->parentWidget());
+        setSidebarVisible(true);
+        explorer_->revealPath(path, true);
+    });
     auto* debugAction = viewMenu->addAction(Codicons::icon("debug-alt"), I18n::text("Run and Debug"));
     ShortcutManager::instance().bind("view.debug",debugAction);
     connect(debugAction,&QAction::triggered,this,[this]{setSidebarVisible(true);sidebarStack_->setCurrentWidget(debugPanel_);});
@@ -1016,6 +1058,7 @@ void MainWindow::setProjectRoots(const QStringList& roots, bool explicitProject)
     if (lsp_) lsp_->setRoot(projectRoots_.isEmpty() ? QDir::homePath() : projectRoots_.front());
     if (terminalPanel_) terminalPanel_->setDirectory(projectRoots_.value(0));
     explorer_->setRoots(projectRoots_);
+    syncExplorerToActiveFile();
     searchPanel_->setRoots(projectRoots_);
     gitPanel_->setRoots(projectRoots_);
     if (gitDiff_) gitDiff_->hide();

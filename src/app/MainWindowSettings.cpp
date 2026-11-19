@@ -367,6 +367,9 @@ void MainWindow::showSettings(SettingsPage initialPage) {
     previewOptions->addSpacing(20);
     previewOptions->addWidget(pinOnEdit);
     filesLayout->addLayout(previewOptions);
+    auto* autoReveal = checkBox(files, "settingsAutoRevealActiveFile", "Reveal active file automatically",
+                                "view/autoRevealActiveFile", false);
+    filesLayout->addWidget(autoReveal);
     filesLayout->addSpacing(10);
     auto* hidden = checkBox(files, "settingsShowHidden", "Show Hidden Files", "view/showHidden", false);
     auto* ignored = checkBox(files, "settingsIncludeIgnored", "Include ignored files", "project/includeIgnored", false);
@@ -507,6 +510,7 @@ void MainWindow::showSettings(SettingsPage initialPage) {
         settings.setValue("appearance/backgroundImage", imagePath->text());
         settings.setValue("appearance/backgroundOpacity", opacity->value());
         settings.setValue("view/showHidden", hidden->isChecked());
+        settings.setValue("view/autoRevealActiveFile", autoReveal->isChecked());
         settings.setValue("project/includeIgnored", ignored->isChecked());
         settings.setValue("editor/previewFiles", preview->isChecked());
         settings.setValue("editor/pinPreviewOnEdit", pinOnEdit->isChecked());
@@ -533,6 +537,10 @@ void MainWindow::showSettings(SettingsPage initialPage) {
             || semanticBeforeSave != settings.value("lsp/semanticHighlighting", true).toBool();
         for (auto* widget : QApplication::allWidgets()) {
             if (auto* window = qobject_cast<MainWindow*>(widget)) {
+                if (window->autoRevealActiveFile_ != autoReveal->isChecked()) {
+                    window->autoRevealActiveFile_ = autoReveal->isChecked();
+                    window->syncExplorerToActiveFile();
+                }
                 if (previewChanged) {
                     const auto previews = window->filePreviews_;
                     for (auto* editor : previews) {

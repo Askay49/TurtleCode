@@ -28,6 +28,8 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 namespace {
+constexpr qint64 directoryPageSize = 500;
+
 QString cleanPath(const QString& path) {
     return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
 }
@@ -99,6 +101,7 @@ void ProjectExplorer::setRoots(const QStringList& roots) {
     loading_.clear();
     reloadPending_.clear();
     pendingExpandedPaths_.clear();
+    finishReveal(true);
     const QStringList watched = watcher_.directories();
     if (!watched.isEmpty()) watcher_.removePaths(watched);
     for (const QString& root : roots) {
@@ -123,6 +126,7 @@ void ProjectExplorer::setShowHidden(bool show) {
         if (QTreeWidgetItem* item = findItem(path))
             loadDirectory(item, true);
     }
+    continueReveal();
 }
 
 void ProjectExplorer::setIncludeIgnored(bool include) {
@@ -130,6 +134,84 @@ void ProjectExplorer::setIncludeIgnored(bool include) {
     includeIgnored_=include;
     const bool hidden=showHidden_;showHidden_=!hidden;setShowHidden(hidden);
 }
+
+void ProjectExplorer::revealPath(const QString& inputPath, bool interactive) {
+    const QString path = inputPath.isEmpty() ? QString{} : cleanPath(inputPath);
+    if (!revealPaths_.isEmpty() && revealPaths_.back() == path) {
+        interactiveReveal_ |= interactive;
+        return;
+    }
+
+    revealPaths_.clear();
+    interactiveReveal_ = interactive;
+    if (!path.isEmpty()) {
+        for (const auto& root : roots_) {
+            const QDir directory(root);
+            const auto relative = directory.relativeFilePath(path);
+            if (relative == ".." || relative.startsWith("../") || QDir::isAbsolutePath(relative))
+                continue;
+
+            revealPaths_.append(root);
+            if (path != root) {
+                for (const auto& part : relative.split('/'))
+                    revealPaths_.append(QDir(revealPaths_.back()).filePath(part));
+            }
+            continueReveal();
+            return;
+        }
+    }
+    finishReveal(false);
+}
+
+void ProjectExplorer::cancelAutomaticReveal() {
+    if (!interactiveReveal_) revealPaths_.clear();
+}
+
+void ProjectExplorer::continueReveal() {
+    if (revealPaths_.isEmpty()) return;
+    auto* item = findItem(revealPaths_.front());
+    if (!item) {
+        finishReveal(false);
+        return;
+    }
+
+    for (qsizetype i = 1; i < revealPaths_.size(); ++i) {
+        const auto& parentPath = revealPaths_[i - 1];
+        const auto& childPath = revealPaths_[i];
+        if (loading_.value(parentPath)) return;
+
+        QTreeWidgetItem* child = nullptr;
+        if (loaded_.value(parentPath)) {
+            for (int row = 0; row < item->childCount(); ++row) {
+                auto* candidate = item->child(row);
+                if (candidate->data(0, Qt::UserRole).toString() == childPath) {
+                    child = candidate;
+                    break;
+                }
+            }
+        }
+        if (!child) {
+            const bool useListing = loaded_.value(parentPath) && !dirtyDirectories_.contains(parentPath);
+            loadDirectory(item, true, useListing, childPath);
+            return;
+        }
+
+        item->setExpanded(true);
+        item = child;
+    }
+
+    finishReveal(true);
+    setCurrentItem(item);
+    scrollToItem(item);
+}
+
+void ProjectExplorer::finishReveal(bool found) {
+    const bool reportFailure = !found && interactiveReveal_;
+    revealPaths_.clear();
+    interactiveReveal_ = false;
+    if (reportFailure) emit revealFailed();
+}
+
 void ProjectExplorer::watchDirectory(const QString& path) {
     if(watcher_.directories().contains(path) || watcher_.addPath(path))failedWatches_.remove(path);
     else failedWatches_.insert(path);
@@ -157,10 +239,13 @@ void ProjectExplorer::addRootItem(const QString& path) {
 }
 
 
-void ProjectExplorer::loadDirectory(QTreeWidgetItem* item, bool force, bool pageOnly) {
+void ProjectExplorer::loadDirectory(QTreeWidgetItem* item, bool force, bool pageOnly, const QString& revealChild) {
     if (!item) return;
     const QString path = item->data(0, Qt::UserRole).toString();
-    if (path.isEmpty() || !QFileInfo(path).isDir()) return;
+    if (path.isEmpty() || !QFileInfo(path).isDir()) {
+        if (!revealChild.isEmpty()) finishReveal(false);
+        return;
+    }
     if (loading_.value(path, false) || (loaded_.value(path, false) && !force)) return;
 
     loading_[path] = true;
@@ -183,7 +268,7 @@ void ProjectExplorer::loadDirectory(QTreeWidgetItem* item, bool force, bool page
     item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
     const QString root = item->data(0, Qt::UserRole + 1).toString();
     auto* future = new QFutureWatcher<Page>(this);
-    connect(future, &QFutureWatcher<Page>::finished, this, [this, future, path, root, generation] {
+    connect(future, &QFutureWatcher<Page>::finished, this, [this, future, path, root, generation, revealChild] {
         const auto page = future->result();
         const Entries entries=page.entries;
         future->deleteLater();
@@ -191,9 +276,22 @@ void ProjectExplorer::loadDirectory(QTreeWidgetItem* item, bool force, bool page
         QTreeWidgetItem* parent = findItem(path);
         if (!parent) {
             loading_.remove(path);
+            continueReveal();
             return;
         }
-        if(!page.error.isEmpty()){loading_[path]=false;setToolTip(page.error);emit backgroundError(page.error);return;}
+        if (!revealChild.isEmpty() && !revealPaths_.contains(revealChild)) {
+            loading_[path] = false;
+            if (reloadPending_.take(path) && parent->isExpanded()) loadDirectory(parent, true);
+            continueReveal();
+            return;
+        }
+        if (!page.error.isEmpty()) {
+            loading_[path] = false;
+            if (revealPaths_.contains(path)) finishReveal(false);
+            setToolTip(page.error);
+            emit backgroundError(page.error);
+            return;
+        }
         listings_[path]=page.listing;pageOffsets_[path]=page.offset;
         // Publish the completed load before model changes can trigger callbacks.
         // Keep loading_ set until reconciliation is done to prevent reentry.
@@ -207,7 +305,7 @@ void ProjectExplorer::loadDirectory(QTreeWidgetItem* item, bool force, bool page
         auto state=std::make_shared<Delivery>();state->entries=entries;state->previous=parent->childCount()-1;
         auto deliver=std::make_shared<std::function<void()>>();
         const std::weak_ptr<std::function<void()>> weak=deliver;
-        *deliver=[this,path,root,generation,state,weak,page] {
+        *deliver=[this,path,root,generation,state,weak,page,revealChild] {
             if(generation!=generation_)return;
             auto* parent=findItem(path);if(!parent)return;
             QElapsedTimer budget;budget.start();
@@ -278,13 +376,17 @@ void ProjectExplorer::loadDirectory(QTreeWidgetItem* item, bool force, bool page
         // An empty directory is still expandable/collapsible. Hiding its
         // indicator left it visually stuck open, with no way to collapse it.
         parent->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
-        if(page.offset>0){auto* previous=new QTreeWidgetItem(parent,{I18n::text("Previous page")});previous->setData(0,Qt::UserRole+10,std::max<qint64>(0,page.offset-500));previous->setIcon(0,Codicons::icon("chevron-left"));}
+        if(page.offset>0){auto* previous=new QTreeWidgetItem(parent,{I18n::text("Previous page")});previous->setData(0,Qt::UserRole+10,std::max<qint64>(0,page.offset-directoryPageSize));previous->setIcon(0,Codicons::icon("chevron-left"));}
         if(page.offset+page.entries.size()<page.listing->size()){auto* next=new QTreeWidgetItem(parent,{I18n::text("Next page")});next->setData(0,Qt::UserRole+10,page.offset+page.entries.size());next->setIcon(0,Codicons::icon("chevron-right"));}
         watchDirectory(path);
         loading_[path] = false;
         // Restore expanded descendants progressively as each lazy level loads.
         restoreExpandedPaths();
-        if (reloadPending_.take(path) && parent->isExpanded()) loadDirectory(parent, true);
+        if (reloadPending_.take(path) && (parent->isExpanded() || revealPaths_.contains(path)))
+            loadDirectory(parent, true);
+        else if (page.targetMissing && revealPaths_.contains(revealChild))
+            finishReveal(false);
+        continueReveal();
         };
         (*deliver)();
     });
@@ -292,13 +394,24 @@ void ProjectExplorer::loadDirectory(QTreeWidgetItem* item, bool force, bool page
     const bool showHidden = showHidden_;
     const bool includeIgnored = includeIgnored_;
     const auto cancel=scanCancel_;
-    const auto cached=pageOnly?listings_.value(path):std::shared_ptr<DirectoryListing>{};const auto offset=pageOffsets_.value(path);
-    future->setFuture(QtConcurrent::run(&WorkspaceThreads::indexing(),[path,root,showHidden,includeIgnored,cached,offset,cancel] {
+    const auto cached = pageOnly ? listings_.value(path) : std::shared_ptr<DirectoryListing>{};
+    const auto offset = pageOffsets_.value(path);
+    future->setFuture(QtConcurrent::run(&WorkspaceThreads::indexing(),
+                                      [path, root, showHidden, includeIgnored, cached, offset, cancel, revealChild] {
         Page page;
-        try {page.listing=cached?cached:DirectoryListing::scan(root,path,{showHidden,includeIgnored,{}},cancel);
-             page.offset=page.listing->size()?std::min(offset,((page.listing->size()-1)/500)*500):0;
-             page.entries=page.listing->page(page.offset,500);
-        }catch(const std::exception& error){page.error=QString::fromUtf8(error.what());}
+        try {
+            page.listing = cached ? cached : DirectoryListing::scan(root, path, {showHidden, includeIgnored, {}}, cancel);
+            const auto last = std::max<qint64>(0, page.listing->size() - 1);
+            page.offset = std::min(offset, last / directoryPageSize * directoryPageSize);
+            if (!revealChild.isEmpty()) {
+                const auto position = page.listing->position(revealChild, cancel);
+                if (position) page.offset = *position / directoryPageSize * directoryPageSize;
+                else page.targetMissing = true;
+            }
+            page.entries = page.listing->page(page.offset, directoryPageSize);
+        } catch (const std::exception& error) {
+            page.error = QString::fromUtf8(error.what());
+        }
         return page;
     }));
 }

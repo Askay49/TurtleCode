@@ -654,7 +654,11 @@ int main(int argc,char**argv) {
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--lsp"){lspWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--terminal"){terminalWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--git"){gitWindowTests(directory);return 0;}
-    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--project-scale"){projectScaleWindowTests(directory);return 0;}
+    if (argc > 1 && QString::fromLocal8Bit(argv[1]) == "--project-scale") {
+        projectScaleWindowTests(directory);
+        explorerRevealTests(directory);
+        return 0;
+    }
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-insert"){vimInsertWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-workspace"){vimWorkspaceTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--vim"){vimWindowTests(directory);return 0;}
