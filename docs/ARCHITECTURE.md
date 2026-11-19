@@ -1,4 +1,4 @@
-# Architecture notes — v0.10.3
+# Architecture notes — v0.10.4
 
 ## Text core
 
