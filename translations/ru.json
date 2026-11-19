@@ -84,6 +84,7 @@
   "Preview files on single click": "Открывать предпросмотр файла по одиночному клику",
   "Keep preview files open after editing": "Закреплять файл при редактировании",
   "Reveal active file automatically": "Автоматически показывать активный файл в дереве",
+  "Compact folders in the project tree": "Компактные папки в дереве проекта",
   "Preview of %1": "Предпросмотр файла %1",
   "History and recovery": "История и восстановление",
   "Undo and redo": "Отмена и повтор",

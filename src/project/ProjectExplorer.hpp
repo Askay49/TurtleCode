@@ -17,6 +17,7 @@ public:
     void setRoots(const QStringList& roots);
     void setShowHidden(bool show);
     void setIncludeIgnored(bool include);
+    void setCompactFolders(bool compact);
     void setVimEnabled(bool enabled) { vimEnabled_ = enabled; }
     void revealPath(const QString& path, bool interactive = false);
     void cancelAutomaticReveal();
@@ -46,6 +47,7 @@ private:
     using Entries=QList<Entry>;
     struct Page {
         Entries entries;
+        QHash<QString, QString> compactEnds;
         std::shared_ptr<DirectoryListing> listing;
         qint64 offset{};
         QString error;
@@ -57,12 +59,16 @@ private:
 
     void addRoot(const QString& root);
     void addRootItem(const QString& path);
+    void reloadDirectoryRows();
     bool activatePageItem(QTreeWidgetItem* item);
     void loadDirectory(QTreeWidgetItem* item, bool force = false, bool pageOnly = false,
                        const QString& revealChild = {});
     void continueReveal();
     void finishReveal(bool found);
     void refreshDirectory(const QString& path);
+    void invalidateDirectory(QTreeWidgetItem* item);
+    void forgetSubtree(QTreeWidgetItem* item, bool keepPageOffsets = false);
+    void indexItem(QTreeWidgetItem* item);
     void remapPathState(const QString& oldPath, const QString& newPath);
     void remapTreePaths(const QString& oldPath, const QString& newPath);
     void restoreExpandedPaths();
@@ -81,12 +87,16 @@ private:
     QStringList roots_;
     QFileSystemWatcher watcher_;
     QHash<QString, bool> loaded_;
-    QHash<QString, bool> loading_;
+    QHash<QString, quint64> loading_;
     QHash<QString, bool> reloadPending_;
     QStringList pendingExpandedPaths_;
     QStringList revealPaths_;
+    QSet<QString> recheckedRevealDirectories_;
+    QString pendingSelectionPath_;
     bool interactiveReveal_{false};
     quint64 generation_{0};
+    quint64 nextLoad_{0};
     bool showHidden_{false}, includeIgnored_{false};
     bool vimEnabled_{false};
+    bool compactFolders_{false};
 };

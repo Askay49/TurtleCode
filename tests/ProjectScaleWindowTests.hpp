@@ -404,3 +404,134 @@ static void explorerHeaderTests(QTemporaryDir& temporary) {
     assert(rootItem->isExpanded() && !src->isExpanded());
     closeDiscard(window);
 }
+
+static void explorerCompactFolderTests(QTemporaryDir& temporary) {
+    const QDir root(temporary.filePath("compact-folders"));
+    const QString src = root.filePath("src");
+    const QString middle = src + "/core";
+    const QString end = middle + "/text";
+    assert(QDir().mkpath(end));
+    const auto writeFile = [](const QString& path) {
+        QFile file(path);
+        assert(file.open(QIODevice::WriteOnly) && file.write("sample\n") == 7);
+    };
+    {
+        QFile ignore(root.filePath(".turtleignore"));
+        assert(ignore.open(QIODevice::WriteOnly));
+        assert(ignore.write("src/ignored.txt\n") == 16);
+    }
+    writeFile(src + "/ignored.txt");
+    writeFile(middle + "/.hidden.txt");
+    for (int i = 0; i <= 500; ++i)
+        writeFile(end + QString("/file%1.txt").arg(i, 4, 10, QChar('0')));
+
+    MainWindow window;
+    window.show();
+    window.activateWindow();
+    window.openPaths({root.path()});
+    auto* tree = window.findChild<ProjectExplorer*>();
+    auto* tabs = window.findChild<QTabWidget*>("editorTabs");
+    auto* reveal = window.findChild<QAction*>("view.revealActiveFile");
+    assert(tree && tabs && reveal);
+    const auto row = [&](const QString& name) {
+        return tree->findItems(name, Qt::MatchExactly | Qt::MatchRecursive).value(0);
+    };
+    const auto selectedPath = [&] {
+        const auto* selected = tree->currentItem();
+        return selected ? selected->data(0, Qt::UserRole).toString() : QString{};
+    };
+    const auto setCompact = [&](bool enabled) {
+        QTimer::singleShot(0, &window, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            assert(dialog);
+            auto* setting = dialog->findChild<QCheckBox*>("settingsCompactFolders");
+            assert(setting && setting->isChecked() != enabled);
+            setting->setChecked(enabled);
+            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->click();
+        });
+        window.findChild<QAction*>("settings.open")->trigger();
+        assert(QSettings().value("view/compactFolders").toBool() == enabled);
+    };
+
+    assert(waitFor([&] { return window.isActiveWindow() && row("src"); }));
+    assert(!row("src/core/text"));
+    setCompact(true);
+    assert(waitFor([&] { return row("src/core/text"); }));
+    auto* compact = row("src/core/text");
+    assert(compact->parent() == tree->topLevelItem(0) && compact->toolTip(0) == end);
+    assert(!compact->isExpanded() && compact->childCount() == 0);
+
+    window.activateWindow();
+    assert(waitFor([&] { return window.isActiveWindow(); }));
+    tree->scrollToItem(compact);
+    const QRect rect = tree->visualItemRect(compact);
+    const QPoint rowLabel(rect.left() + 24, rect.center().y());
+    assert(rect.isValid() && tree->itemAt(rowLabel) == compact);
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, rowLabel);
+    assert(waitFor([&] { return tree->hasFocus() && compact->isExpanded() && row("file0000.txt"); }));
+    assert(selectedPath() == end);
+
+    const QString lateFile = end + "/file0500.txt";
+    window.openPaths({lateFile});
+    assert(waitFor([&] {
+        const auto* editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
+        return editor && !editor->isBusy() && editor->filePath() == lateFile;
+    }));
+    reveal->trigger();
+    assert(waitFor([&] { return selectedPath() == lateFile; }));
+    assert(tree->currentItem()->parent() == compact);
+
+    const QString branchFile = middle + "/sibling.txt";
+    writeFile(branchFile);
+    assert(waitFor([&] {
+        return row("src/core") && row("text") && selectedPath() == lateFile;
+    }));
+    assert(QFile::remove(branchFile));
+    assert(waitFor([&] { return row("src/core/text") && selectedPath() == lateFile; }));
+
+    writeFile(branchFile);
+    tree->revealPath(branchFile, true); // Reveal before the watcher has refreshed the chain.
+    assert(waitFor([&] { return row("src/core") && selectedPath() == branchFile; }));
+    assert(QFile::remove(branchFile));
+    reveal->trigger();
+    assert(waitFor([&] { return row("src/core/text") && selectedPath() == lateFile; }));
+
+    tree->setShowHidden(true);
+    assert(waitFor([&] { return row("src/core") && row(".hidden.txt"); }));
+    tree->setShowHidden(false);
+    assert(waitFor([&] { return row("src/core/text") && selectedPath() == lateFile; }));
+    tree->setIncludeIgnored(true);
+    assert(waitFor([&] { return row("src") && row("ignored.txt"); }));
+    tree->setIncludeIgnored(false);
+    assert(waitFor([&] { return row("src/core/text") && selectedPath() == lateFile; }));
+
+    setCompact(false);
+    assert(waitFor([&] {
+        return row("src") && row("core") && row("text") && selectedPath() == lateFile;
+    }));
+    setCompact(true);
+    assert(waitFor([&] { return row("src/core/text") && selectedPath() == lateFile; }));
+
+    tree->setCurrentItem(row("src/core/text"));
+    tree->setFocus();
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        assert(dialog && dialog->textValue() == "text");
+        dialog->setTextValue("buffer");
+        dialog->accept();
+    });
+    QTest::keyClick(tree, Qt::Key_F2);
+    assert(waitFor([&] {
+        const auto* editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
+        return row("src/core/buffer") && selectedPath() == middle + "/buffer" &&
+               editor && editor->filePath() == middle + "/buffer/file0500.txt";
+    }));
+
+    MainWindow fresh;
+    fresh.show();
+    fresh.openPaths({root.path()});
+    auto* freshTree = fresh.findChild<ProjectExplorer*>();
+    assert(freshTree && waitFor([&] { return !freshTree->findItems("src/core/buffer", Qt::MatchRecursive).isEmpty(); }));
+    closeDiscard(fresh);
+    closeDiscard(window);
+}
