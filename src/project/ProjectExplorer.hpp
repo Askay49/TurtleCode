@@ -29,6 +29,7 @@ signals:
     void fileClicked(const QString& path);
     void fileActivated(const QString& path, bool focusEditor);
     void searchInFolderRequested(const QString& directory);
+    void newTerminalRequested(const QString& directory);
     void pathRenamed(const QString& oldPath, const QString& newPath);
     void pathDeleted(const QString& path);
     void rootsChanged(const QStringList& roots);

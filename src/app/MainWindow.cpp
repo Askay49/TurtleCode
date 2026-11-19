@@ -527,6 +527,13 @@ void MainWindow::createUi() {
     });
     connect(explorer_, &ProjectExplorer::searchInFolderRequested, this, &MainWindow::showProjectSearch,
             Qt::QueuedConnection);
+    connect(explorer_, &ProjectExplorer::newTerminalRequested, this, [this](const QString& directory) {
+        if (closing_) return;
+        if (!terminalPanel_ || !terminalPanel_->isVisible())
+            terminalPreviousFocus_ = QApplication::focusWidget();
+        ensureTerminal();
+        terminalPanel_->openNewSession(directory);
+    }, Qt::QueuedConnection);
     connect(searchPanel_, &SearchPanel::fileActivated, this,
             [this](const QString& path, int line, int column, int length) {
         openFile(path, line, column, length);

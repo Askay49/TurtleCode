@@ -40,6 +40,9 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QTreeWidget>
+#include <QContextMenuEvent>
+#include <QDesktopServices>
+#include <QTextBrowser>
 #include <QStandardPaths>
 #include <QTest>
 #include <QTimer>
@@ -637,6 +640,127 @@ static void terminalWindowTests(const QTemporaryDir& directory) {
     assert(waitFor([&] { return !panel->session()->isRunning(); }));
 }
 
+static void explorerTerminalTests(const QTemporaryDir& directory) {
+    const auto project = directory.filePath("tree-terminal");
+    const auto folder = project + "/sub & # % ; Ω";
+    const auto filePath = folder + "/file.txt";
+    const auto nextProject = directory.filePath("next terminal project");
+    assert(QDir().mkpath(folder) && QDir().mkpath(nextProject));
+    { QFile file(filePath); assert(file.open(QIODevice::WriteOnly)); }
+
+    MainWindow window;
+    window.resize(1200, 850);
+    window.show();
+    window.activateWindow();
+    window.openPaths({project});
+    auto* tree = window.findChild<ProjectExplorer*>();
+    assert(tree);
+    const auto findItem = [tree](const QString& path) {
+        return tree->findItems(QFileInfo(path).fileName(), Qt::MatchExactly | Qt::MatchRecursive).value(0);
+    };
+    const auto choose = [&](const QString& path, const char* command) {
+        assert(waitFor([&] { return findItem(path) && tree->visualItemRect(findItem(path)).isValid(); }));
+        window.activateWindow();
+        tree->setFocus();
+        const auto position = tree->visualItemRect(findItem(path)).center();
+        QTimer::singleShot(0, &window, [command] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            assert(menu);
+            const auto actions = menu->actions();
+            const auto action = std::find_if(actions.begin(), actions.end(), [command](const QAction* item) {
+                return item->text() == I18n::text(command);
+            });
+            assert(action != actions.end());
+            QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(*action).center());
+        });
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position, tree->viewport()->mapToGlobal(position));
+        QApplication::sendEvent(tree->viewport(), &event);
+    };
+    const auto checkDirectory = [&window](TerminalSession* session, const QString& expected) {
+        QByteArray output;
+        const auto connection = QObject::connect(session, &TerminalSession::output,
+            &window, [&](const QByteArray& bytes) { output += bytes; });
+        // Encode the marker so echoed input cannot match the expected output.
+        session->write("printf '\\103\\127\\104\\n'; pwd\n");
+        assert(waitFor([&] { return output.contains("CWD\r\n" + expected.toUtf8() + "\r\n"); }));
+        QObject::disconnect(connection);
+    };
+
+    assert(waitFor([&] { return findItem(folder); }));
+    findItem(folder)->setExpanded(true);
+    QTextBrowser browser;
+    QSignalSpy urls(&browser, &QTextBrowser::anchorClicked);
+    QDesktopServices::setUrlHandler("file", &browser, "anchorClicked");
+    choose(project, "Open in File Manager");
+    choose(folder, "Open in File Manager");
+    choose(filePath, "Open in File Manager");
+    QDesktopServices::unsetUrlHandler("file");
+    assert(urls.size() == 3);
+    assert(urls.at(0).at(0).toUrl() == QUrl::fromLocalFile(project));
+    assert(urls.at(1).at(0).toUrl() == QUrl::fromLocalFile(folder));
+    assert(urls.at(2).at(0).toUrl() == QUrl::fromLocalFile(folder));
+
+    assert(!window.findChild<TerminalPanel*>());
+    choose(folder, "New Terminal Here");
+    TerminalPanel* panel = nullptr;
+    assert(waitFor([&] { panel = window.findChild<TerminalPanel*>(); return panel && panel->isVisible(); }));
+    auto* tabs = panel->findChild<QTabWidget*>("terminalTabs");
+    assert(tabs && tabs->count() == 4 && !panel->session()->isRunning());
+    auto* fromFolder = tabs->currentWidget();
+    assert(fromFolder != panel->terminal() && window.focusWidget() == fromFolder);
+    assert(tabs->tabText(tabs->currentIndex()) == "sub && # % ; Ω");
+    assert(tabs->tabToolTip(tabs->currentIndex()) == QDir::toNativeSeparators(folder));
+    const auto additionalRunningSession = [&](TerminalSession* except = nullptr) {
+        for (auto* session : panel->findChildren<TerminalSession*>())
+            if (session != panel->session() && session != except && session->processId() > 0) return session;
+        return static_cast<TerminalSession*>(nullptr);
+    };
+    assert(waitFor([&] { return additionalRunningSession(); }));
+    auto* folderSession = additionalRunningSession();
+    const auto folderPid = folderSession->processId();
+    checkDirectory(folderSession, folder);
+
+    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
+                      tabs->tabBar()->tabRect(tabs->indexOf(panel->terminal())).center());
+    assert(waitFor([&] { return panel->session()->processId() > 0; }));
+    const auto primaryPid = panel->session()->processId();
+    choose(filePath, "New Terminal Here");
+    assert(waitFor([&] { return tabs->count() == 5 && additionalRunningSession(folderSession); }));
+    auto* fromFile = tabs->currentWidget();
+    auto* fileSession = additionalRunningSession(folderSession);
+    checkDirectory(fileSession, folder);
+    assert(panel->session()->processId() == primaryPid && folderSession->processId() == folderPid);
+    auto* toggle = window.findChild<QAction*>("view.terminal");
+    toggle->trigger();
+    assert(!panel->isVisible());
+    const auto filePid = fileSession->processId();
+    toggle->trigger();
+    assert(panel->isVisible() && tabs->currentWidget() == fromFile && fileSession->processId() == filePid);
+    assert(window.focusWidget() == fromFile);
+
+    window.openPaths({nextProject});
+    assert(waitFor([&] { return panel->session()->processId() > 0 && panel->session()->processId() != primaryPid; }));
+    assert(folderSession->processId() == folderPid && fileSession->processId() == filePid);
+    checkDirectory(panel->session(), nextProject);
+    auto* restart = panel->findChild<QToolButton*>("terminalRestart");
+    assert(restart && restart->isEnabled());
+    QTest::mouseClick(restart, Qt::LeftButton);
+    assert(waitFor([&] { return fileSession->processId() > 0 && fileSession->processId() != filePid; }));
+    checkDirectory(fileSession, folder);
+
+    auto* close = panel->findChild<QToolButton*>("terminalCloseSession");
+    assert(close && close->isVisible());
+    const QPointer<TerminalSession> closed = fileSession;
+    QTest::mouseClick(close, Qt::LeftButton);
+    assert(tabs->count() == 4 && folderSession->processId() == folderPid);
+    QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    assert(closed.isNull());
+    assert(tabs->currentWidget() == fromFolder && window.focusWidget() == fromFolder);
+    checkDirectory(folderSession, folder);
+    closeDiscard(window);
+    assert(waitFor([&] { return !folderSession->isRunning() && !panel->session()->isRunning(); }));
+}
+
 #include "LspWindowTests.hpp"
 #include "DebugWindowTests.hpp"
 
@@ -652,7 +776,11 @@ int main(int argc,char**argv) {
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--debug-native"){debugNativeWindowTests();return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--debug"){debugWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--lsp"){lspWindowTests(directory);return 0;}
-    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--terminal"){terminalWindowTests(directory);return 0;}
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--terminal"){
+        terminalWindowTests(directory);
+        if (qEnvironmentVariableIsEmpty("TURTLE_CODE_TERMINAL_SCREENSHOT")) explorerTerminalTests(directory);
+        return 0;
+    }
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--git"){gitWindowTests(directory);return 0;}
     if (argc > 1 && QString::fromLocal8Bit(argv[1]) == "--project-scale") {
         projectScaleWindowTests(directory);

@@ -16,6 +16,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QDir>
 #include <algorithm>
 #include <QFile>
@@ -26,6 +27,7 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QUrl>
 #include <QtConcurrent/QtConcurrentRun>
 
 namespace {
@@ -604,9 +606,14 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
     QAction* newFileAction = menu.addAction(Codicons::icon("new-file"), I18n::text("New File..."));
     QAction* newFolderAction = menu.addAction(Codicons::icon("new-folder"), I18n::text("New Folder..."));
     QAction* searchAction = nullptr;
-    if (item && selectedInfo.isDir()) {
+    QAction* fileManagerAction = nullptr;
+    QAction* terminalAction = nullptr;
+    if (item && selectedInfo.exists()) {
         menu.addSeparator();
-        searchAction = menu.addAction(Codicons::icon("search"), I18n::text("Search in This Folder"));
+        if (selectedInfo.isDir())
+            searchAction = menu.addAction(Codicons::icon("search"), I18n::text("Search in This Folder"));
+        fileManagerAction = menu.addAction(Codicons::icon("folder-opened"), I18n::text("Open in File Manager"));
+        terminalAction = menu.addAction(Codicons::icon("terminal"), I18n::text("New Terminal Here"));
     }
     QAction* renameAction = nullptr;
     QAction* deleteAction = nullptr;
@@ -633,6 +640,12 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
         createFolderIn(targetDirectory);
     } else if (searchAction && chosen == searchAction) {
         emit searchInFolderRequested(targetDirectory);
+    } else if (fileManagerAction && chosen == fileManagerAction) {
+        if (!QFileInfo(targetDirectory).isDir() || !QDesktopServices::openUrl(QUrl::fromLocalFile(targetDirectory)))
+            emit backgroundError(I18n::text("Could not open %1 in the file manager.")
+                                     .arg(QDir::toNativeSeparators(targetDirectory)));
+    } else if (terminalAction && chosen == terminalAction) {
+        emit newTerminalRequested(targetDirectory);
     } else if (renameAction && chosen == renameAction) {
         renamePath(selectedPath);
     } else if (deleteAction && chosen == deleteAction) {
