@@ -122,6 +122,9 @@ ShortcutManager::ShortcutManager() {
     for (const auto& command : commands_) values[command.id] = sequence(command.id);
     if (!validate(values).isEmpty()) overrides_.clear();
 }
+bool ShortcutManager::hasCommand(const QString& id) const {
+    return std::any_of(commands_.begin(), commands_.end(), [&](const auto& command) { return command.id == id; });
+}
 QKeySequence ShortcutManager::sequence(const QString& id) const {
     if (overrides_.contains(id)) return overrides_.value(id);
     for (const auto& command : commands_) if (command.id == id) return command.standard;

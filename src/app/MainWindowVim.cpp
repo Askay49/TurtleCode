@@ -149,9 +149,11 @@ void MainWindow::executeVimEx(EditorWidget* editor,const VimEx::Invocation& comm
             editor->setBusy(true);editor->setProperty("openingPath",path);QPointer<EditorWidget> guard(editor);const auto cancelled=std::make_shared<std::atomic<bool>>(false);
             auto* watcher=new QFutureWatcher<Loaded>(this);
             connect(editor,&EditorWidget::vimExInterruptRequested,watcher,[cancelled]{cancelled->store(true);});
-            connect(watcher,&QFutureWatcher<Loaded>::finished,this,[watcher,guard,path,completed]{const auto result=watcher->result();watcher->deleteLater();if(!guard)return;
+            connect(watcher,&QFutureWatcher<Loaded>::finished,this,[this,watcher,guard,path,completed]{const auto result=watcher->result();watcher->deleteLater();if(!guard)return;
                 if(result.buffer){const auto position=guard->navigationPosition();guard->reloadBuffer(std::move(*result.buffer),path);guard->document()->diskState=result.state;guard->setNavigationPosition(position.x(),position.y());}
-                guard->setProperty("openingPath",QVariant{});guard->setBusy(false);completed(result.error);
+                guard->setProperty("openingPath",QVariant{});guard->setBusy(false);
+                if (result.buffer) queueVimBufferAutocmd(guard, "BufReadPost");
+                completed(result.error);
             });
             watcher->setFuture(QtConcurrent::run([path,cancelled]{Loaded result;result.buffer=std::make_shared<PieceTreeBuffer>();const auto before=diskFileState(path);std::string error;
                 if(!result.buffer->loadFile(QFile::encodeName(path).toStdString(),&error,[cancelled]{return cancelled->load();})){result.buffer.reset();result.error=QString::fromStdString(error);}
@@ -184,7 +186,15 @@ void MainWindow::executeVimEx(EditorWidget* editor,const VimEx::Invocation& comm
     QPointer<EditorWidget> guard(editor);
     const auto done=[this,guard,completed,exit](QString error){
         if(!error.isEmpty() || !guard){completed(error);return;}
-        if(exit)guard->stopVimExecution();
+        if (exit) {
+            guard->stopVimExecution();
+            if (guard->afterVimAutocmds([this, guard] {
+                if (guard && !closeEditorPane(guard)) requestClose({documentEditor(guard)}, false, !guard->isModified());
+            })) {
+                completed({});
+                return;
+            }
+        }
         completed({});if(exit && !closeEditorPane(guard))requestClose({documentEditor(guard)},false,true);
     };
     if((name=="update" || name=="xit") && !editor->isModified()){done({});return;}

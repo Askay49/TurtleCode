@@ -13,6 +13,7 @@ class ShortcutManager {
 public:
     static ShortcutManager& instance();
     const QVector<ShortcutCommand>& commands() const { return commands_; }
+    bool hasCommand(const QString& id) const;
     QKeySequence sequence(const QString& id) const;
     void bind(const QString& id, QAction* action);
     void bind(const QString& id, QShortcut* shortcut);

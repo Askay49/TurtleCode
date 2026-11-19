@@ -13,7 +13,7 @@ public:
         InsertFirst, InsertLast, OpenBelow, OpenAbove, DeleteChar, DeleteBefore, Substitute,
         DeleteEnd, ChangeEnd, ChangeLine, YankLine, PasteAfter, PasteBefore, Undo, Redo, VisualLine,
         VisualBlock, ReplaceMode, ReplaceCharacter, RepeatChange, SelectRegister, InsertRegister,
-        RecordMacro, PlayMacro, SetMark, JumpMark, JumpMarkLine, JumpBack, JumpForward, CommandLine,
+        RecordMacro, PlayMacro, SetMark, JumpMark, JumpMarkLine, JumpBack, JumpForward, CommandLine, CommandHistory,
         SearchForward,SearchBackward,SearchNext,SearchPrevious,SearchWord,SearchWordBack,RepeatSubstitute,
         Join,ToggleCase,LowerCase,UpperCase,AutoIndent,Format,Increment,Decrement,
         RestoreVisual,InsertZero,InsertPrevious,SelectMatch,WordEndBack,BigWordEndBack,SentenceNext,SentenceBack,SectionNext,SectionBack,
@@ -35,6 +35,8 @@ public:
     Action feed(const QKeyEvent& event);
     void resetPending();
     bool hasPending() const {return !pending_.isEmpty() || waiting_!=Command::Consume;}
+    bool allowsMapping() const { return waiting_ == Command::Consume && !prefixG_ && bracketPrefix_.isNull(); }
+    bool operatorPending() const { return operation_ != Command::Consume; }
     bool reserves(const QKeyEvent& event) const { return command(event) != Command::Pass; }
 private:
     bool enabled_{false};

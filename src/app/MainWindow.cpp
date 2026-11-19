@@ -734,6 +734,7 @@ void MainWindow::createUi() {
         if (!paneWorkspace_->count()) {
             updateEditorHeaders();
             syncExplorerToActiveFile();
+            updateVimAutocmdBuffer();
         }
         scheduleFilePreviewCleanup();
     });
@@ -1672,7 +1673,9 @@ void MainWindow::openFile(const QString& inputPath, int line, int column, int le
         tabs_->setTabText(tabIndex, QFileInfo(path).fileName());
         if(editorGuard->property("restoreVertical").isValid())editorGuard->verticalScrollBar()->setValue(editorGuard->property("restoreVertical").toInt());
         if(editorGuard->property("restoreHorizontal").isValid())editorGuard->horizontalScrollBar()->setValue(editorGuard->property("restoreHorizontal").toInt());
+        queueVimBufferAutocmd(editorGuard, "BufReadPost");
         if(editorGuard->property("restoreActive").toBool())activateEditor(editorGuard);
+        updateVimAutocmdBuffer();
         updateWindowTitle();
     });
     auto loadCancelled=std::make_shared<std::atomic<bool>>(false);
@@ -2046,6 +2049,7 @@ void MainWindow::writeEditor(EditorWidget* editor,const QString& path,const QByt
         updateWindowTitle();statusBar()->showMessage(I18n::text("Saved"),2000);
         checkpointRecovery();
         gitPanel_->refresh();
+        queueVimBufferAutocmd(guard, "BufWritePost");
         if(completion)completion(true);
     });
     const auto document=editor->document();
@@ -2454,10 +2458,25 @@ EditorWidget* MainWindow::createUntitledEditor() {
     editor->setProperty("openingPath", QVariant{});
     editor->setBusy(false);
     tabs_->setTabText(tabs_->indexOf(editor), I18n::text("Untitled"));
+    updateVimAutocmdBuffer();
     return editor;
 }
 
 void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool primary) {
+    editor->setVimCommandHandlers(
+        [](const QString& id) { return ShortcutManager::instance().hasCommand(id); },
+        [this, editor](const QString& id) {
+            if (closing_ || activeEditor() != editor || editor->isBusy()) return false;
+            if (id.startsWith("debug.") && !debugPanel_->commandAvailable(id.mid(6))) return false;
+            QObject* target = ShortcutManager::instance().target(id, this, editor);
+            if (auto* action = qobject_cast<QAction*>(target); action && action->isEnabled()) {
+                action->trigger();
+                return true;
+            }
+            if (auto* shortcut = qobject_cast<QShortcut*>(target); shortcut && shortcut->isEnabled())
+                return QMetaObject::invokeMethod(shortcut, "activated", Qt::DirectConnection);
+            return false;
+        });
     if (primary) connect(editor->document().get(), &Document::busyChanged, editor, [this, editor](bool busy) {
         if (documentEditor(activeEditor()) == editor) updateEditorPaneActions();
         updateEditorHeaders();

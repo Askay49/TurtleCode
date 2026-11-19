@@ -18,7 +18,7 @@ void EditorWidget::vimExMessage(const QString& message){
     if(vimExBar_){vimExInput_->parentWidget()->hide();vimExHints_->setText(message.left(4096));vimExBar_->show();positionVimCommandLine();}
 }
 void EditorWidget::projectVimExLines(std::size_t row,std::size_t column,std::size_t removed,std::size_t inserted){for(auto& frame:vimExFrames_)if(frame.marks)frame.marks->edit(qint64(row),qint64(column),qint64(removed),qint64(inserted));}
-void EditorWidget::cancelVimExFrames(){for(auto it=vimExFrames_.rbegin();it!=vimExFrames_.rend();++it)restoreVimExScope(it->scope);vimExFrames_.clear();}
+void EditorWidget::cancelVimExFrames(){vimAfterAutocmds_={};for(auto it=vimExFrames_.rbegin();it!=vimExFrames_.rend();++it)restoreVimExScope(it->scope);vimExFrames_.clear();}
 void EditorWidget::renameVimAnchors(const QString& path){const auto key=path.isEmpty()?QStringLiteral("buffer:%1").arg(quintptr(document_.get())):path;VimState::Session::instance().rename(document_.get(),vimMarkKey(),key,path);}
 bool EditorWidget::nextVimExFrame(){
     while(!vimExFrames_.empty()){
@@ -27,14 +27,19 @@ bool EditorWidget::nextVimExFrame(){
             vimExRemaining_=std::move(frame.after);vimExScope_=std::move(frame.scope);vimExFrames_.pop_back();vimExNormal_=true;
             if(!vimReplayScheduled_){vimReplayScheduled_=true;QTimer::singleShot(0,this,&EditorWidget::continueVimReplay);}return true;
         }
-        if(frame.kind==ExFrame::Register){
+        if(frame.kind==ExFrame::Register || frame.kind==ExFrame::Commands){
             if(frame.index<frame.lines.size()){vimExRemaining_=frame.lines[frame.index++];scheduleVimEx();return true;}
         }else if(const auto row=frame.marks->takeFirst()){
             const auto target=std::min<std::size_t>(std::size_t(*row),VimMotions::lastLine(buffer_,vimFinalNewline_));
             if(!frame.preserveColumn)moveCursor(vimLineStart(target),false);
             if(frame.kind==ExFrame::Global){vimExRemaining_=frame.body;scheduleVimEx();return true;}
             auto inputs=VimState::keys(frame.body);VimState::Input escape;escape.key=Qt::Key_Escape;inputs.append(escape);
-            vimExNormal_=true;replayVim(std::move(inputs));if(!vimReplay_.empty())vimReplay_.back().exNormal=true;return true;
+            vimExNormal_=true;replayVim(std::move(inputs));
+            if(!vimReplay_.empty()) {
+                vimReplay_.back().exNormal=true;
+                vimReplay_.back().remap=frame.remap;
+            }
+            return true;
         }
         auto after=std::move(frame.after);restoreVimExScope(frame.scope);vimExFrames_.pop_back();
         if(!after.isEmpty()){vimExRemaining_=std::move(after);scheduleVimEx();return true;}
@@ -88,7 +93,7 @@ void EditorWidget::beginVimNormal(const VimEx::Invocation& command){
     const auto first=command.explicitRange?command.first-1:qint64(currentLine()),last=command.explicitRange?command.last-1:first;
     if(last-first>=100000){finishVimEx(I18n::text("Vim: Ex execution limit reached"));return;}
     ExFrame frame;frame.kind=ExFrame::Normal;frame.marks=std::make_shared<VimEx::LineMarks>();for(auto row=first;row<=last;++row)frame.marks->add(row);
-    frame.preserveColumn=!command.explicitRange;frame.body=command.arguments;frame.after=std::exchange(vimExRemaining_,{});frame.scope=std::exchange(vimExScope_,{});vimExFrames_.push_back(std::move(frame));scheduleVimEx();
+    frame.preserveColumn=!command.explicitRange;frame.remap=!command.bang;frame.body=command.arguments;frame.after=std::exchange(vimExRemaining_,{});frame.scope=std::exchange(vimExScope_,{});vimExFrames_.push_back(std::move(frame));scheduleVimEx();
 }
 void EditorWidget::executeVimExRegister(const VimEx::Invocation& command){
     auto reg=command.registerName;auto& state=VimState::Session::instance();if(reg.isNull() || reg=='@')reg=state.lastExRegister;
@@ -115,5 +120,8 @@ void EditorWidget::transferVimEx(EditorWidget* target){
     // Line selections belong to this document; register programs can continue in another.
     if (!sameDocument) for(auto& frame:vimExFrames_)if(frame.marks)frame.marks=std::make_shared<VimEx::LineMarks>();
     target->vimExFrames_=std::move(vimExFrames_);target->vimExNormal_=vimExNormal_;vimExNormal_=false;
-    vimExExecuting_=false;++vimExGeneration_;target->scheduleVimEx();emit vimModeChanged();
+    target->vimAfterAutocmds_ = std::exchange(vimAfterAutocmds_, {});
+    vimExExecuting_=false;++vimExGeneration_;
+    scheduleVimAutocmd();
+    target->scheduleVimEx();emit vimModeChanged();
 }

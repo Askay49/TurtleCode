@@ -234,7 +234,8 @@ void EditorWidget::continueVimReplay() {
     vimReplayScheduled_=false;
     if (!vimReplayGroupActive_ && !vimExNormal_) return;
     if(busy_ || (vimExExecuting_ && !vimSubConfirm_ && !vimExNormal_)){vimReplayScheduled_=true;QTimer::singleShot(5,this,&EditorWidget::continueVimReplay);return;}
-    const bool cancelled=vimReplayCancel_ || !vim_.enabled() || !vimOwnsFocus();
+    const auto focusAvailable = [this] { return vimOwnsFocus() || (vimExNormal_ && vimExHasAutocmd()); };
+    const bool cancelled=vimReplayCancel_ || !vim_.enabled() || !focusAvailable();
     if(cancelled){vimReplay_.clear();if(vimExNormal_)finishVimEx(I18n::text("Vim: command cancelled"),true);}
     for(int batch=0;batch<128 && !vimReplay_.empty() && !busy_ && (!vimExExecuting_ || vimSubConfirm_ || vimExNormal_);++batch) {
         if(++vimReplaySteps_>100000){vimReplay_.clear();if(vimExNormal_)finishVimEx(I18n::text("Vim: replay step limit reached"),true);else emit highlightingStatusChanged(I18n::text("Vim: replay step limit reached"));break;}
@@ -253,9 +254,11 @@ void EditorWidget::continueVimReplay() {
         }
         const auto input=frame.inputs[frame.index++];history_.beginGroup(true);
         vimSendingInsertRepeat_=frame.insertRepeat;
+        vimRemapReplay_=frame.remap;
         vimSendingReplay_=true;applyVimInput(input);vimSendingReplay_=false;
+        vimRemapReplay_=false;
         vimSendingInsertRepeat_=false;
-        if(vimReplayCancel_ || !vimOwnsFocus())break;
+        if(vimReplayCancel_ || !focusAvailable())break;
     }
     if (!vimReplayGroupActive_ && !vimExNormal_) return;
     if(!vimReplay_.empty()){vimReplayScheduled_=true;QTimer::singleShot(0,this,&EditorWidget::continueVimReplay);return;}
@@ -266,6 +269,7 @@ void EditorWidget::continueVimReplay() {
 void EditorWidget::endVimReplayGroup() {
     if (vimReplayGroupActive_) history_.endCompoundGroup();
     vimReplayGroupActive_ = false;
+    scheduleVimAutocmd();
 }
 void EditorWidget::cancelVimReplay(){if(vimReplay_.empty() && !vimReplayScheduled_)return;vimReplayCancel_=true;if(!busy_){vimReplay_.clear();endVimReplayGroup();vimRepeatingDot_=false;switchVimMode(VimController::Mode::Normal);finishVimChange();}}
 void EditorWidget::transferVimReplay(EditorWidget* target) {
@@ -281,6 +285,10 @@ void EditorWidget::transferVimReplay(EditorWidget* target) {
     if(!target->vimReplayScheduled_){target->vimReplayScheduled_=true;QTimer::singleShot(0,target,&EditorWidget::continueVimReplay);}
 }
 void EditorWidget::applyVimInput(const VimState::Input& input) {
+    if (input.kind == VimState::Input::ApplicationCommand) {
+        runVimMappingCommand(input.text, false);
+        return;
+    }
     if(input.kind==VimState::Input::Key){QKeyEvent key(QEvent::KeyPress,input.key,Qt::KeyboardModifiers(input.modifiers),input.text);QApplication::sendEvent(this,&key);return;}
     if(vimExActive_){vimExInput_->insert(input.text);return;}
     if (!vimSendingInsertRepeat_ && vimInsertCount_>1 && vim_.acceptsText() && vimCountedInsertKeys_.size()<100000) vimCountedInsertKeys_.append(input);

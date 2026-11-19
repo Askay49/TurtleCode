@@ -57,10 +57,12 @@ Plan changeCase(const PieceTreeBuffer& buffer,const std::vector<VimMotions::Rang
     const auto flush=[&]{if(!pending.empty()){builder.add(runBegin,runEnd,pending);pending.clear();}};
     for(const auto& range:ranges)for(auto at=range.begin;at<range.end;){
         if(at%4096<4)check(step);const auto [value,size]=character(reader,at,range.end);
-        const auto upper=QChar::toUpper(value);const auto lower=value==0x130?char32_t('i'):QChar::toLower(value);
+        // Vim maps sharp s to capital sharp s for both uppercase and toggle.
+        const auto upper = value == U'ß' ? U'ẞ' : QChar::toUpper(value);
+        const auto lower = value == U'İ' ? U'i' : QChar::toLower(value);
         const char32_t changed=operation==VimController::Command::UpperCase?upper:operation==VimController::Command::LowerCase?lower:QChar::isLower(value)?upper:lower;
-        // Vim expands sharp s only for explicit uppercasing; ~ keeps it intact.
-        const auto converted=operation==VimController::Command::UpperCase && value==0xdf?QByteArray("SS"):QString::fromUcs4(&changed,1).toUtf8();const std::string_view bytes(converted.data(),std::size_t(converted.size()));
+        const auto converted = QString::fromUcs4(&changed, 1).toUtf8();
+        const std::string_view bytes(converted.data(), std::size_t(converted.size()));
         if(buffer.slice(at,size)==bytes){
             if(value=='\n' || value=='\r' || (!pending.empty() && runEnd!=at))flush();
             else if(!pending.empty()){pending+=bytes;runEnd=at+size;if(pending.size()>=65536)flush();}

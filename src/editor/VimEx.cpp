@@ -83,6 +83,27 @@ Registry::Registry(){
     add({"smagic",2,true,false,false,Arguments::Substitute});
     add({"snomagic",3,true,false,false,Arguments::Substitute});
     add({"set",2,false,false,false,Arguments::Raw});
+    add({"setlocal",4,false,false,false,Arguments::Raw});
+    add({"setglobal",4,false,false,false,Arguments::Raw});
+    for (const auto& name : QStringList{"map", "noremap", "unmap", "mapclear"}) {
+        add({name, int(name.size()), false, true, false, Arguments::Raw, DefaultRange::Current, true, false});
+        for (const auto mode : QStringLiteral("nvxoirc")) {
+            const auto full = mode + name;
+            add({full, int(full.size()), false, false, false, Arguments::Raw, DefaultRange::Current, true, false});
+        }
+    }
+    for (const auto& name : QStringList{"abbreviate", "noreabbrev", "unabbreviate", "abclear"}) {
+        const auto minimum = name == "abbreviate" ? 2 : name == "unabbreviate" ? 3 : int(name.size());
+        add({name, minimum, false, false, false, Arguments::Raw, DefaultRange::Current, true, false});
+        for (const auto mode : QStringLiteral("ic"))
+            add({mode + name, minimum + 1, false, false, false, Arguments::Raw, DefaultRange::Current, true, false});
+    }
+    add({"command",3,false,true,false,Arguments::Raw,DefaultRange::Current,false,false});
+    add({"delcommand",4,false,false,false,Arguments::Raw});
+    add({"comclear",4});
+    add({"autocmd",2,false,true,false,Arguments::Raw,DefaultRange::Current,false,false});
+    add({"augroup",3,false,true,false,Arguments::Raw});
+    add({"doautocmd",6,false,false,false,Arguments::Raw,DefaultRange::Current,true,false});
     add({"nohlsearch",3});
     add({"normal",4,true,true,false,Arguments::Raw,DefaultRange::Current,false,false});
     add({"move",1,true,false,false,Arguments::Address});
@@ -139,8 +160,15 @@ void Registry::add(Definition value){
     definitions_.append(std::move(value));
 }
 const Definition* Registry::find(const QString& name) const {
-    for(const auto& definition:definitions_)if(name.size()>=definition.minimum && definition.name.startsWith(name))return &definition;
-    return nullptr;
+    for (const auto& definition : definitions_) if (definition.name == name) return &definition;
+    const Definition* match = nullptr;
+    for (const auto& definition : definitions_) {
+        if (name.size() < definition.minimum || !definition.name.startsWith(name)) continue;
+        if (!name.isEmpty() && !name.front().isUpper()) return &definition;
+        if (match) return nullptr;
+        match = &definition;
+    }
+    return match;
 }
 Parsed Registry::parse(const QString& line,const Context& context) const {
     Parsed result;Reader reader{line,context};reader.spaces();
@@ -177,7 +205,11 @@ Parsed Registry::parse(const QString& line,const Context& context) const {
     if(!reader.error.isEmpty()){result.error=reader.error;return result;}
     reader.spaces();const auto nameStart=reader.at;
     if(reader.peek()=='k')++reader.at;
-    else while(reader.peek().isLetter() && reader.peek().unicode()<128)++reader.at;
+    else {
+        const bool userCommand = reader.peek().isUpper();
+        while (reader.peek().unicode() < 128
+               && (reader.peek().isLetter() || (userCommand && reader.peek().isDigit()))) ++reader.at;
+    }
     if(reader.at==nameStart && QStringLiteral("=><&~@").contains(reader.peek()) && !reader.peek().isNull())++reader.at;
     const auto name=line.mid(nameStart,reader.at-nameStart);
     auto& invocation=result.command;invocation.explicitRange=range;

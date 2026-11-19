@@ -13,7 +13,7 @@
 
 namespace VimState {
 struct Input {
-    enum Kind { Key, Text, Edit, Put } kind{Key};
+    enum Kind { Key, Text, Edit, Put, ApplicationCommand } kind{Key};
     int key{},modifiers{};QString text;
     int back{},forward{};
     std::shared_ptr<ChunkedFile> payload;
@@ -55,8 +55,7 @@ public:
     bool incrementalSearch{true},wrapSearch{true},globalSubstitute{false};
     QStringList searchHistory;
     VimSearch::Options searchOptions;
-    QString dictionary,thesaurus;QString tags{"./tags,tags"};
-    QString numberFormats{"bin,hex"};int textWidth{};bool joinSpaces{false};
+    bool joinSpaces{false};
     Anchor anchor(QObject* owner,const QString& path,std::size_t offset,QPoint position);
     QHash<QChar,Anchor>& marks(const QString& key);
     QHash<QChar,Anchor> globalMarks;

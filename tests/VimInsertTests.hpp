@@ -21,6 +21,10 @@ static void vimInsertTests(){
     const auto fixture=[](const QString& name,const QByteArray& bytes){QFile file(name);Q_ASSERT(file.open(QIODevice::WriteOnly));Q_ASSERT(file.write(bytes)==bytes.size());};
     fixture("words.txt","alpha alphabet alpine\n");fixture("synonyms.txt","fast quick speedy\nslow sluggish\n");
     fixture("tags","alpha\tsample.cpp\t1\nalpha_tag\tsample.cpp\t1\n");fixture("defs.h","#define ALPHA 1\n#define ALPHA_OTHER 2\nint alphabet;\n");fixture("completion-file.txt","");
+    run(R"(<a x=">">foo</a>)", "focitX<Esc>", R"(<a x=">">X</a>)");
+    run("<a x = '>\n>'>foo</a>", "jfocitX<Esc>", "<a x = '>\n>'>X</a>");
+    run("#include \"defs.h\"\nal", "GA<C-x><C-i><Esc>", "#include \"defs.h\"\nalphabet");
+    run("#include \"defs.h\"\nAL", "GA<C-x><C-d><Esc>", "#include \"defs.h\"\nALPHA");
     if(nvim.isEmpty()){qInfo("Neovim Insert oracle skipped");return;}
     struct Case{QString input,keys;bool insertMapping=false;};
     const QVector<Case> cases={
@@ -237,6 +241,9 @@ static void vimInsertTests(){
         const auto script=QString("lua vim.o.startofline=true; vim.o.shiftwidth=4; vim.o.tabstop=4; vim.o.expandtab=true; vim.o.autoindent=true; vim.o.joinspaces=false; vim.o.textwidth=79; local s=vim.fn.json_decode([==[%1]==]); local l=vim.split(s,'\\n',{plain=true}); if s:sub(-1)=='\\n' then table.remove(l) end; vim.api.nvim_buf_set_lines(0,0,-1,false,l); vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(vim.fn.json_decode([==[%2]==]),true,false,true),'xt',false); local p=vim.api.nvim_win_get_cursor(0); io.stdout:write('ORACLE:'..vim.fn.json_encode({lines=vim.api.nvim_buf_get_lines(0,0,-1,false),row=p[1],column=p[2]}))").arg(quote(test.input),quote(test.keys));
         QStringList arguments{"--headless","-u","NONE","-i","NONE","-n"};
         if (test.insertMapping) arguments << "-c" << "inoremap jk <Esc>";
+        // Configure C includes independently of Neovim's defaults in a clean buffer.
+        if (test.input.startsWith("#include"))
+            arguments << "-c" << QStringLiteral(R"(lua vim.bo.include = [[^\s*#\s*include]]; vim.bo.define = [[^\s*#\s*define]]; vim.bo.path = '.,')");
         arguments << "-c" << script << "-c" << "qa!";
         QProcess process;process.start(nvim,arguments);Q_ASSERT(process.waitForFinished(10000));auto output=process.readAllStandardOutput();const auto at=output.indexOf("ORACLE:");if(at<0)qFatal("Insert oracle: %s",process.readAllStandardError().constData());
         const auto result=QJsonDocument::fromJson(output.mid(at+7)).object();QStringList lines;for(const auto& line:result["lines"].toArray())lines<<line.toString();const auto prefix=lines.value(result["row"].toInt()-1).toUtf8().left(result["column"].toInt());const QPoint cursor(result["row"].toInt(),QString::fromUtf8(prefix).size()+1);

@@ -32,6 +32,7 @@
 #include "document/Document.hpp"
 
 class QInputMethodEvent;
+class QPlainTextEdit;
 class QEvent;
 class QKeyEvent;
 class QMouseEvent;
@@ -67,6 +68,10 @@ public:
     VimController::Mode vimMode() const { return vim_.mode(); }
     QString vimModeName() const;
     bool vimCommandLineActive() const {return vimExActive_;}
+    void reloadVimMappings();
+    void queueVimAutocmd(const QString& event, const QString& path = {});
+    bool afterVimAutocmds(std::function<void()> completed);
+    void setVimCommandHandlers(VimKeymaps::CommandValidator validator, VimKeymaps::CommandValidator executor);
     bool vimCommandExecuting() const {return vimExExecuting_;}
     bool vimSearchRunning() const {return vimSearchRunning_;}
     bool vimSubstitutionConfirming() const {return vimSubConfirm_;}
@@ -74,7 +79,7 @@ public:
     bool isVimReplaying() const {return !vimReplay_.empty() || vimReplayScheduled_;}
     void recordVimJump() {pushVimJump();}
     void discardVimBufferMarks();
-    void resetVimMode() {if(vim_.enabled()){flushVimInsertMapping();switchVimMode(VimController::Mode::Normal);finishVimChange();}}
+    void resetVimMode() {if(vim_.enabled()){flushVimMapping();switchVimMode(VimController::Mode::Normal);finishVimChange();}}
     void transferVimReplay(EditorWidget* target);
     void transferVimEx(EditorWidget* target);
     void reportVimExMessage(const QString& message){vimExMessage(message);}
@@ -204,10 +209,11 @@ private:
         QString pattern,offset,subPattern;QStringList searchHistory;bool direction{};
     };
     struct ExFrame {
-        enum Kind {Global,Normal,Register,ResumeNormal} kind{Global};
+        enum Kind {Global,Normal,Register,ResumeNormal,Commands} kind{Global};
         std::shared_ptr<VimEx::LineMarks> marks;
-        QString body,after;QStringList lines;int index{};bool preserveColumn{};
+        QString body,after;QStringList lines;int index{};bool preserveColumn{}, remap{};
         std::optional<ExScope> scope;
+        std::shared_ptr<int> autocmdGuard;
     };
     std::vector<ExFrame> vimExFrames_;
     std::optional<ExScope> vimExScope_;
@@ -220,6 +226,16 @@ private:
     void beginVimGlobal(const VimEx::Invocation& command);
     void beginVimNormal(const VimEx::Invocation& command);
     bool nextVimExFrame();
+    VimEx::Registry vimExRegistry() const;
+    QString executeVimUserCommand(const VimEx::Invocation&);
+    QString executeVimAutocmd(const VimEx::Invocation&);
+    bool vimExHasAutocmd() const;
+    void beginVimExProgram(QStringList lines, std::shared_ptr<int> autocmdGuard = {});
+    void scheduleVimAutocmd();
+    bool startPendingVimAutocmd();
+    std::function<void()> vimAfterAutocmds_;
+    QStringList vimPendingAutocmds_;
+    bool vimAutocmdScheduled_{};
     void editVimExLines(const VimEx::Invocation& command,bool normal=false);
     void readVimExFile(const VimEx::Invocation& command);
     void executeVimExRegister(const VimEx::Invocation& command);
@@ -228,6 +244,11 @@ private:
     void renameVimAnchors(const QString& path);
     QFrame* vimExBar_{nullptr};
     QLineEdit* vimExInput_{nullptr};
+    QPlainTextEdit* vimExHistoryWindow_{nullptr};
+    VimController vimHistoryMode_;
+    bool filterVimCommandHistory(QEvent*);
+    void showVimCommandHistory();
+    void submitVimCommandLine(const QString&);
     QLabel* vimExHints_{nullptr};
     QLabel* vimExPrompt_{nullptr};
     QChar vimCommandPrompt_{':'};
@@ -266,7 +287,7 @@ private:
     quint64 vimExGeneration_{};
     QString vimExRemaining_,vimExDraft_,vimExHistoryPrefix_,vimExCompletionBase_;
     QStringList vimExCompletions_;
-    int vimExHistoryIndex_{},vimExCompletionIndex_{-1};
+    int vimExHistoryIndex_{},vimExCompletionIndex_{-1},vimExCompletionSuffix_{};
     void showVimCommandLine(int count=0,QChar prompt=':');
     void closeVimCommandLine();
     void positionVimCommandLine();
@@ -290,16 +311,29 @@ private:
     bool vimBlockToEnd_{false};
     bool vimCaptureInsertEdit_{false},vimHandlingKey_{false},vimSendingReplay_{false};
     bool vimRepeatingDot_{false};
-    void loadVimInsertMappings();
-    bool vimInsertMappingAllowed() const;
-    bool reserveVimInsertMapping(const QKeyEvent&);
-    bool handleVimInsertMapping(QKeyEvent&);
-    void resolveVimInsertMapping(bool waitForMore);
-    void flushVimInsertMapping();
+    std::optional<VimKeymaps::Mode> vimMappingMode() const;
+    QString executeVimMappingCommand(const VimEx::Invocation&, const VimKeymaps::Command&);
+    bool expandVimAbbreviation(QKeyEvent&);
+    void sendVimMappingKey(const VimState::Input&, bool remap);
+    void runVimMappingCommand(const QString&, bool record);
+    VimKeymaps::CommandValidator vimValidCommand_, vimRunCommand_;
+    bool vimBypassMappings_{}, vimRemapReplay_{};
+    int vimMappingDepth_{};
+    int vimMappingSteps_{};
+    int vimMappingTimeout() const;
+    void initializeVimOptions();
+    void applyVimIndentOptions();
+    QVariant vimBufferOption(const QString& name) const;
+    QString executeVimSet(const VimEx::Invocation&);
+    static QStringList completeVimOptions(const QString& prefix);
+    bool vimViewOptionsInitialized_{};
+    bool reserveVimMapping(const QKeyEvent&);
+    bool handleVimMapping(QKeyEvent&);
+    void resolveVimMapping(bool waitForMore);
+    void flushVimMapping();
     void processEditorKey(QKeyEvent*);
-    QMap<QString,QVector<VimState::Input>> vimInsertMappings_;
-    QVector<VimState::Input> vimInsertMappingPending_;
-    QTimer vimInsertMappingTimer_;
+    QVector<VimState::Input> vimMappingPending_;
+    QTimer vimMappingTimer_;
     bool handleVimInsertKey(QKeyEvent*);
     void resumeVimInsertNormal();
     void completeVimInsert(int direction,QChar source={});
@@ -325,7 +359,7 @@ private:
     bool vimChangeActive_{false};std::uint64_t vimChangeBefore_{};
     bool vimChangeTooLarge_{false};
     bool vimChangeInserted_{false};std::string vimInsertedText_;
-    struct ReplayFrame {QVector<VimState::Input> inputs;qsizetype index{};int remaining{1};bool exNormal{false};bool insertRepeat{false};};
+    struct ReplayFrame {QVector<VimState::Input> inputs;qsizetype index{};int remaining{1};bool exNormal{false};bool insertRepeat{false};bool remap{false};};
     std::vector<ReplayFrame> vimReplay_;
     int vimReplaySteps_{};bool vimReplayCancel_{false},vimReplayScheduled_{false},vimReplayGroupActive_{false};
     void endVimReplayGroup();

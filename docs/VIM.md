@@ -39,23 +39,55 @@ Native save, undo/redo, search and other application commands remain available.
 Native edits end Visual mode; saving alone preserves it. Undo uses the existing
 editor history and does not restore Vim mode or Visual anchors.
 
-### Insert key mappings
+## Vim mappings
 
-To enable `jk` as an Escape sequence, add this to the application's `Turtle Code.conf`
-while Turtle Code is closed, or reload Vim mode after editing the setting:
+Open **Settings → Keyboard shortcuts → Vim**. Add a row, select its mode from
+the dropdown, and enter the keys and action. To change Leader, click the
+**Leader key** field and press a printable key. The default is the spacebar,
+shown as `<Space>`. Saving checks the command IDs and duplicate triggers using
+the chosen leader. The changes take effect in open editors.
+
+For manual editing, close Turtle Code and edit `Turtle Code.conf`. On Linux it
+is normally in `~/.config/Turtle Code/`. The `bindings` value contains one
+mapping per line. In the INI file, use `\n` inside the quoted value to separate
+the lines.
 
 ```ini
 [vimKeymaps]
-bindings=insert jk = keys:<Esc>
+leader=" "
+bindings="normal <Leader>w = command:file.save\nnormal <Leader>a = keys:ggVG\ninsert jk = keys:<Esc>"
 ```
 
-`insert` mappings apply in Insert and Replace. The left side is a sequence of
-printable characters without spaces. The right side uses `keys:` with literal
-characters or named keys such as `<Esc>`, `<Insert>`, `<CR>` and `<Tab>`.
-Use `\n` inside a quoted `bindings` value to separate multiple rows in the INI file.
-Turtle Code waits up to one second for a longer match. If the sequence fails to
-match, pending characters are typed in order. Undo groups the resulting input
-as usual. Dot repeat and macro recording use the resolved keys.
+Modes are `normal`, `visual`, `operator`, `insert`, `replace` and `command`.
+Insert mappings also apply in Replace unless a Replace mapping takes priority.
+`command:` uses the Turtle Code command registry. `keys:` sends the sequence
+to Vim directly. Key notation includes `<Esc>`, `<CR>`, `<Tab>`, `<Space>`,
+`<lt>`, function keys and modifiers such as `<C-r>`. In `[vimKeymaps]`,
+`leader` sets `<Leader>` and `localLeader` sets `<LocalLeader>`. The default
+`<LocalLeader>` is backslash.
+
+| Ex command | Behavior |
+| --- | --- |
+| `:map`, `:noremap`, `:unmap`, `:mapclear` | Define recursive or nonrecursive mappings, remove one or clear the mode. The unprefixed forms affect Normal, Visual and operator-pending modes. Add `!` for Insert and the command line. |
+| `:nmap`, `:vmap` / `:xmap`, `:omap`, `:imap`, `:rmap`, `:cmap` | Target one mode. The same prefixes work with `noremap`, `unmap` and `mapclear`. |
+| `:abbreviate`, `:noreabbrev`, `:unabbreviate`, `:abclear` | Manage abbreviations. Use the `i` or `c` prefix for Insert/Replace or the command line. A typed word delimiter or `Ctrl+]` expands an abbreviation. |
+
+Add `<buffer>` before the trigger to share a mapping or abbreviation among
+views of the current buffer. A definition without a right-hand side lists
+matches. Ex changes last for the current session. Changing the mapping list
+or Leader in Settings reloads the configured global mappings.
+
+```vim
+:nnoremap <buffer> <F6> ggVG
+:inoremap jk <Esc>
+:inoreabbrev btw by the way
+:nunmap <buffer> <F6>
+```
+
+A shared prefix waits for `timeoutlen` milliseconds (1,000 by default).
+`:set notimeout` keeps waiting until another key distinguishes the sequence.
+If no binding matches, buffered input is processed in order. Undo uses the
+normal editor history. Dot repeat and macros replay resolved input.
 
 ## Motions and operators
 
@@ -81,7 +113,7 @@ Combine **`d`** (delete), **`c`** (change and enter Insert), **`y`** (copy),
 **`>`** (indent) or **`<`** (unindent) with a motion or text object.
 Examples: `dw`, `cw`, `y$`, `dG`, `>j`, `diw`, `ci"`, `dap`.
 Double the operator to act on complete lines: `dd`, `cc`, `yy`, `>>`, `<<`.
-These operators also act on Visual selections. Indentation follows EditorConfig.
+These operators also act on Visual selections. Indentation uses EditorConfig and any Vim buffer options.
 
 Counts work before motions and operators, and multiply when supplied in both
 positions: `3w`, `2dd`, `2d3w`. `3>>` indents three lines once; `3>` in Visual
@@ -142,10 +174,11 @@ discards staged changes. Navigation reads bounded text windows.
 Case operations, joins, numbers and formatting support counts, Visual selections,
 dot-repeat, macros and grouped Undo. Visual Block case/number changes respect
 the rectangle. Case conversion retains local marks and the pending global line
-selection, including when UTF-8 character lengths change. Explicit uppercasing
-converts `ß` to `SS`; toggling case leaves `ß` unchanged, matching Vim. `ẞ`
-lowercases to `ß`. Edit records and Undo payloads are batched on disk. Large
-operations are cancellable; Escape discards the current staged operation.
+selection, including when UTF-8 character lengths change. Uppercasing maps
+`ß` to `ẞ`, and lowercasing maps `ẞ` to `ß`. Toggling switches between them.
+Case operators use the original byte column on the last line for the end mark
+and align it to a grapheme in the edited text. Edit records and Undo payloads
+are batched on disk. Escape cancels the current staged operation.
 
 `Ctrl+A/X` use 64-bit arithmetic, decimal signs and leading-zero padding.
 `:set nrformats=bin,hex` is the default; `octal`, `alpha` and `unsigned` are also
@@ -180,8 +213,8 @@ Reflow rejects indentation over 1 MiB to bound repeated-prefix allocation.
 | `zd/zD/zE` | Delete the current fold, its subtree, or all folds. |
 | `zj/zk`, `[z/]z` | Jump between folds or to the boundaries of an open fold. Closed folds are represented by their header. |
 
-Use `:set wrap` to enable soft wrapping in the current editor and
-`:set nowrap` to turn it off. Wrapping starts off to match the editor's usual
+Use `:setlocal wrap` to enable soft wrapping in the current editor and
+`:setlocal nowrap` to turn it off. `:set wrap` also updates the default for new views. Wrapping starts off to match the editor's usual
 horizontal scrolling. Wraps use grapheme boundaries and account for tabs.
 Lines larger than 64 KiB retain the editor's horizontal scrolling path.
 The first wrap layout and changes to available width remeasure the document.
@@ -302,8 +335,7 @@ characters overwritten by direct typing. Large register inserts are atomic
 Undo operations. Escape returns to Normal. Replace uses the same grouped
 history as Insert; it does not trigger completion popups.
 
-Leader bindings belong to later stages. Unknown
-plain keys in Normal/Visual do not insert text. Paste/cut typing shortcuts are
+Unknown plain keys in Normal/Visual do not insert text. Paste/cut typing shortcuts are
 blocked there; use Insert for text input. Multiple cursors are disabled while
 Vim is enabled outside block editing. Modal keys currently use the Latin layout.
 
@@ -386,7 +418,7 @@ paths. Keywords come from the current buffer; Vim's `complete`, `path`, wildcard
 option expansion, continuation completion, custom Vimscript functions and
 `infercase` are not implemented. `Ctrl+X Ctrl+O/U` use the editor's language
 service instead of Vimscript `omnifunc/completefunc`. Spelling completion belongs
-to the later spelling stage. These settings are session-local.
+to the later spelling stage. Use `:setlocal` for per-buffer completion paths.
 
 ## Ex command line
 
@@ -398,8 +430,17 @@ cancels. An empty **Backspace** returns to Normal. **Ctrl+U** clears text before
 the caret, **Ctrl+W** deletes a word, and **Ctrl+R {register}** inserts a register.
 **Up/Down** recall history matching the prefix before the caret; **Ctrl+P/N**
 recall history without prefix filtering. History retains 200 distinct commands
-in the application session. **Tab / Shift+Tab** cycle command or filename
-completions. Filename completion is bounded to 200 candidates and 2,000 entries.
+in the application session. **Ctrl+B / Ctrl+E** move to the start and end.
+**Tab / Shift+Tab** cycle command, option and filename completions. Filename
+completion is bounded to 200 candidates and 2,000 entries.
+
+**`q:`**, **`q/`** and **`q?`** open editable command and search history.
+**Ctrl+F** opens the relevant history from an active prompt and carries over
+the draft. The latest row contains the draft, with earlier entries above it.
+Use **j/k** or the arrow keys to move, **i/a** to edit, and **Enter** to execute
+the current row. **Esc** from Insert returns to Normal inside the history
+window. **Esc** from Normal or **Ctrl+C** closes it and returns focus to the
+editor.
 
 `VimEx::Registry` describes commands independently of widgets: names and preferred
 abbreviations, ranges, bang support, argument grammar, defaults, comments and bar
@@ -499,8 +540,8 @@ the following command and its nested execution. `silent!` suppresses execution
 errors; malformed command syntax stops that command line. `keeppatterns`
 preserves search patterns/history. Normal input and register programs use the
 existing replay queue and wait for background work. Recording another macro
-inside `:normal` is disabled, as in Vim. There are no user mappings yet, so
-`:normal` and `:normal!` currently use the same input.
+inside `:normal` is disabled. `:normal` applies Vim mappings and
+`:normal!` uses built-in input.
 
 Unsaved modifications require `!` for `:bdelete` and `:bwipeout`. A hidden
 buffer keeps its edits and Undo history. Buffer changes carry the remaining Ex
@@ -519,6 +560,57 @@ use copy-on-write snapshots and logarithmic row shifts. These bounds report an
 error rather than silently processing a partial selection. Behavior is based on
 the [Vim Ex command reference](https://vimhelp.org/change.txt.html) and
 [global/normal reference](https://vimhelp.org/repeat.txt.html).
+
+## Vim options
+
+| Command | Scope |
+| --- | --- |
+| `:set option` | Change the current value and the global default |
+| `:setlocal option` | Change the current buffer or view where the option has a local scope |
+| `:setglobal option` | Change the global default. Existing local values remain in effect. |
+
+Global values are saved in `[vimOptions]`. Local values are tied to the open
+buffer or view. `option?` reports a value, `option&` restores the default,
+and `option<` restores the global value locally. Use `nooption` to turn a
+flag off and `invoption` or `option!` to toggle it. `:set all` lists supported
+values. Vim indentation options take effect during editing and EditorConfig
+continues to control file normalization on save.
+
+| Scope | Options |
+| --- | --- |
+| Global | `timeout`, `timeoutlen`, `joinspaces`, `ignorecase`, `smartcase`, `magic`, `hlsearch`, `incsearch`, `wrapscan`, `gdefault` |
+| Buffer | `tabstop` (`ts`), `shiftwidth` (`sw`), `expandtab` (`et`), `textwidth`, `nrformats` |
+| Buffer with global fallback | `dictionary`, `thesaurus`, `tags` |
+| View | `wrap`, `foldenable`, `foldmethod` (`manual`) |
+
+## User commands and autocommands
+
+Define a user command with an uppercase name and an Ex body. Supported attributes
+are `-buffer`, `-bang`, `-bar`, `-range`, `-range=%` and `-nargs=0/1/?/*/+`.
+The body can substitute `<args>`, `<q-args>`, `<bang>`, `<line1>`, `<line2>`,
+`<range>` and `<lt>`. `:command!` replaces a definition. `:command` lists
+definitions, `:delcommand` deletes one, and `:comclear` clears global and
+current-buffer commands.
+
+```vim
+:command -nargs=1 -bar InsertPrefix normal! I<args>
+:InsertPrefix TODO
+```
+
+Use `:autocmd` with `BufEnter`, `BufLeave`, `BufReadPost` (or `BufRead`),
+`BufNewFile` for a new named buffer, or `BufWritePost` for a completed
+document save. Patterns match the file name, or the path if they contain a
+slash. Comma-separated events and patterns, wildcards and `<buffer>` are
+supported. `:autocmd!` removes matching definitions, `:augroup` selects
+a group, and `:doautocmd` runs matching handlers. Definitions are session-local.
+Handlers run in order and use the Ex interpreter with nested automatic events
+suppressed.
+
+```vim
+:augroup TextEditing
+:autocmd BufEnter *.txt setlocal shiftwidth=2
+:augroup END
+```
 
 ## Editor panes, Vim tab pages and diff
 
@@ -650,8 +742,7 @@ Search settings are shared for the current process through `:set`:
 case-sensitive, magic, incremental search, highlighting and wrapping enabled,
 with smartcase and gdefault disabled. **`:nohlsearch` / `:noh`** temporarily
 hides highlights; the next search restores them. `:set nohlsearch` persists
-until changed explicitly. Saving these options is part of the later settings
-stage.
+until changed explicitly and is saved with the other global Vim options.
 
 Navigation is independent of the bounded highlight list. At most 2,000 matches
 are highlighted around the visible lines; the highlight scan includes one
@@ -674,7 +765,7 @@ Build `turtle-code`, `turtle-code-editor-tests` and `turtle-code-window-tests`,
 then run:
 
 ```sh
-ctest --test-dir build -R '^vim-(editor|viewport|insert|insert-window|normal|session|ex|ex-extended|search|search-core|window|workspace)$' --output-on-failure
+ctest --test-dir build -R '^vim-(editor|viewport|insert|insert-window|stage11-window|normal|session|ex|ex-extended|search|search-core|window|workspace)$' --output-on-failure
 ```
 
 Tests cover mode transitions, inclusive selections, Unicode/CRLF, input methods,
@@ -683,7 +774,9 @@ the command palette and terminal, operators, counts, text objects, grouped Undo,
 disk history, registers, dot-repeat, macros, marks/jumps, block editing, Replace
 and large range edits, Insert controls/literals/digraphs, completion providers,
 Visual reselect/match objects, search/Ex addresses, regex translation, substitutions,
-confirmation, mark preservation and history budgets. If `nvim` is installed, edit/motion/register
+confirmation, mark preservation and history budgets. The stage 11 window test
+covers mapping validation, persistence, command dispatch, scope, abbreviations,
+completion, command history and file events. If `nvim` is installed, edit/motion/register
 sequences are also compared with clean headless Neovim. Neovim is a test oracle,
 not a runtime dependency. Window checks use Qt's offscreen platform; desktop
 input methods and compositor behavior still need a real desktop smoke test.

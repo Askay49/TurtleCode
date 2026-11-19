@@ -19,6 +19,11 @@ struct Definition {
     DefaultRange defaultRange{DefaultRange::Current};
     bool bars{true}, comments{true};
 };
+struct UserCommand {
+    Definition definition;
+    QString body;
+    QChar nargs{'0'};
+};
 struct Context {
     qint64 current{1}, last{1};
     std::function<std::optional<qint64>(QChar)> mark;

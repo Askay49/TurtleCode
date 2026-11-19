@@ -4,6 +4,22 @@
 #include <QTimer>
 #include <algorithm>
 
+namespace {
+
+std::pair<std::size_t, std::size_t> caseOperatorMarkBounds(
+    const PieceTreeBuffer& buffer, const VimNormal::Plan& plan, std::size_t begin, std::size_t end) {
+    // Case operators keep the original byte column of the end mark on its line.
+    const auto row = buffer.lineIndexAt(end > 0 ? end - 1 : end);
+    const auto lineStart = buffer.lineStart(row);
+    const auto lineEnd = VimMotions::lineEnd(buffer, row);
+    const auto column = std::min(end, lineEnd) - lineStart;
+    const auto changedStart = VimNormal::project(plan, lineStart);
+    const auto changedEnd = VimNormal::project(plan, lineEnd);
+    return {VimNormal::project(plan, begin), changedStart + std::min(column, changedEnd - changedStart)};
+}
+
+}
+
 void EditorWidget::editVimNormal(const VimController::Action& action){
     using C=VimController::Command;const bool visual=vim_.mode()==VimController::Mode::Visual;
     const auto selected=selectionRange();const auto original=cursorPosition_;
@@ -27,7 +43,7 @@ void EditorWidget::editVimNormal(const VimController::Action& action){
         ranges.push_back({begin,begin,end,true});
     }
     if(ranges.empty())return;
-    refreshEditorConfig();VimNormal::Options options;const auto& state=VimState::Session::instance();options.numberFormats=state.numberFormats;
+    refreshEditorConfig();VimNormal::Options options;options.numberFormats=vimBufferOption("nrformats").toString();
     if((action.command==C::Increment || action.command==C::Decrement) && buffer_.size()<65536){
         bool candidate=false;for(const auto& range:ranges){const auto row=buffer_.lineIndexAt(range.begin);const auto bytes=buffer_.slice(vimLineStart(row),lineContentEnd(row)-vimLineStart(row));for(const auto c:bytes)if((c>='0' && c<='9') || (options.numberFormats.contains("alpha") && ((c>='a' && c<='z') || (c>='A' && c<='Z')))){candidate=true;break;}}
         if(!candidate){if(visual)switchVimMode(VimController::Mode::Normal);return;}
@@ -39,27 +55,44 @@ void EditorWidget::editVimNormal(const VimController::Action& action){
     runBulkOperation(QStringLiteral("Vim…"),[ranges,action,options,target,original,visual,after,positions,projected,bounds](PieceTreeBuffer& buffer,EditHistory& history,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
         const auto plan=action.command==C::Increment || action.command==C::Decrement?VimNormal::number(buffer,ranges,action.count,action.command==C::Decrement,action.around,visual,options,[&]{step(30);}):VimNormal::changeCase(buffer,ranges,action.command,target,[&]{step(30);});
         if(action.command!=C::Increment && action.command!=C::Decrement)for(const auto position:positions){step(50);projected->push_back(VimNormal::project(plan,position));}
-        if(plan.edits->count && action.command!=C::Increment && action.command!=C::Decrement)*bounds=std::pair{VimNormal::project(plan,ranges.front().begin),VimNormal::project(plan,ranges.back().end)};
+        if (plan.edits->count && action.command != C::Increment && action.command != C::Decrement) {
+            const auto begin = ranges.front().begin, end = ranges.back().end;
+            *bounds = visual ? caseOperatorMarkBounds(buffer, plan, begin, end)
+                             : std::pair{VimNormal::project(plan, begin), VimNormal::project(plan, end)};
+        }
         *after=plan.cursor;return VimNormal::apply(plan,buffer,history,original,[&]{step(70);});
     },true,{},[this,after,anchors,projected,bounds](bool ok){if(!ok)return;for(std::size_t i=0;i<projected->size();++i)anchors[qsizetype(i)]->offset=(*projected)[i];if(*bounds)setVimEditMarks((**bounds).first,(**bounds).second);moveCursor(std::min(*after,buffer_.size()),false);});
 }
 void EditorWidget::transformVimRange(std::size_t begin,std::size_t end,VimController::Command operation,bool linewise){
     using C=VimController::Command;const auto original=cursorPosition_,first=buffer_.lineIndexAt(begin),last=buffer_.lineIndexAt(end>begin?end-1:begin);
     refreshEditorConfig();VimNormal::Options options;options.shiftWidth=editorConfig_.indentation();options.tabWidth=editorConfig_.tabSize();options.tabs=editorConfig_.tabs.value_or(false);
-    const auto& state=VimState::Session::instance();options.joinSpaces=state.joinSpaces;options.textWidth=state.textWidth?state.textWidth:79;
+    const auto& state=VimState::Session::instance();options.joinSpaces=state.joinSpaces;const auto width=vimBufferOption("textwidth").toInt();options.textWidth=width?width:79;
     const auto eol=editorConfig_.eol.value_or(SmartEditing::eol(buffer_));const auto anchors=VimState::Session::instance().anchors(document_.get());std::vector<std::size_t> positions;for(const auto& anchor:anchors)positions.push_back(anchor->offset);auto projected=std::make_shared<std::vector<std::size_t>>();auto bounds=std::make_shared<std::optional<std::pair<std::size_t,std::size_t>>>();
     switchVimMode(VimController::Mode::Normal);history_.beginGroup(true);auto after=std::make_shared<std::size_t>(begin);
     runBulkOperation(QStringLiteral("Vim…"),[begin,end,operation,linewise,options,eol,original,first,last,after,positions,projected,bounds](PieceTreeBuffer& buffer,EditHistory& history,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
         auto plan=operation==C::AutoIndent?VimNormal::indent(buffer,first,last,options,[&]{step(30);}):operation==C::Format?VimNormal::format(buffer,first,last,options,eol,[&]{step(30);}):VimNormal::changeCase(buffer,{{begin,begin,end,true,linewise}},operation,begin,[&]{step(30);});
         if(operation==C::ToggleCase || operation==C::LowerCase || operation==C::UpperCase)for(const auto position:positions){step(50);projected->push_back(VimNormal::project(plan,position));}
-        if(plan.edits->count && (operation==C::ToggleCase || operation==C::LowerCase || operation==C::UpperCase))*bounds=std::pair{VimNormal::project(plan,begin),VimNormal::project(plan,end)};
+        if (plan.edits->count && (operation == C::ToggleCase || operation == C::LowerCase || operation == C::UpperCase))
+            *bounds = caseOperatorMarkBounds(buffer, plan, begin, end);
         auto result=VimNormal::apply(plan,buffer,history,original,[&]{step(70);});
         if(operation==C::AutoIndent || (linewise && operation!=C::Format)){result.cursorPosition=VimMotions::firstText(buffer,first);result.cursorPositions={result.cursorPosition};}*after=result.cursorPosition;return result;
     },true,{},[this,after,anchors,projected,bounds](bool ok){if(!ok)return;for(std::size_t i=0;i<projected->size();++i)anchors[qsizetype(i)]->offset=(*projected)[i];if(*bounds)setVimEditMarks((**bounds).first,(**bounds).second);moveCursor(std::min(*after,buffer_.size()),false);});
 }
 void EditorWidget::setVimEditMarks(std::size_t begin,std::size_t end){
-    auto& state=VimState::Session::instance();auto& marks=state.marks(vimMarkKey());begin=std::min(begin,buffer_.size());end=std::min(end,buffer_.size());
-    marks['[']=state.anchor(document_.get(),filePath_,begin,QPoint(1,1));marks[']']=state.anchor(document_.get(),filePath_,end>begin?graphemeBoundaryAt(end,false):begin,QPoint(1,1));marks['.']=marks['['];vimPendingChange_=marks['.'];
+    auto& state = VimState::Session::instance();
+    auto& marks = state.marks(vimMarkKey());
+    begin = std::min(begin, buffer_.size());
+    end = std::min(end, buffer_.size());
+    // The original byte column may land inside a replacement character.
+    if (end > begin && end < buffer_.size() && (static_cast<unsigned char>(buffer_.byteAt(end)) & 0xc0) == 0x80)
+        end = buffer_.byteAtCodePoint(buffer_.codePointsBefore(end));
+    auto last = std::max(begin, end);
+    if (last > begin && last > buffer_.lineStart(buffer_.lineIndexAt(last)))
+        last = graphemeBoundaryAt(last, false);
+    marks['['] = state.anchor(document_.get(), filePath_, begin, QPoint(1, 1));
+    marks[']'] = state.anchor(document_.get(), filePath_, last, QPoint(1, 1));
+    marks['.'] = marks['['];
+    vimPendingChange_ = marks['.'];
 }
 void EditorWidget::noteVimEdit(std::size_t begin,std::size_t length){
     if(!vim_.enabled() || vimApplyingHistory_)return;

@@ -5,6 +5,16 @@ static void vimNormalTests(){
     EditorWidget editor;auto& state=VimState::Session::instance();const auto nvim=QStandardPaths::findExecutable("nvim");
     const auto run=[&](const char* input,const QString& keys,const char* expected){state.clear();load(editor,input);vimKeys(editor,keys);if(editor.document()->buffer().text()!=expected)qFatal("Normal [%s]: [%s] vs [%s]",qPrintable(keys),editor.document()->buffer().text().c_str(),expected);};
     run("a\n  b\nc","J","a b\nc");vimKeys(editor,"u");Q_ASSERT(editor.document()->buffer().text()=="a\n  b\nc");
+    run("straße ßẞ", "gU$", "STRAẞE ẞẞ");
+    vimKeys(editor, "u");
+    Q_ASSERT(editor.document()->buffer().text() == "straße ßẞ");
+    run("ßẞa", "3~", "ẞßA");
+    run("ßß", "gU$gg`]", "ẞẞ");
+    Q_ASSERT(editor.navigationPosition() == QPoint(1, 2));
+    run("ßẞa\r\nßa", "gUGgg`]", "ẞẞA\r\nẞA");
+    Q_ASSERT(editor.navigationPosition() == QPoint(2, 1));
+    run("ß\n\n", "gUGgg`]", "ẞ\n\n");
+    Q_ASSERT(editor.navigationPosition() == QPoint(2, 1));
     run("aBc def","gUiw","ABC def");run("x 009","2<C-a>","x 011");run("one two three four",":set tw=9<CR>gqq","one two\nthree\nfour");
     state.clear();std::string large;for(int n=0;n<2048;++n)large+=std::string(1023,'a')+"\n";editor.loadBuffer(PieceTreeBuffer(large),"sample.cpp");editor.setFocus();QElapsedTimer elapsed;elapsed.start();vimKeys(editor,"gUG");auto upper=large;std::replace(upper.begin(),upper.end(),'a','A');Q_ASSERT(editor.document()->buffer().text()==upper);vimKeys(editor,"u");Q_ASSERT(editor.document()->buffer().text()==large);qInfo("Normal case/Undo: 2 MiB in %lld ms",elapsed.elapsed());
     vimKeys(editor,"VG");QTest::keyClicks(&editor,"U");QTimer::singleShot(10,&editor,[&]{QTest::keyClick(&editor,Qt::Key_Escape);});QElapsedTimer cancel;cancel.start();while((editor.isBusy() || editor.isVimReplaying()) && cancel.elapsed()<10000)QTest::qWait(5);Q_ASSERT(!editor.isBusy() && !editor.isVimReplaying() && editor.document()->buffer().text()==large);
@@ -86,7 +96,11 @@ static void vimNormalTests(){
         {"abc\ndef","gUwgg`["},{"abc\ndef","gUwgg`]"}
     };
     int mismatches=0;
-    for(const auto& test:cases){state.clear();const auto bytes=test.input.toUtf8();editor.loadBuffer(PieceTreeBuffer(std::string_view(bytes.data(),std::size_t(bytes.size()))),"sample.cpp");editor.resize(800,400);editor.show();editor.activateWindow();editor.setFocus();QApplication::processEvents();vimKeys(editor,test.keys);
+    for(const auto& test:cases){
+        state.clear();
+        // The oracle starts with a fresh buffer for every case.
+        editor.document()->vimOptions.clear();
+        const auto bytes=test.input.toUtf8();editor.loadBuffer(PieceTreeBuffer(std::string_view(bytes.data(),std::size_t(bytes.size()))),"sample.cpp");editor.resize(800,400);editor.show();editor.activateWindow();editor.setFocus();QApplication::processEvents();vimKeys(editor,test.keys);
         const auto quote=[](const QString& value){auto data=QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);return QString::fromUtf8(data.mid(1,data.size()-2));};
         const auto script=QString("lua vim.o.startofline=true; vim.o.shiftwidth=4; vim.o.tabstop=4; vim.o.expandtab=true; vim.o.autoindent=true; vim.o.joinspaces=false; vim.o.textwidth=79; local s=vim.fn.json_decode([==[%1]==]); local l=vim.split(s,'\\n',{plain=true}); if s:sub(-1)=='\\n' then table.remove(l) end; vim.api.nvim_buf_set_lines(0,0,-1,false,l); vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(vim.fn.json_decode([==[%2]==]),true,false,true),'xt',false); local p=vim.api.nvim_win_get_cursor(0); io.stdout:write('ORACLE:'..vim.fn.json_encode({lines=vim.api.nvim_buf_get_lines(0,0,-1,false),row=p[1],column=p[2]}))").arg(quote(test.input),quote(test.keys));
         QProcess process;process.start(nvim,{"--headless","-u","NONE","-i","NONE","-n","-c",script,"-c","qa!"});Q_ASSERT(process.waitForFinished(10000));auto output=process.readAllStandardOutput();const auto at=output.indexOf("ORACLE:");if(at<0)qFatal("Normal oracle: %s",process.readAllStandardError().constData());

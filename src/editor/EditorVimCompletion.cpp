@@ -43,9 +43,10 @@ void EditorWidget::completeVimInsert(int direction,QChar source) {
     const auto prefix=QString::fromUtf8(buffer_.slice(begin,at-begin).c_str());
     auto candidates=std::make_shared<QStringList>();
     const auto path=filePath_;const auto& state=VimState::Session::instance();
-    const auto files=source=='K'?state.dictionary:source=='T'?state.thesaurus:state.tags;
+    const auto files=vimBufferOption(source=='K'?"dictionary":source=='T'?"thesaurus":"tags").toString();
     const auto options=state.searchOptions;
-    runBulkOperation(QStringLiteral("Vim completion…"),[candidates,prefix,source,at,begin,path,files,options](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
+    const auto exCommands = source == 'V' ? vimExRegistry().complete(prefix) : QStringList{};
+    runBulkOperation(QStringLiteral("Vim completion…"),[candidates,prefix,source,at,begin,path,files,options,exCommands](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step){
         // Work and candidate counts are bounded independently of document size.
         constexpr std::size_t budget=16*1024*1024;std::size_t scanned=0;int entries=0;
         const bool ignore=options.ignoreCase && !(options.smartCase && prefix.contains(QRegularExpression("\\p{Lu}")));
@@ -75,7 +76,7 @@ void EditorWidget::completeVimInsert(int direction,QChar source) {
             QStringList names;while(iterator.hasNext() && entries++<20000){step(50);iterator.next();const auto file=iterator.fileInfo();if(file.fileName().startsWith(info.fileName(),sensitivity))names.append((info.path()=="."?QString{}:info.path()+"/")+file.fileName()+(file.isDir()?"/":""));if(names.size()>=2000)break;}
             names.sort();for(const auto& name:names)add(name);
         } else if(source=='V') {
-            for(const auto& name:VimEx::Registry().complete(prefix))add(name);
+            for(const auto& name:exCommands)add(name);
         } else {
             QStringList pending;QSet<QString> visited;
             const auto include=[&](const QString& line,const QDir& directory){

@@ -182,6 +182,10 @@ private:
     bool wipeVimBuffer_{false};
     quint64 vimNextBufferId_{1};
     QPointer<EditorWidget> vimLastEditor_,vimAlternateEditor_;
+    QPointer<EditorWidget> vimAutocmdBuffer_;
+    bool vimAutocmdEntered_{};
+    void updateVimAutocmdBuffer();
+    void queueVimBufferAutocmd(EditorWidget* editor, const QString& event);
     void formatDocument();
     void renameSymbol();
     void navigateSymbol(const QString& method);

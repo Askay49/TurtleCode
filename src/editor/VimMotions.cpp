@@ -242,8 +242,28 @@ Range resolve(const PieceTreeBuffer& b,std::size_t cursor,const VimController::A
                 if(s.at(q)=='!' || s.at(q)=='?'){while(q<b.size() && s.at(q)!='>')++q;if(q<b.size())++q;continue;}
                 std::string name;while(q<b.size() && (std::isalnum(static_cast<unsigned char>(s.at(q))) || s.at(q)=='_' || s.at(q)=='-' || s.at(q)==':')){name+=char(std::tolower(static_cast<unsigned char>(s.at(q++))));if(name.size()>4096)break;}
                 if(name.empty())continue;
-                // Vim's tag text object terminates a tag at the first '>'.
-                bool self=false;while(q<b.size()){if(s.at(q++)=='>'){self=q>1 && s.at(q-2)=='/';break;}}
+                // Attribute values may contain '>' and extend across lines.
+                char quote = 0;
+                char previous = 0;
+                bool complete = false;
+                while (q < b.size()) {
+                    const char ch = s.at(q++);
+                    if (quote) {
+                        if (ch == quote) {
+                            quote = 0;
+                            previous = ch;
+                        }
+                    } else if (ch == '>') {
+                        complete = true;
+                        break;
+                    } else if (previous == '=' && (ch == '"' || ch == '\'')) {
+                        quote = ch;
+                    } else if (!std::isspace(static_cast<unsigned char>(ch))) {
+                        previous = ch;
+                    }
+                }
+                if (!complete) break;
+                const bool self = s.at(q - 2) == '/';
                 if(closing){
                     for(auto i=stack.size();i>0;--i)if(stack[i-1].name==name){const auto open=stack[i-1];if(open.begin<=p && p<q)pairs.push_back({open.begin,open.end,first,q});stack.resize(i-1);break;}
                 }else if(!self){if(stack.size()>=100000)return r;stack.push_back({name,first,q});}

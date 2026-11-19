@@ -133,6 +133,28 @@ void MainWindow::updateWorkspaceFocus(bool focus) {
     scheduleOutline();
     syncExplorerToActiveFile();
     scheduleFilePreviewCleanup();
+    updateVimAutocmdBuffer();
+}
+
+void MainWindow::queueVimBufferAutocmd(EditorWidget* editor, const QString& event) {
+    if (!editor || closing_) return;
+    auto* current = activeEditor();
+    auto* view = current && current->document() == editor->document() ? current : editor;
+    view->queueVimAutocmd(event);
+}
+
+void MainWindow::updateVimAutocmdBuffer() {
+    auto* view = activeEditor();
+    auto* buffer = documentEditor(view);
+    if (vimAutocmdBuffer_ != buffer) {
+        if (vimAutocmdEntered_) queueVimBufferAutocmd(vimAutocmdBuffer_, "BufLeave");
+        vimAutocmdBuffer_ = buffer;
+        vimAutocmdEntered_ = false;
+    }
+    if (view && buffer && !vimAutocmdEntered_ && !buffer->property("openingPath").isValid()) {
+        vimAutocmdEntered_ = true;
+        queueVimBufferAutocmd(view, "BufEnter");
+    }
 }
 
 void MainWindow::updateEditorPaneActions() {
@@ -448,6 +470,8 @@ EditorWidget* MainWindow::openVimFile(const QString& path) {
         editor->setProperty("openingPath", QVariant{});
         editor->setBusy(false);
         tabs_->setTabText(tabs_->indexOf(editor), QFileInfo(path).fileName());
+        queueVimBufferAutocmd(editor, "BufNewFile");
+        updateVimAutocmdBuffer();
     }
     return activeEditor();
 }

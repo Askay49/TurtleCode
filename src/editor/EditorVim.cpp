@@ -43,8 +43,8 @@ void EditorWidget::refreshVimPresentation() {
 }
 void EditorWidget::setVimEnabled(bool enabled) {
     if(vim_.enabled()==enabled)return;
-    if(enabled)loadVimInsertMappings();
-    else flushVimInsertMapping();
+    if(enabled)reloadVimMappings();
+    else {flushVimMapping();vimPendingAutocmds_.clear();}
     if(!enabled){closeVimCommandLine();invalidateVimSearch();stopVimExecution();if(vimExExecuting_)finishVimEx();}
     history_.endGroup();hideCompletions();
     // Preserve the exact selected bytes when returning to ordinary editing.
@@ -53,8 +53,9 @@ void EditorWidget::setVimEnabled(bool enabled) {
     vimInsertExitAfterPut_=vimInsertNormal_=vimInsertNormalArmed_=vimInsertCtrlX_=vimInsertCtrlG_=vimInsertJoinMovement_=false;vimInsertSavedIndent_.clear();vimLiteral_.clear();vimDigraph_.clear();vimInsertCandidates_.clear();
     vimVisualLine_=vimVisualBlock_=false;vim_.setEnabled(enabled);vimPreferredX_=-1;vimHistoryState_=history_.stateId();
     cursors_={cursorPosition_};clearAllSelections();
-    if(enabled)normalizeVimCursor();
+    if(enabled){initializeVimOptions();normalizeVimCursor();}
     else if(selected){anchor_=reversed?selection.second:selection.first;cursorPosition_=reversed?selection.first:selection.second;cursors_={cursorPosition_};cursorAnchors_={anchor_};}
+    refreshEditorConfig();
     for(auto* shortcut:findChildren<QShortcut*>())if(shortcut->objectName().startsWith("editor.vimDisabled."))shortcut->setEnabled(!enabled);
     refreshVimPresentation();
     invalidateScreenMinimap();updateScrollBars();ensureCursorVisible();
@@ -146,6 +147,16 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
         beginVimChange();switchVimMode(Mode::Insert);return true;
     }
     if(command==C::SelectMatch){startVimSearch(action);return true;}
+    if (command == C::CommandHistory) {
+        if (action.character == ':') showVimCommandLine();
+        else {
+            VimController::Action search;
+            search.command = action.character == '/' ? C::SearchForward : C::SearchBackward;
+            startVimSearch(search);
+        }
+        showVimCommandHistory();
+        return true;
+    }
     if(command==C::CommandLine){showVimCommandLine(action.explicitCount?action.count:0);return true;}
     if(command==C::RepeatSubstitute){showVimCommandLine();closeVimCommandLine();executeVimCommandLine(action.around?"%s&":"s");return true;}
     if(!action.registerName.isNull() && QStringLiteral(".%#/: ").contains(action.registerName) && (action.operation!=C::Consume || command==C::Delete || command==C::Change || command==C::Yank || command==C::DeleteChar || command==C::DeleteBefore || command==C::Substitute || command==C::DeleteEnd || command==C::ChangeEnd || command==C::ChangeLine || command==C::YankLine)){

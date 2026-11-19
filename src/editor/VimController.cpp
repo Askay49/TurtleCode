@@ -143,6 +143,9 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
             if(!QStringLiteral("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\"-_*+.%#/: ").contains(character) || character==' '){resetPending();return {C::Consume};}
             selectedRegister_=character;waiting_=C::Consume;return {C::Pending};
         }
+        if (waiting_ == C::RecordMacro && mode_ == Mode::Normal && operation_ == C::Consume
+            && (character == ':' || character == '/' || character == '?'))
+            return finish(C::CommandHistory, character);
         const auto cmd=waiting_;const bool keep=prefixG_ && (cmd==C::JumpMark || cmd==C::JumpMarkLine);auto action=finish(cmd,character);if(cmd==C::JumpMark || cmd==C::JumpMarkLine)action.around=keep;return action;
     }
     if(key==C::Increment || key==C::Decrement){const bool progressive=prefixG_;auto action=finish(key);action.around=progressive;return action;}

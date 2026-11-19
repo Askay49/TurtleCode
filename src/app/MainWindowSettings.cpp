@@ -26,6 +26,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QImageReader>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -36,9 +37,151 @@
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTabWidget>
+#include <QHeaderView>
+#include <QTableWidget>
 
 #include <algorithm>
+#include <array>
 #include <vector>
+
+namespace {
+
+class VimLeaderEdit final : public QLineEdit {
+public:
+    VimLeaderEdit(const QString& key, QWidget* parent) : QLineEdit(parent) {
+        setObjectName("vimLeaderKey");
+        setReadOnly(true);
+        setFocusPolicy(Qt::StrongFocus);
+        setFixedWidth(fontMetrics().horizontalAdvance(QStringLiteral("<Space>")) + 32);
+        setAccessibleName(I18n::text("Leader key"));
+        setToolTip(I18n::text("Click this field and press a printable key."));
+        showKey(key);
+    }
+
+    QString key() const { return text() == "<Space>" ? QStringLiteral(" ") : text(); }
+
+protected:
+    void keyPressEvent(QKeyEvent* event) override {
+        const auto key = event->text();
+        const auto shortcut = event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+        if (!shortcut && VimKeymaps::validLeader(key)) {
+            showKey(key);
+            event->accept();
+            return;
+        }
+        QLineEdit::keyPressEvent(event);
+    }
+
+private:
+    void showKey(const QString& key) { setText(key == " " ? QStringLiteral("<Space>") : key); }
+};
+
+class VimShortcutSettings final : public QWidget {
+public:
+    VimShortcutSettings(const QString& source, const QString& leader, QWidget* parent)
+        : QWidget(parent), originalSource_(source) {
+        auto* layout = new QVBoxLayout(this);
+        auto* leaderRow = new QHBoxLayout;
+        layout->addLayout(leaderRow);
+        auto* label = new QLabel(I18n::text("Leader key"), this);
+        leader_ = new VimLeaderEdit(leader, this);
+        label->setBuddy(leader_);
+        leaderRow->addWidget(label);
+        leaderRow->addWidget(leader_);
+        leaderRow->addStretch();
+
+        table_ = new QTableWidget(0, 3, this);
+        table_->setObjectName("vimShortcutTable");
+        table_->setHorizontalHeaderLabels({I18n::text("Mode"), I18n::text("Keys"), I18n::text("Action")});
+        table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+        table_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+        table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        layout->addWidget(table_, 1);
+        for (const auto& line : source.split('\n')) {
+            if (line.trimmed().isEmpty()) continue;
+            const auto separator = VimKeymaps::settingsSeparator(line);
+            const auto lhs = line.left(separator).simplified().split(' ');
+            if (separator < 0 || lhs.size() != 2) addRow(line);
+            else addRow(lhs[0], lhs[1], line.mid(separator + 1).trimmed());
+        }
+
+        auto* buttons = new QHBoxLayout;
+        layout->addLayout(buttons);
+        auto* add = new QPushButton(Codicons::icon("add"), I18n::text("Add mapping"), this);
+        add->setObjectName("vimAddMapping");
+        auto* remove = new QPushButton(Codicons::icon("trash"), I18n::text("Remove"), this);
+        buttons->addWidget(add);
+        buttons->addWidget(remove);
+        buttons->addStretch();
+
+        connect(table_, &QTableWidget::itemChanged, this, [this] { edited_ = true; });
+        connect(add, &QPushButton::clicked, this, [this] {
+            const int row = addRow("normal");
+            edited_ = true;
+            table_->setFocus();
+            table_->setCurrentCell(row, 1);
+            table_->editItem(table_->item(row, 1));
+        });
+        remove->setEnabled(false);
+        connect(table_, &QTableWidget::itemSelectionChanged, remove, [this, remove] {
+            remove->setEnabled(!table_->selectedRanges().isEmpty());
+        });
+        connect(remove, &QPushButton::clicked, this, [this] {
+            auto rows = table_->selectionModel()->selectedRows();
+            std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.row() > b.row(); });
+            for (const auto& row : rows) table_->removeRow(row.row());
+            edited_ = true;
+        });
+    }
+
+    QString source() const {
+        if (!edited_) return originalSource_;
+        QStringList lines;
+        for (int row = 0; row < table_->rowCount(); ++row) {
+            const auto* selector = qobject_cast<QComboBox*>(table_->cellWidget(row, 0));
+            const auto mode = selector->currentIndex() < 0 ? selector->placeholderText() : selector->currentData().toString();
+            const auto keys = table_->item(row, 1)->text().trimmed();
+            const auto action = table_->item(row, 2)->text().trimmed();
+            lines.append(mode + ' ' + keys + " = " + action);
+        }
+        return lines.join('\n');
+    }
+
+    QString leader() const { return leader_->key(); }
+
+private:
+    int addRow(const QString& mode, const QString& keys = {}, const QString& action = {}) {
+        static constexpr std::array modeLabels{"Normal", "Visual", "Operator-pending", "Insert", "Replace", "Command line"};
+        static_assert(modeLabels.size() == static_cast<std::size_t>(VimKeymaps::Mode::Count));
+        const int row = table_->rowCount();
+        table_->insertRow(row);
+        auto* selector = new QComboBox(table_);
+        selector->setAccessibleName(I18n::text("Mode"));
+        selector->setFrame(false);
+        for (int index = 0; index < int(VimKeymaps::Mode::Count); ++index)
+            selector->addItem(QString::fromLatin1(modeLabels[index]), VimKeymaps::modeName(VimKeymaps::Mode(index)));
+        const int selected = selector->findData(mode);
+        if (selected < 0) selector->setPlaceholderText(mode);
+        selector->setCurrentIndex(selected);
+        table_->setCellWidget(row, 0, selector);
+        table_->setItem(row, 1, new QTableWidgetItem(keys));
+        table_->setItem(row, 2, new QTableWidgetItem(action));
+        connect(selector, &QComboBox::currentIndexChanged, this, [this] { edited_ = true; });
+        connect(selector, &QComboBox::activated, this, [this, selector] {
+            const auto cell = table_->indexAt(selector->pos());
+            if (cell.isValid()) table_->selectRow(cell.row());
+        });
+        return row;
+    }
+
+    QString originalSource_;
+    QTableWidget* table_{};
+    VimLeaderEdit* leader_{};
+    bool edited_{};
+};
+
+}
 
 QWidget* MainWindow::createHighlightingSettings(QWidget* parent) {
     auto* page = new QWidget(parent);
@@ -345,9 +488,16 @@ void MainWindow::showSettings(SettingsPage initialPage) {
     addSection(SettingsPage::Appearance, "appearance", "Appearance", "color-mode", appearance);
 
     auto& shortcutManager = ShortcutManager::instance();
-    auto* shortcutPage = shortcutManager.createSettingsPage(pages, shortcuts);
+    auto* shortcutTabs = new QTabWidget;
+    shortcutTabs->setObjectName("shortcutSettingsTabs");
+    auto* shortcutPage = shortcutManager.createSettingsPage(shortcutTabs, shortcuts);
     const auto originalShortcuts = shortcuts;
-    addSection(SettingsPage::Shortcuts, "shortcuts", "Keyboard shortcuts", "keyboard", scrollPage(shortcutPage));
+    const auto originalVimMappings = settings.value("vimKeymaps/bindings").toString();
+    const auto originalLeaders = VimKeymaps::readLeaders(settings);
+    auto* vimMappings = new VimShortcutSettings(originalVimMappings, originalLeaders.leader, shortcutTabs);
+    shortcutTabs->addTab(scrollPage(shortcutPage), I18n::text("General"));
+    shortcutTabs->addTab(vimMappings, I18n::text("Vim"));
+    addSection(SettingsPage::Shortcuts, "shortcuts", "Keyboard shortcuts", "keyboard", shortcutTabs);
 
     auto* languages = new QTabWidget;
     languages->setObjectName("languageSettingsTabs");
@@ -483,6 +633,22 @@ void MainWindow::showSettings(SettingsPage initialPage) {
                 return;
             }
         }
+        const auto vimSource = vimMappings->source();
+        const bool vimMappingsChanged = vimSource != originalVimMappings;
+        auto leaders = originalLeaders;
+        leaders.leader = vimMappings->leader();
+        const bool leaderChanged = leaders.leader != originalLeaders.leader;
+        if (vimMappingsChanged || leaderChanged) {
+            VimKeymaps::Tables parsed;
+            const auto error = VimKeymaps::parseSettings(vimSource, parsed,
+                [&shortcutManager](const QString& id) { return shortcutManager.hasCommand(id); }, leaders);
+            if (!error.isEmpty()) {
+                selectPage(SettingsPage::Shortcuts);
+                shortcutTabs->setCurrentWidget(vimMappings);
+                IconDialogs::MessageBox::warning(&dialog, I18n::text("Cannot save Vim mappings"), error);
+                return;
+            }
+        }
         if (!lsp->prepareSave()) {
             selectPage(SettingsPage::LanguageServers);
             return;
@@ -513,6 +679,8 @@ void MainWindow::showSettings(SettingsPage initialPage) {
         }
         if (languageChanged) settings.setValue("interface/language", selectedLanguage);
         if (shortcutsChanged) shortcutManager.writeSettings(settings, shortcuts);
+        if (vimMappingsChanged) settings.setValue("vimKeymaps/bindings", vimSource);
+        if (leaderChanged) settings.setValue("vimKeymaps/leader", leaders.leader);
         settings.setValue("appearance/backgroundImage", imagePath->text());
         settings.setValue("appearance/backgroundOpacity", opacity->value());
         settings.setValue("view/showHidden", hidden->isChecked());
@@ -538,6 +706,10 @@ void MainWindow::showSettings(SettingsPage initialPage) {
         }
 
         if (shortcutsChanged) shortcutManager.applySettings(shortcuts);
+        if (vimMappingsChanged || leaderChanged) {
+            for (auto* widget : QApplication::allWidgets())
+                if (auto* editor = qobject_cast<EditorWidget*>(widget)) editor->reloadVimMappings();
+        }
         if (vimChanged) applyVimSettings();
         if (visibilityChanged) applyFileVisibilitySettings();
         if (backgroundChanged) ThemeManager::instance().refreshAppearance();

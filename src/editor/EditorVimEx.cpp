@@ -12,6 +12,9 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QTextBlock>
+#include <QRegularExpression>
 #include <QMetaMethod>
 #include <QScopeGuard>
 #include <QScrollBar>
@@ -26,9 +29,11 @@ public:
 protected:
     void keyPressEvent(QKeyEvent* event) override {QLineEdit::keyPressEvent(event);event->accept();}
 };
-const VimEx::Registry& exRegistry(){static const VimEx::Registry registry;return registry;}
 }
-bool EditorWidget::vimOwnsFocus() const {return hasFocus() || (vimExActive_ && vimExInput_ && vimExInput_->hasFocus());}
+bool EditorWidget::vimOwnsFocus() const {
+    return hasFocus() || (vimExActive_ && ((vimExInput_ && vimExInput_->hasFocus())
+        || (vimExHistoryWindow_ && vimExHistoryWindow_->hasFocus())));
+}
 void EditorWidget::positionVimCommandLine() {
     if (!vimExBar_ || vimExBar_->isHidden()) return;
 
@@ -36,6 +41,8 @@ void EditorWidget::positionVimCommandLine() {
     constexpr int preferredWidth = 720;
     const auto area = viewport()->size();
     const int width = std::clamp(area.width() - 2 * margin, 0, preferredWidth);
+    if (vimExHistoryWindow_ && !vimExHistoryWindow_->isHidden())
+        vimExHistoryWindow_->setFixedHeight(std::clamp(area.height() / 2, 48, 360));
     const int height = std::min(vimExBar_->sizeHint().height(), area.height());
     const int top = std::min(std::max(margin, area.height() / 6),
                              std::max(0, area.height() - height - margin));
@@ -78,6 +85,10 @@ void EditorWidget::showVimCommandLine(int count,QChar prompt){
 }
 void EditorWidget::closeVimCommandLine(){
     const bool active=std::exchange(vimExActive_,false);vimExRegisterPending_=false;
+    if (active) {
+        vimMappingTimer_.stop();
+        vimMappingPending_.clear();
+    }
     if(active && vimCommandPrompt_!=':'){
         if(vimSearchCancelled_)vimSearchCancelled_->store(true);
         ++vimSearchGeneration_;vimSearchRunning_=false;
@@ -85,14 +96,15 @@ void EditorWidget::closeVimCommandLine(){
         cursorPosition_=std::min(vimSearchOrigin_,buffer_.size());anchor_=vimSearchOriginAnchor_;cursors_={cursorPosition_};cursorAnchors_={anchor_};
         verticalScrollBar()->setValue(vimSearchOriginTop_);horizontalScrollBar()->setValue(vimSearchOriginLeft_);viewport()->update();
     }
+    if(vimExHistoryWindow_)vimExHistoryWindow_->hide();
     if(vimExBar_)vimExBar_->hide();
-    if(active){setFocus();emit vimModeChanged();if(vimCommandPrompt_!=':')QTimer::singleShot(0,this,&EditorWidget::updateVimSearchHighlights);}
+    if(active){setFocus();emit vimModeChanged();if(vimCommandPrompt_!=':')QTimer::singleShot(0,this,&EditorWidget::updateVimSearchHighlights);scheduleVimAutocmd();}
 }
 void EditorWidget::updateVimExHints(){
     if(!vimExHints_)return;
     if(vimCommandPrompt_!=':'){previewVimSearch();return;}
     const auto prefix=vimExInput_->text();
-    const auto candidates=exRegistry().complete(prefix);
+    const auto candidates=vimExRegistry().complete(prefix);
     vimExHints_->setText(vimExRegisterPending_?I18n::text("Insert register…"):candidates.isEmpty()?I18n::text("Enter: execute · Esc: cancel · ↑/↓: history · Tab: complete"):candidates.join(QStringLiteral("   ")));
 }
 bool EditorWidget::filterVimCommandLine(QEvent* event){
@@ -112,6 +124,7 @@ bool EditorWidget::filterVimCommandLine(QEvent* event){
     }
     if(event->type()!=QEvent::KeyPress)return false;
     auto* key=static_cast<QKeyEvent*>(event);
+    if (handleVimMapping(*key) || expandVimAbbreviation(*key)) return true;
     if(beginVimKey(key)){closeVimCommandLine();return true;}
     const auto guard=qScopeGuard([this]{endVimKey();});
     if(key->key()==Qt::Key_Control || key->key()==Qt::Key_Shift || key->key()==Qt::Key_Alt || key->key()==Qt::Key_Meta)return true;
@@ -125,9 +138,12 @@ bool EditorWidget::filterVimCommandLine(QEvent* event){
         updateVimExHints();return true;
     }
     if(control && key->key()==Qt::Key_R){vimExRegisterPending_=true;updateVimExHints();return true;}
+    if (control && key->key() == Qt::Key_F) { showVimCommandHistory(); return true; }
+    if (control && key->key() == Qt::Key_B) { vimExInput_->home(false); return true; }
+    if (control && key->key() == Qt::Key_E) { vimExInput_->end(false); return true; }
+    if (control && key->key() == Qt::Key_H) { vimExInput_->backspace(); return true; }
     if(key->key()==Qt::Key_Return || key->key()==Qt::Key_Enter){
-        const auto line=vimExInput_->text();
-        const bool search=vimCommandPrompt_!=':';closeVimCommandLine();if(search)commitVimSearch(line);else executeVimCommandLine(line);return true;
+        submitVimCommandLine(vimExInput_->text());return true;
     }
     if(key->key()==Qt::Key_Backspace && vimExInput_->text().isEmpty()){closeVimCommandLine();return true;}
     if(control && key->key()==Qt::Key_U){const auto at=vimExInput_->cursorPosition();vimExInput_->setSelection(0,at);vimExInput_->insert({});return true;}
@@ -149,20 +165,123 @@ bool EditorWidget::filterVimCommandLine(QEvent* event){
     }
     return false;
 }
+void EditorWidget::submitVimCommandLine(const QString& line) {
+    const bool search = vimCommandPrompt_ != ':';
+    closeVimCommandLine();
+    if (search) commitVimSearch(line);
+    else executeVimCommandLine(line);
+}
+
+void EditorWidget::showVimCommandHistory() {
+    if (!vimExHistoryWindow_) {
+        vimExHistoryWindow_ = new QPlainTextEdit(vimExBar_);
+        vimExHistoryWindow_->setObjectName("vimCommandHistoryWindow");
+        vimExHistoryWindow_->setAccessibleName(I18n::text("Vim command history"));
+        vimExHistoryWindow_->setLineWrapMode(QPlainTextEdit::NoWrap);
+        vimExHistoryWindow_->installEventFilter(this);
+        static_cast<QVBoxLayout*>(vimExBar_->layout())->insertWidget(1, vimExHistoryWindow_);
+    }
+    const auto& session = VimState::Session::instance();
+    const auto& history = vimCommandPrompt_ == ':' ? session.commandHistory : session.searchHistory;
+    auto lines = history;
+    lines.append(vimExInput_->text());
+    vimHistoryMode_.setEnabled(true);
+    vimExHistoryWindow_->setFont(vimExInput_->font());
+    vimExHistoryWindow_->setPlainText(lines.join('\n'));
+    vimExHistoryWindow_->moveCursor(QTextCursor::End);
+    vimExHistoryWindow_->moveCursor(QTextCursor::StartOfBlock);
+    vimExHistoryWindow_->show();
+    vimExInput_->parentWidget()->hide();
+    vimExHints_->setText(QString(vimCommandPrompt_) + "  " + I18n::text("Enter executes · i edits · Esc or Ctrl+C closes"));
+    positionVimCommandLine();
+    vimExHistoryWindow_->setFocus();
+}
+
+bool EditorWidget::filterVimCommandHistory(QEvent* event) {
+    if (!vimExActive_ || vimExHistoryWindow_->isHidden()) return false;
+    if (event->type() == QEvent::ShortcutOverride) { event->accept(); return true; }
+    if (event->type() == QEvent::FocusOut) {
+        QTimer::singleShot(0, this, [this] {
+            if (vimExActive_ && !vimOwnsFocus()) closeVimCommandLine();
+        });
+        return false;
+    }
+    if (event->type() != QEvent::KeyPress) return false;
+    const auto* key = static_cast<QKeyEvent*>(event);
+    if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+        submitVimCommandLine(vimExHistoryWindow_->textCursor().block().text());
+        return true;
+    }
+    if (key->key() == Qt::Key_C && key->modifiers() == Qt::ControlModifier) {
+        closeVimCommandLine();
+        return true;
+    }
+    using C = VimController::Command;
+    using Mode = VimController::Mode;
+    auto cursor = vimExHistoryWindow_->textCursor();
+    if (vimHistoryMode_.acceptsText()) {
+        if (key->key() != Qt::Key_Escape) return false;
+        vimHistoryMode_.setMode(Mode::Normal);
+        if (!cursor.atBlockStart()) cursor.movePosition(QTextCursor::PreviousCharacter);
+        vimExHistoryWindow_->setTextCursor(cursor);
+        return true;
+    }
+    const auto action = vimHistoryMode_.feed(*key);
+    const auto move = [&](QTextCursor::MoveOperation operation) {
+        cursor.movePosition(operation, QTextCursor::MoveAnchor, action.count);
+    };
+    switch (action.command) {
+    case C::Normal: closeVimCommandLine(); return true;
+    case C::Left: move(QTextCursor::Left); break;
+    case C::Right: move(QTextCursor::Right); break;
+    case C::Up: move(QTextCursor::Up); break;
+    case C::Down: move(QTextCursor::Down); break;
+    case C::Start: case C::FirstText: move(QTextCursor::StartOfBlock); break;
+    case C::End: move(QTextCursor::EndOfBlock); break;
+    case C::FirstLine: move(QTextCursor::Start); break;
+    case C::LastLine: move(QTextCursor::End); move(QTextCursor::StartOfBlock); break;
+    case C::Word: move(QTextCursor::NextWord); break;
+    case C::WordBack: move(QTextCursor::PreviousWord); break;
+    case C::Undo: vimExHistoryWindow_->undo(); return true;
+    case C::Redo: vimExHistoryWindow_->redo(); return true;
+    case C::DeleteChar:
+        for (int i = 0; i < action.count && !cursor.atBlockEnd(); ++i) cursor.deleteChar();
+        break;
+    case C::InsertFirst: move(QTextCursor::StartOfBlock); [[fallthrough]];
+    case C::Insert: case C::Append: case C::InsertLast:
+        if (action.command == C::Append && !cursor.atBlockEnd()) move(QTextCursor::NextCharacter);
+        if (action.command == C::InsertLast) move(QTextCursor::EndOfBlock);
+        vimHistoryMode_.setMode(Mode::Insert);
+        break;
+    default: break;
+    }
+    vimExHistoryWindow_->setTextCursor(cursor);
+    return true;
+}
+
 void EditorWidget::completeVimEx(int direction){
     const auto text=vimExInput_->text();const auto cursor=vimExInput_->cursorPosition();
     if(vimExCompletions_.isEmpty()){
-        auto start=cursor;while(start>0 && text[start-1].isLetter() && text[start-1].unicode()<128)--start;
+        auto start=cursor;
+        while(start>0 && (text[start-1].isLetterOrNumber()) && text[start-1].unicode()<128)--start;
         const auto commandStart=start>0?text.lastIndexOf('|',start-1)+1:0;
         const auto before=text.mid(commandStart,start-commandStart);
         VimEx::Context context;context.last=std::max<qint64>(1,VimMotions::lastLine(buffer_,vimFinalNewline_)+1);context.current=currentLine()+1;
         context.mark=[&](QChar)->std::optional<qint64>{return context.current;};
-        const auto probe=exRegistry().parse(before+"print",context);
+        const auto probe=vimExRegistry().parse(before+"print",context);
         if(probe.error.isEmpty() && probe.command.definition.name=="print"){
-            for(const auto& candidate:exRegistry().complete(text.mid(start,cursor-start)))vimExCompletions_<<text.left(start)+candidate+text.mid(cursor);
+            for(const auto& candidate:vimExRegistry().complete(text.mid(start,cursor-start)))vimExCompletions_<<text.left(start)+candidate+text.mid(cursor);
         }else{
-            const auto parsed=exRegistry().parse(text.left(cursor),context);
-            if(!parsed.error.isEmpty() || parsed.command.definition.arguments!=VimEx::Arguments::File)return;
+            const auto parsed=vimExRegistry().parse(text.mid(commandStart,cursor-commandStart),context);
+            if (!parsed.error.isEmpty()) return;
+            const auto name = parsed.command.definition.name;
+            if (name == "set" || name == "setlocal" || name == "setglobal") {
+                int from = cursor;
+                while (from > commandStart && !text[from-1].isSpace()) --from;
+                for (const auto& candidate : completeVimOptions(text.mid(from, cursor-from)))
+                    vimExCompletions_ << text.left(from) + candidate + text.mid(cursor);
+            } else {
+            if(parsed.command.definition.arguments!=VimEx::Arguments::File)return;
             auto from=cursor;while(from>0 && (!text[from-1].isSpace() || (from>1 && text[from-2]=='\\')))--from;
             const auto token=text.mid(from,cursor-from);QString error;
             const auto expanded=VimEx::fileArgument(token,filePath_,&error);if(!error.isEmpty())return;
@@ -179,12 +298,15 @@ void EditorWidget::completeVimEx(int direction){
                 vimExCompletions_<<text.left(from)+path+text.mid(cursor);if(vimExCompletions_.size()>=200)break;
             }
             vimExCompletions_.sort();
+            }
         }
+        vimExCompletionSuffix_=text.size()-cursor;
         vimExCompletionBase_=text;vimExCompletionIndex_=direction>0?-1:0;
     }
     if(vimExCompletions_.isEmpty())return;
     const auto count=vimExCompletions_.size();vimExCompletionIndex_=(vimExCompletionIndex_+direction+count)%count;
     vimExInput_->setText(vimExCompletions_[vimExCompletionIndex_]);
+    vimExInput_->setCursorPosition(vimExInput_->text().size()-vimExCompletionSuffix_);
     vimExHints_->setText(vimExCompletions_.mid(0,6).join(QStringLiteral("   ")));
 }
 void EditorWidget::executeVimCommandLine(const QString& line){
@@ -230,12 +352,19 @@ void EditorWidget::finishVimEx(const QString& error,bool fatal){
         if(!silent)emit highlightingStatusChanged(error);
         if(!silent && vimExBar_){vimExInput_->parentWidget()->hide();vimExHints_->setText(error.left(4096));vimExBar_->show();positionVimCommandLine();}
     }
+    auto afterAutocmds = std::exchange(vimAfterAutocmds_, {});
     emit vimModeChanged();
+    scheduleVimAutocmd();
+    if (error.isEmpty() && afterAutocmds) afterAutocmds();
 }
 void EditorWidget::continueVimEx(){
     if(!vimExExecuting_ || vimExNormal_)return;
     if(busy_){scheduleVimEx(5);return;}
     restoreVimExScope(vimExScope_);
+    if (!startPendingVimAutocmd() && vimAfterAutocmds_ && !vimPendingAutocmds_.isEmpty() && vimExFrames_.empty()) {
+        scheduleVimEx(50);
+        return;
+    }
     if(vimExRemaining_.isEmpty()){if(nextVimExFrame())return;finishVimEx();return;}
     if(++vimExSteps_>100000){finishVimEx(I18n::text("Vim: Ex execution limit reached"),true);return;}
     {const auto& state=VimState::Session::instance();ExScope before;before.pattern=state.searchPattern;before.offset=state.searchOffset;before.subPattern=state.lastSubPattern;before.searchHistory=state.searchHistory;before.direction=state.searchForward;vimExParseState_=std::move(before);}
@@ -247,12 +376,13 @@ void EditorWidget::continueVimEx(){
     }
     context.mark=[marks](QChar name)->std::optional<qint64>{return marks.contains(name)?std::optional<qint64>(marks[name]):std::nullopt;};
     const auto line=std::exchange(vimExRemaining_,{});
+    const auto registry = vimExRegistry();
     if(line.contains('/') || line.contains('?')){
         auto result=std::make_shared<VimEx::Parsed>();auto previous=std::make_shared<QString>(VimState::Session::instance().searchPattern);
         auto direction=std::make_shared<bool>(VimState::Session::instance().searchForward),used=std::make_shared<bool>(false);
         const auto options=VimState::Session::instance().searchOptions;const auto old=vimSearchSubjectRevision_==lspRevision_?vimSearchSubject_:nullptr;
         const bool finalNewline=vimFinalNewline_,wrap=VimState::Session::instance().wrapSearch;const auto original=cursorPosition_;
-        runBulkOperation(I18n::text("Searching…"),[line,context,result,previous,direction,used,options,old,finalNewline,wrap,original](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step) mutable {
+        runBulkOperation(I18n::text("Searching…"),[line,registry,context,result,previous,direction,used,options,old,finalNewline,wrap,original](PieceTreeBuffer& buffer,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep& step) mutable {
             auto subject=old;
             context.search=[&](const QString& query,bool forward,qint64 row)->std::optional<qint64>{
                 const auto pattern=query.isEmpty()?*previous:query;if(pattern.isEmpty())throw std::runtime_error("E35: No previous regular expression");
@@ -264,10 +394,10 @@ void EditorWidget::continueVimEx(){
                 if(!found.match || (!wrap && found.wrapped))return {};
                 return qint64(buffer.lineIndexAt(found.match->begin)+1);
             };
-            *result=exRegistry().parse(line,context);return HistoryResult{original,{original}};
+            *result=registry.parse(line,context);return HistoryResult{original,{original}};
         },false,{},[this,result,previous,direction,used](bool ok){if(!ok)return;if(*used && !previous->isEmpty()){auto& state=VimState::Session::instance();state.searchPattern=*previous;state.searchOffset.clear();state.searchForward=*direction;state.set('/',VimState::text(*previous));state.searchHistory.removeAll(*previous);state.searchHistory.append(*previous);while(state.searchHistory.size()>200)state.searchHistory.removeFirst();vimLastSearchMatch_.reset();}executeVimExParsed(*result);});return;
     }
-    executeVimExParsed(exRegistry().parse(line,context));
+    executeVimExParsed(registry.parse(line,context));
 }
 void EditorWidget::executeVimExParsed(const VimEx::Parsed& parsed){
     const auto& modifiers=parsed.command;
@@ -282,7 +412,26 @@ void EditorWidget::executeVimExParsed(const VimEx::Parsed& parsed){
     const auto first=std::size_t(std::max<qint64>(1,command.first)-1),last=std::size_t(std::max<qint64>(1,command.last)-1);
     if(command.definition.arguments==VimEx::Arguments::Substitute){beginVimSubstitute(command);return;}
     if(command.definition.arguments==VimEx::Arguments::Global){beginVimGlobal(command);return;}
+    if (const auto mapping = VimKeymaps::exCommand(name, command.bang)) {
+        const auto error = executeVimMappingCommand(command, *mapping);
+        if (error.isEmpty()) scheduleVimEx();
+        else finishVimEx(error);
+        return;
+    }
     if(name=="normal"){beginVimNormal(command);return;}
+    if (name == "command" || name == "delcommand" || name == "comclear"
+        || (!name.isEmpty() && name.front().isUpper())) {
+        const auto error = executeVimUserCommand(command);
+        if (!error.isEmpty()) finishVimEx(error);
+        else scheduleVimEx();
+        return;
+    }
+    if (name == "augroup" || name == "autocmd" || name == "doautocmd") {
+        const auto error = executeVimAutocmd(command);
+        if (!error.isEmpty()) finishVimEx(error);
+        else scheduleVimEx();
+        return;
+    }
     if(name=="@") {executeVimExRegister(command);return;}
     if(name=="copy" || name=="t" || name=="move" || name=="join" || name=="sort"){editVimExLines(command);return;}
     if(name=="read"){readVimExFile(command);return;}
@@ -299,51 +448,9 @@ void EditorWidget::executeVimExParsed(const VimEx::Parsed& parsed){
         vimExMessage(output.left(4096));scheduleVimEx();return;
     }
     if(name=="nohlsearch"){vimHighlightHidden_=true;if(vimSearchCancelled_)vimSearchCancelled_->store(true);++vimSearchGeneration_;vimSearchHighlights_.clear();viewport()->update();}
-    else if(name=="set"){
-        auto& state=VimState::Session::instance();
-        for(auto option:command.arguments.split(' ',Qt::SkipEmptyParts)){
-            bool value=true,toggle=option.endsWith('!'),report=option.endsWith('?');if(toggle || report)option.chop(1);
-            if(option.startsWith("no")){value=false;option.remove(0,2);}
-            QString* source=nullptr;const auto optionName=option.section('=',0,0);
-            if(optionName=="dictionary" || optionName=="dict")source=&state.dictionary;
-            else if(optionName=="thesaurus" || optionName=="tsr")source=&state.thesaurus;
-            else if(optionName=="tags" || optionName=="tag")source=&state.tags;
-            if(source){if(option.contains('='))*source=option.mid(option.indexOf('=')+1);else vimExMessage(optionName+"="+*source);continue;}
-            if(option.startsWith("nrformats=") || option.startsWith("nf=")){
-                const auto formats=option.mid(option.indexOf('=')+1).split(',',Qt::SkipEmptyParts);for(const auto& format:formats)if(!QStringList{"bin","hex","octal","alpha","unsigned"}.contains(format)){finishVimEx("E474: Invalid argument");return;}state.numberFormats=formats.join(',');continue;
-            }
-            if(option=="nrformats" || option=="nf"){vimExMessage("nrformats="+state.numberFormats);continue;}
-            if(option.startsWith("textwidth=") || option.startsWith("tw=")){bool ok=false;const auto width=option.mid(option.indexOf('=')+1).toInt(&ok);if(!ok || width<0 || width>1000000){finishVimEx("E474: Invalid argument");return;}state.textWidth=width;continue;}
-            if(option=="textwidth" || option=="tw"){vimExMessage("textwidth="+QString::number(state.textWidth));continue;}
-            bool* target=nullptr;
-            if(option=="wrap" || option=="foldenable" || option=="fen"){
-                auto& setting=option=="wrap"?vimWrap_:vimFoldEnabled_;
-                if(report)vimExMessage((setting?QString{}:QStringLiteral("no"))+option);
-                else {
-                    const int top=documentLineForVisualRow(verticalScrollBar()->value());
-                    setting=toggle?!setting:value;
-                    refreshScreenLayout(top);
-                    const int line=documentLineForVisualRow(visualRowForLine(int(currentLine())));
-                    if(line!=int(currentLine()))moveCursor(VimMotions::firstText(buffer_,line),false);
-                    ensureCursorVisible();
-                }
-                continue;
-            }
-            if(option=="foldmethod=manual" || option=="fdm=manual")continue;
-            if(option=="foldmethod" || option=="fdm"){vimExMessage("foldmethod=manual");continue;}
-            if(option=="joinspaces" || option=="js")target=&state.joinSpaces;
-            else if(option=="ignorecase" || option=="ic")target=&state.searchOptions.ignoreCase;
-            else if(option=="smartcase" || option=="scs")target=&state.searchOptions.smartCase;
-            else if(option=="magic")target=&state.searchOptions.magic;
-            else if(option=="hlsearch" || option=="hls")target=&state.highlightSearch;
-            else if(option=="incsearch" || option=="is")target=&state.incrementalSearch;
-            else if(option=="wrapscan" || option=="ws")target=&state.wrapSearch;
-            else if(option=="gdefault" || option=="gd")target=&state.globalSubstitute;
-            if(!target){finishVimEx("E518: Unknown option: "+option);return;}
-            if(report)vimExMessage((*target?QString{}:QStringLiteral("no"))+option);
-            else *target=toggle?!*target:value;
-        }
-        vimHighlightHidden_=false;invalidateVimSearch();
+    else if (name == "set" || name == "setlocal" || name == "setglobal") {
+        const auto error = executeVimSet(command);
+        if (!error.isEmpty()) { finishVimEx(error); return; }
     }
     else if(name=="fold"){createVimFold(int(first),int(last));}
     else if(name.isEmpty()){pushVimJump();moveCursor(VimMotions::firstText(buffer_,last),false);}

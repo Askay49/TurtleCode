@@ -2,8 +2,11 @@
 
 #include "core/text/EditHistory.hpp"
 #include "core/text/PieceTreeBuffer.hpp"
+#include "editor/VimKeymaps.hpp"
+#include "editor/VimEx.hpp"
 
 #include <QString>
+#include <QVariant>
 #include <QObject>
 #include <memory>
 #include <vector>
@@ -20,6 +23,10 @@ public:
     const EditHistory& history() const noexcept { return history_; }
     QByteArray diskState;
     bool keepVimMarks{true};
+    VimKeymaps::Store vimKeymaps;
+    QMap<QString, QVariant> vimOptions;
+    bool vimOptionsInitialized{};
+    QMap<QString, VimEx::UserCommand> vimCommands;
     QString& filePath() noexcept { return filePath_; }
     const QString& filePath() const noexcept { return filePath_; }
     bool& busy() noexcept { return busy_; }
