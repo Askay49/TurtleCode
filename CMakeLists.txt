@@ -530,7 +530,7 @@ endif()
 foreach(editor_target turtle-code turtle-code-editor-tests turtle-code-window-tests)
     if(TARGET ${editor_target})
         target_link_libraries(${editor_target} PRIVATE turtle-code-editorconfig turtle-code-vim)
-        target_sources(${editor_target} PRIVATE src/editor/EditorVim.cpp src/editor/EditorVimInsert.cpp src/editor/EditorVimCompletion.cpp src/editor/EditorVimViewport.cpp src/editor/EditorScreenLayout.cpp src/editor/EditorVimEdits.cpp src/editor/EditorVimSession.cpp src/editor/EditorVimBlock.cpp src/editor/EditorVimEx.cpp src/editor/EditorVimSearch.cpp src/editor/EditorVimSubstitute.cpp src/editor/EditorVimExRuntime.cpp src/editor/EditorVimExLines.cpp src/editor/EditorVimNormal.cpp)
+        target_sources(${editor_target} PRIVATE src/editor/EditorVim.cpp src/editor/EditorVimInsert.cpp src/editor/EditorVimMappings.cpp src/editor/EditorVimCompletion.cpp src/editor/EditorVimViewport.cpp src/editor/EditorScreenLayout.cpp src/editor/EditorVimEdits.cpp src/editor/EditorVimSession.cpp src/editor/EditorVimBlock.cpp src/editor/EditorVimEx.cpp src/editor/EditorVimSearch.cpp src/editor/EditorVimSubstitute.cpp src/editor/EditorVimExRuntime.cpp src/editor/EditorVimExLines.cpp src/editor/EditorVimNormal.cpp)
     endif()
 endforeach()
 # Tests are opt-in build targets, never part of the default application build.

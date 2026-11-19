@@ -43,6 +43,8 @@ void EditorWidget::refreshVimPresentation() {
 }
 void EditorWidget::setVimEnabled(bool enabled) {
     if(vim_.enabled()==enabled)return;
+    if(enabled)loadVimInsertMappings();
+    else flushVimInsertMapping();
     if(!enabled){closeVimCommandLine();invalidateVimSearch();stopVimExecution();if(vimExExecuting_)finishVimEx();}
     history_.endGroup();hideCompletions();
     // Preserve the exact selected bytes when returning to ordinary editing.
@@ -62,6 +64,7 @@ void EditorWidget::switchVimMode(VimController::Mode mode,bool fromEscape) {
     if((previous==VimController::Mode::Insert || previous==VimController::Mode::Replace) && mode==VimController::Mode::Normal)VimState::Session::instance().marks(vimMarkKey())['^']=vimLocation();
     if((previous==VimController::Mode::Insert || previous==VimController::Mode::Replace) && fromEscape && mode==VimController::Mode::Normal && repeatVimInsert())return;
     vimInsertCount_=1;vimInsertPrefix_.clear();
+    vimInsertModeToggled_=false;vimCountedInsertKeys_.clear();vimReplaced_.clear();
     history_.endGroup();hideCompletions();vimPreferredX_=-1;
     if(previous==VimController::Mode::Visual && anchor_) {
         vimPreviousVisualAnchor_=VimState::Session::instance().anchor(document_.get(),filePath_,*anchor_,navigationPosition());
@@ -110,7 +113,7 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
         if(vim_.enabled()) {
             if(vim_.mode()==Mode::Insert) {
                 const bool motion=event->key()==Qt::Key_Left || event->key()==Qt::Key_Right || event->key()==Qt::Key_Up || event->key()==Qt::Key_Down || event->key()==Qt::Key_Home || event->key()==Qt::Key_End;
-                if((motion && !vimInsertJoinedMovement_) || event->matches(QKeySequence::Undo) || event->matches(QKeySequence::Redo)){history_.endGroup();vimInsertCount_=1;}
+                if((motion && !vimInsertJoinedMovement_) || event->matches(QKeySequence::Undo) || event->matches(QKeySequence::Redo)){history_.endGroup();vimInsertCount_=1;vimReplaced_.clear();}
                 else {if(event->key()==Qt::Key_Backspace && cursorPosition_<=vimInsertStart_)vimInsertCount_=1;history_.beginGroup(true);}
             }
             if(vim_.mode()==Mode::Visual && (event->matches(QKeySequence::Undo) || event->matches(QKeySequence::Redo)))switchVimMode(Mode::Normal);
@@ -165,7 +168,14 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
     if(command==C::JumpMark || command==C::JumpMarkLine){jumpVimMark(action.character,command==C::JumpMarkLine,action.operation,action.around);return true;}
     if(command==C::JumpBack || command==C::JumpForward){jumpVimHistory(command==C::JumpBack?-1:1,action.count);return true;}
     if(command==C::InsertRegister){putVimRegister(action.character,true,1,true);return true;}
-    if(command==C::ReplaceMode){vimReplaced_.clear();switchVimMode(Mode::Replace);vimInsertCount_=action.count;vimInsertStart_=cursorPosition_;return true;}
+    if ((command == C::ReplaceMode || command == C::Insert) && vim_.acceptsText()) {
+        vimInsertModeToggled_ = true;
+        hideCompletions();
+        vim_.setMode(command == C::ReplaceMode ? Mode::Replace : Mode::Insert);
+        refreshVimPresentation();
+        return true;
+    }
+    if(command==C::ReplaceMode){switchVimMode(Mode::Replace);vimInsertCount_=action.count;vimInsertStart_=cursorPosition_;return true;}
     if(command==C::ReplaceCharacter){if(vimVisualBlock_)editVimBlock(command,action.count,action.text);else replaceVimText(action.text,true,action.count);return true;}
     if(command==C::VisualBlock){
         if(vimVisualBlock_){switchVimMode(Mode::Normal);return true;}
@@ -265,6 +275,12 @@ bool EditorWidget::handleVimKey(QKeyEvent* event) {
 bool EditorWidget::repeatVimInsert() {
     const int count=std::exchange(vimInsertCount_,1)-1;
     if(count<=0 || cursorPosition_<vimInsertStart_)return false;
+    if (vimInsertModeToggled_ && vimCountedInsertKeys_.size() > 1 && vimCountedInsertKeys_.size() < 100000) {
+        auto keys = std::exchange(vimCountedInsertKeys_, {});
+        keys.removeLast(); // The current Escape closes the repeated insertion as well.
+        replayVim(std::move(keys), count, true);
+        return true;
+    }
     const auto length=cursorPosition_-vimInsertStart_;const auto at=cursorPosition_;
     if(vim_.mode()==VimController::Mode::Replace){
         if(length*std::size_t(count)>=4096){auto source=std::make_shared<ChunkedFile>();for(std::size_t p=0;p<length;p+=64*1024)source->append(buffer_.slice(vimInsertStart_+p,std::min<std::size_t>(64*1024,length-p)));replaceVimPayload(source,count,true);return true;}

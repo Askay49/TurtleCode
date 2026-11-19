@@ -13,6 +13,7 @@ static void vimKeys(EditorWidget& editor,const QString& keys) {
         else if(keys.mid(i,4)=="<CR>"){QTest::keyClick(&editor,Qt::Key_Return);i+=4;}
         else if(keys.mid(i,4)=="<BS>"){QTest::keyClick(&editor,Qt::Key_Backspace);i+=4;}
         else if(keys.mid(i,5)=="<Tab>"){QTest::keyClick(&editor,Qt::Key_Tab);i+=5;}
+        else if(keys.mid(i,8)=="<Insert>"){QTest::keyClick(&editor,Qt::Key_Insert);i+=8;}
         else if(keys.mid(i,5)=="<C-r>"){QTest::keyClick(&editor,Qt::Key_R,Qt::ControlModifier);i+=5;}
         else if(keys.mid(i,5)=="<C-v>"){QTest::keyClick(&editor,Qt::Key_V,Qt::ControlModifier);i+=5;}
         else if(keys.mid(i,5)=="<C-o>"){QTest::keyClick(&editor,Qt::Key_O,Qt::ControlModifier);i+=5;}

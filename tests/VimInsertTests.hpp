@@ -22,8 +22,30 @@ static void vimInsertTests(){
     fixture("words.txt","alpha alphabet alpine\n");fixture("synonyms.txt","fast quick speedy\nslow sluggish\n");
     fixture("tags","alpha\tsample.cpp\t1\nalpha_tag\tsample.cpp\t1\n");fixture("defs.h","#define ALPHA 1\n#define ALPHA_OTHER 2\nint alphabet;\n");fixture("completion-file.txt","");
     if(nvim.isEmpty()){qInfo("Neovim Insert oracle skipped");return;}
-    struct Case{QString input,keys;};
+    struct Case{QString input,keys;bool insertMapping=false;};
     const QVector<Case> cases={
+        {"abcdef","<Insert>X<Esc>"},
+        {"abcdef","2<Insert>X<Esc>"},
+        {"abcdef","g<Insert>X<Esc>"},
+        {"abcdef","d<Insert>X<Esc>"},
+        {"abcdef","iX<Insert>Y<Insert>Z<Esc>"},
+        {"abcdef","iX<Insert>Y<Insert>Z<Esc>u"},
+        {"abcdef","iX<Insert>Y<Insert>Z<Esc>."},
+        {"abcdef","2iX<Insert>Y<Insert>Z<Esc>"},
+        {"abcdef","2RX<Insert>Y<Esc>"},
+        {"abcdef","RX<Insert>Y<Insert>Z<Esc>u"},
+        {"abcdef","lRXY<Insert><Insert><BS>Z<Esc>"},
+        {"abcdef","RXY<Insert>Z<Insert><BS><BS><Esc>"},
+        {"abcdef","RXY<Insert><BS><Insert><BS><Esc>"},
+        {"abcdef","RXY<Insert><Left><Insert><BS><Esc>"},
+        {"abcdef","iXY<Insert><BS>Z<Esc>"},
+        {"abcdef","iXjk0.",true},
+        {"abcdef","qaiXjkq0@a",true},
+        {"abcdef","qaiXjZ<Esc>q0@a",true},
+        {"abcdef","i<C-v>jk<Esc>",true},
+        {"abcdef","RXjk",true},
+        {"abcdef","ijjk",true},
+        {"abcdef","iXj<Esc>0.",true},
         {"abc","iXY<C-h>Z<Esc>"},
         {"one two.three","A<C-w>X<Esc>"},
         {"one two","AXYZ<C-u>Z<Esc>"},
@@ -200,10 +222,23 @@ static void vimInsertTests(){
         {"abcdef\nghijkl\nmnopqr","<C-v>jl<Esc>G<C-v>llk<Esc>gvd"}
     };
     int mismatches=0;
-    for(const auto& test:cases){state.clear();const auto bytes=test.input.toUtf8();editor.loadBuffer(PieceTreeBuffer(std::string_view(bytes.data(),std::size_t(bytes.size()))),"sample.cpp");editor.resize(800,400);editor.show();editor.activateWindow();editor.setFocus();QApplication::processEvents();vimKeys(editor,test.keys);
+    bool mappingActive=false;
+    for(const auto& test:cases){
+        if (mappingActive != test.insertMapping) {
+            mappingActive = test.insertMapping;
+            QSettings settings;
+            if (mappingActive) settings.setValue("vimKeymaps/bindings", "insert jk = keys:<Esc>");
+            else settings.remove("vimKeymaps/bindings");
+            editor.setVimEnabled(false);
+            editor.setVimEnabled(true);
+        }
+        state.clear();const auto bytes=test.input.toUtf8();editor.loadBuffer(PieceTreeBuffer(std::string_view(bytes.data(),std::size_t(bytes.size()))),"sample.cpp");editor.resize(800,400);editor.show();editor.activateWindow();editor.setFocus();QApplication::processEvents();vimKeys(editor,test.keys);
         const auto quote=[](const QString& value){auto data=QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);return QString::fromUtf8(data.mid(1,data.size()-2));};
         const auto script=QString("lua vim.o.startofline=true; vim.o.shiftwidth=4; vim.o.tabstop=4; vim.o.expandtab=true; vim.o.autoindent=true; vim.o.joinspaces=false; vim.o.textwidth=79; local s=vim.fn.json_decode([==[%1]==]); local l=vim.split(s,'\\n',{plain=true}); if s:sub(-1)=='\\n' then table.remove(l) end; vim.api.nvim_buf_set_lines(0,0,-1,false,l); vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(vim.fn.json_decode([==[%2]==]),true,false,true),'xt',false); local p=vim.api.nvim_win_get_cursor(0); io.stdout:write('ORACLE:'..vim.fn.json_encode({lines=vim.api.nvim_buf_get_lines(0,0,-1,false),row=p[1],column=p[2]}))").arg(quote(test.input),quote(test.keys));
-        QProcess process;process.start(nvim,{"--headless","-u","NONE","-i","NONE","-n","-c",script,"-c","qa!"});Q_ASSERT(process.waitForFinished(10000));auto output=process.readAllStandardOutput();const auto at=output.indexOf("ORACLE:");if(at<0)qFatal("Insert oracle: %s",process.readAllStandardError().constData());
+        QStringList arguments{"--headless","-u","NONE","-i","NONE","-n"};
+        if (test.insertMapping) arguments << "-c" << "inoremap jk <Esc>";
+        arguments << "-c" << script << "-c" << "qa!";
+        QProcess process;process.start(nvim,arguments);Q_ASSERT(process.waitForFinished(10000));auto output=process.readAllStandardOutput();const auto at=output.indexOf("ORACLE:");if(at<0)qFatal("Insert oracle: %s",process.readAllStandardError().constData());
         const auto result=QJsonDocument::fromJson(output.mid(at+7)).object();QStringList lines;for(const auto& line:result["lines"].toArray())lines<<line.toString();const auto prefix=lines.value(result["row"].toInt()-1).toUtf8().left(result["column"].toInt());const QPoint cursor(result["row"].toInt(),QString::fromUtf8(prefix).size()+1);
         auto actual=QString::fromStdString(editor.document()->buffer().text());if(test.input.endsWith('\n') && actual.endsWith('\n'))actual.chop(1);if(actual!=lines.join('\n') || editor.navigationPosition()!=cursor){++mismatches;qWarning("Insert oracle [%s] on [%s]: [%s] %d:%d vs [%s] %d:%d",qPrintable(test.keys),qPrintable(test.input),qPrintable(actual),editor.navigationPosition().x(),editor.navigationPosition().y(),qPrintable(lines.join('\n')),cursor.x(),cursor.y());}
     }

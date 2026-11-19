@@ -1,4 +1,4 @@
-# Vim mode — stages 1–10
+# Vim mode
 
 Enable **Settings… → Editor → Enable Vim mode / Настройки… → Редактор → Включить режим Vim**, or search for `Vim`
 in the command palette (**Ctrl+Shift+P**, command ID `settings.vimMode`).
@@ -14,8 +14,9 @@ operators are shown beside the mode, for example `NORMAL 2d`.
 
 | Key | Action |
 | --- | --- |
-| `i` in Normal | Enter Insert before the current character |
+| `i` or `Insert` in Normal | Enter Insert before the current character |
 | `a` in Normal | Enter Insert after the current character |
+| `Insert` in Insert or Replace | Toggle Insert and Replace within the current Undo block |
 | `Esc` or `Ctrl+[` | Return to Normal; leaving Insert moves one character left within the line |
 | `v` in Normal | Start characterwise Visual selection, including the current character |
 | `v` in Visual | Return to Normal and clear the selection |
@@ -37,6 +38,24 @@ their normal keyboard handling. Returning focus to an editor preserves its mode.
 Native save, undo/redo, search and other application commands remain available.
 Native edits end Visual mode; saving alone preserves it. Undo uses the existing
 editor history and does not restore Vim mode or Visual anchors.
+
+### Insert key mappings
+
+To enable `jk` as an Escape sequence, add this to the application's `Turtle Code.conf`
+while Turtle Code is closed, or reload Vim mode after editing the setting:
+
+```ini
+[vimKeymaps]
+bindings=insert jk = keys:<Esc>
+```
+
+`insert` mappings apply in Insert and Replace. The left side is a sequence of
+printable characters without spaces. The right side uses `keys:` with literal
+characters or named keys such as `<Esc>`, `<Insert>`, `<CR>` and `<Tab>`.
+Use `\n` inside a quoted `bindings` value to separate multiple rows in the INI file.
+Turtle Code waits up to one second for a longer match. If the sequence fails to
+match, pending characters are typed in order. Undo groups the resulting input
+as usual. Dot repeat and macro recording use the resolved keys.
 
 ## Motions and operators
 

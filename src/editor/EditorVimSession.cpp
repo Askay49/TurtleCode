@@ -29,6 +29,8 @@ bool EditorWidget::beginVimKey(QKeyEvent* event) {
     }
     vimHandlingKey_=true;
     const auto input=keyInput(*event);
+    if(vimSendingInsertRepeat_){vimCaptureInsertEdit_=vim_.acceptsText();return false;}
+    if(vim_.acceptsText() && vimInsertCount_>1 && vimCountedInsertKeys_.size()<100000)vimCountedInsertKeys_.append(input);
     if(!vimSendingReplay_ && !shared.recording.isNull()) {
         if(shared.recordingInputs.size()<100000 && shared.recordingBytes+std::size_t(input.text.toUtf8().size())<=1024*1024){shared.recordingInputs.append(input);shared.recordingBytes+=std::size_t(input.text.toUtf8().size());}
         else {toggleVimRecording();emit highlightingStatusChanged(I18n::text("Vim: macro recording limit reached"));}
@@ -92,6 +94,7 @@ void EditorWidget::captureVimEdit(std::size_t at,std::string_view removed,std::s
     if(removed.size()>cursorPosition_-std::min(cursorPosition_,at))input.forward=count(removed.substr(cursorPosition_-std::min(cursorPosition_,at)));
     if(inserted.size()<64*1024)input.text=QString::fromUtf8(inserted.data(),qsizetype(inserted.size()));
     else {if(!vimEditPayload_)vimEditPayload_=std::make_shared<ChunkedFile>();input.payload=vimEditPayload_;input.offset=input.payload->append(inserted);input.length=inserted.size();input.payload->dropCache();}
+    if(vimInsertCount_>1 && vimCountedInsertKeys_.size()<100000)vimCountedInsertKeys_.append(input);
     if(!vimChangeTooLarge_)vimChangeKeys_.append(input);
     if(vimChangeKeys_.size()>100000){vimChangeKeys_.clear();vimChangeTooLarge_=true;emit highlightingStatusChanged(I18n::text("Vim: change is too large to repeat"));}auto& state=VimState::Session::instance();
     if(!state.recording.isNull()){const auto bytes=inserted.size()+std::size_t(input.back)+std::size_t(input.forward);if(state.recordingBytes+bytes<=1024*1024){state.recordingInputs.append(input);state.recordingBytes+=bytes;}else {toggleVimRecording();emit highlightingStatusChanged(I18n::text("Vim: macro recording limit reached"));}}
@@ -184,9 +187,27 @@ void EditorWidget::replaceVimPayload(std::shared_ptr<ChunkedFile> source,int cou
     },true,{},[this,leaveReplace](bool){if(leaveReplace)switchVimMode(VimController::Mode::Normal,true);});
 }
 void EditorWidget::backspaceVimReplace() {
-    if(!vimReplaced_.empty() && vimReplaced_.back().begin+vimReplaced_.back().after.size()==cursorPosition_) {
-        const auto step=vimReplaced_.back();vimReplaced_.pop_back();const auto capture=std::exchange(vimCaptureInsertEdit_,false);replaceRange(step.begin,step.after.size(),step.before);vimCaptureInsertEdit_=capture;if(step.begin>=vimInsertStart_ && step.begin-vimInsertStart_<=vimInsertedText_.size())vimInsertedText_.erase(step.begin-vimInsertStart_);cursorPosition_=step.begin;cursors_={cursorPosition_};clearAllSelections();ensureCursorVisible();viewport()->update();
-    } else if(cursorPosition_>vimLineStart(currentLine()))moveCursor(graphemeBoundaryAt(cursorPosition_,false),false);
+    const bool canMoveBack = cursorPosition_ > vimLineStart(currentLine());
+    const bool aligned = !vimReplaced_.empty() && vimReplaced_.back().begin + vimReplaced_.back().after.size() == cursorPosition_;
+    if (!aligned && (vimReplaced_.empty() || !vimInsertModeToggled_ || !canMoveBack)) {
+        if (canMoveBack) moveCursor(graphemeBoundaryAt(cursorPosition_, false), false);
+        return;
+    }
+    // Insert does not push onto the Replace stack. After toggling, the top entry
+    // can therefore be restored at a different character than it replaced.
+    const auto begin = aligned ? vimReplaced_.back().begin : graphemeBoundaryAt(cursorPosition_, false);
+    const auto step = std::move(vimReplaced_.back());
+    vimReplaced_.pop_back();
+    const auto capture = std::exchange(vimCaptureInsertEdit_, false);
+    replaceRange(begin, cursorPosition_ - begin, step.before);
+    vimCaptureInsertEdit_ = capture;
+    if (begin >= vimInsertStart_ && begin - vimInsertStart_ <= vimInsertedText_.size())
+        vimInsertedText_.erase(begin - vimInsertStart_);
+    cursorPosition_ = begin;
+    cursors_ = {cursorPosition_};
+    clearAllSelections();
+    ensureCursorVisible();
+    viewport()->update();
 }
 void EditorWidget::repeatVimChange(int count,bool explicitCount) {
     auto inputs=VimState::Session::instance().lastChange.inputs;if(inputs.isEmpty())return;
@@ -202,11 +223,11 @@ void EditorWidget::repeatVimChange(int count,bool explicitCount) {
     }
     vimRepeatingDot_=true;replayVim(std::move(inputs));
 }
-void EditorWidget::replayVim(QVector<VimState::Input> inputs,int count) {
+void EditorWidget::replayVim(QVector<VimState::Input> inputs,int count,bool insertRepeat) {
     if(inputs.isEmpty())return;
     if(vimReplay_.size()>=100){cancelVimReplay();emit highlightingStatusChanged(I18n::text("Vim: macro recursion limit reached"));return;}
     if(vimReplay_.empty()){if(!vimReplayGroupActive_)history_.beginCompoundGroup();vimReplayGroupActive_=true;vimReplaySteps_=0;vimReplayCancel_=false;}
-    vimReplay_.push_back({std::move(inputs),0,count});
+    vimReplay_.push_back({std::move(inputs),0,count,false,insertRepeat});
     if(!vimReplayScheduled_){vimReplayScheduled_=true;QTimer::singleShot(0,this,&EditorWidget::continueVimReplay);}
 }
 void EditorWidget::continueVimReplay() {
@@ -218,9 +239,22 @@ void EditorWidget::continueVimReplay() {
     for(int batch=0;batch<128 && !vimReplay_.empty() && !busy_ && (!vimExExecuting_ || vimSubConfirm_ || vimExNormal_);++batch) {
         if(++vimReplaySteps_>100000){vimReplay_.clear();if(vimExNormal_)finishVimEx(I18n::text("Vim: replay step limit reached"),true);else emit highlightingStatusChanged(I18n::text("Vim: replay step limit reached"));break;}
         auto& frame=vimReplay_.back();
-        if(frame.index==frame.inputs.size()){if(--frame.remaining>0)frame.index=0;else{const bool normal=frame.exNormal;vimReplay_.pop_back();resumeVimInsertNormal();if(normal){vimExNormal_=false;resetVimMode();scheduleVimEx();break;}continue;}}
+        if (frame.index == frame.inputs.size()) {
+            if (--frame.remaining > 0) frame.index = 0;
+            else {
+                const bool normal = frame.exNormal;
+                const bool insertRepeat = frame.insertRepeat;
+                vimReplay_.pop_back();
+                resumeVimInsertNormal();
+                if (insertRepeat && vim_.acceptsText()) switchVimMode(VimController::Mode::Normal, true);
+                if (normal) { vimExNormal_=false;resetVimMode();scheduleVimEx();break; }
+                continue;
+            }
+        }
         const auto input=frame.inputs[frame.index++];history_.beginGroup(true);
+        vimSendingInsertRepeat_=frame.insertRepeat;
         vimSendingReplay_=true;applyVimInput(input);vimSendingReplay_=false;
+        vimSendingInsertRepeat_=false;
         if(vimReplayCancel_ || !vimOwnsFocus())break;
     }
     if (!vimReplayGroupActive_ && !vimExNormal_) return;
@@ -249,7 +283,8 @@ void EditorWidget::transferVimReplay(EditorWidget* target) {
 void EditorWidget::applyVimInput(const VimState::Input& input) {
     if(input.kind==VimState::Input::Key){QKeyEvent key(QEvent::KeyPress,input.key,Qt::KeyboardModifiers(input.modifiers),input.text);QApplication::sendEvent(this,&key);return;}
     if(vimExActive_){vimExInput_->insert(input.text);return;}
-    if(!vimRepeatingDot_){if(!vimChangeActive_){vimCommandKeys_=textKeys(vim_.mode()==VimController::Mode::Replace?"R":"i");beginVimChange();}vimChangeKeys_.append(input);}
+    if (!vimSendingInsertRepeat_ && vimInsertCount_>1 && vim_.acceptsText() && vimCountedInsertKeys_.size()<100000) vimCountedInsertKeys_.append(input);
+    if(!vimRepeatingDot_ && !vimSendingInsertRepeat_){if(!vimChangeActive_){vimCommandKeys_=textKeys(vim_.mode()==VimController::Mode::Replace?"R":"i");beginVimChange();}vimChangeKeys_.append(input);}
     const auto length=input.payload?(input.length?input.length:input.payload->size()):0;
     if(length>=1024*1024 || std::size_t(input.back)+std::size_t(input.forward)>4096) {
         auto work=input;if(!work.payload){work.payload=std::make_shared<ChunkedFile>();const auto bytes=work.text.toUtf8();work.payload->append({bytes.data(),std::size_t(bytes.size())});work.offset=0;work.length=std::size_t(bytes.size());}

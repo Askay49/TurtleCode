@@ -7,6 +7,7 @@
 #include <QVector>
 #include <QHash>
 #include <QMap>
+#include <QTimer>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <optional>
@@ -73,7 +74,7 @@ public:
     bool isVimReplaying() const {return !vimReplay_.empty() || vimReplayScheduled_;}
     void recordVimJump() {pushVimJump();}
     void discardVimBufferMarks();
-    void resetVimMode() {if(vim_.enabled()){switchVimMode(VimController::Mode::Normal);finishVimChange();}}
+    void resetVimMode() {if(vim_.enabled()){flushVimInsertMapping();switchVimMode(VimController::Mode::Normal);finishVimChange();}}
     void transferVimReplay(EditorWidget* target);
     void transferVimEx(EditorWidget* target);
     void reportVimExMessage(const QString& message){vimExMessage(message);}
@@ -289,6 +290,16 @@ private:
     bool vimBlockToEnd_{false};
     bool vimCaptureInsertEdit_{false},vimHandlingKey_{false},vimSendingReplay_{false};
     bool vimRepeatingDot_{false};
+    void loadVimInsertMappings();
+    bool vimInsertMappingAllowed() const;
+    bool reserveVimInsertMapping(const QKeyEvent&);
+    bool handleVimInsertMapping(QKeyEvent&);
+    void resolveVimInsertMapping(bool waitForMore);
+    void flushVimInsertMapping();
+    void processEditorKey(QKeyEvent*);
+    QMap<QString,QVector<VimState::Input>> vimInsertMappings_;
+    QVector<VimState::Input> vimInsertMappingPending_;
+    QTimer vimInsertMappingTimer_;
     bool handleVimInsertKey(QKeyEvent*);
     void resumeVimInsertNormal();
     void completeVimInsert(int direction,QChar source={});
@@ -314,7 +325,7 @@ private:
     bool vimChangeActive_{false};std::uint64_t vimChangeBefore_{};
     bool vimChangeTooLarge_{false};
     bool vimChangeInserted_{false};std::string vimInsertedText_;
-    struct ReplayFrame {QVector<VimState::Input> inputs;qsizetype index{};int remaining{1};bool exNormal{false};};
+    struct ReplayFrame {QVector<VimState::Input> inputs;qsizetype index{};int remaining{1};bool exNormal{false};bool insertRepeat{false};};
     std::vector<ReplayFrame> vimReplay_;
     int vimReplaySteps_{};bool vimReplayCancel_{false},vimReplayScheduled_{false},vimReplayGroupActive_{false};
     void endVimReplayGroup();
@@ -335,7 +346,7 @@ private:
     bool vimApplyingHistory_{false};
     void beginVimChange();
     void captureVimEdit(std::size_t at,std::string_view removed,std::string_view inserted);
-    void replayVim(QVector<VimState::Input> inputs,int count=1);
+    void replayVim(QVector<VimState::Input> inputs,int count=1,bool insertRepeat=false);
     void continueVimReplay();
     void cancelVimReplay();
     void playVimMacro(QChar name,int count);
@@ -371,6 +382,8 @@ private:
     VimController::Command vimLastFind_{VimController::Command::Consume};
     QChar vimFindCharacter_;
     int vimInsertCount_{1};
+    bool vimInsertModeToggled_{false},vimSendingInsertRepeat_{false};
+    QVector<VimState::Input> vimCountedInsertKeys_;
     std::size_t vimInsertStart_{};
     std::string vimInsertPrefix_;
     bool repeatVimInsert();

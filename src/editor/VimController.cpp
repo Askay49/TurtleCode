@@ -15,12 +15,15 @@ VimController::Command VimController::command(const QKeyEvent& event) const {
     const auto modifiers=event.modifiers();
     if((event.key()==Qt::Key_Escape && modifiers==Qt::NoModifier) ||
        (event.key()==Qt::Key_BracketLeft && modifiers==Qt::ControlModifier))return Command::Normal;
+    if(event.key()==Qt::Key_Insert && modifiers==Qt::NoModifier) {
+        if(mode_==Mode::Visual)return Command::Consume;
+        return mode_==Mode::Insert?Command::ReplaceMode:Command::Insert;
+    }
     if(acceptsText()) {
         if(event.key()==Qt::Key_C && modifiers==Qt::ControlModifier)return Command::Normal;
         if((event.key()==Qt::Key_At || event.key()==Qt::Key_Space) && modifiers==Qt::ControlModifier)return Command::Key;
         if(modifiers==Qt::ControlModifier && event.key()>=Qt::Key_A && event.key()<=Qt::Key_Z && QStringLiteral("GHIJKMWUDTONPYEVQXLA").contains(QChar(event.key())))return Command::Key;
         if(event.key()==Qt::Key_R && modifiers==Qt::ControlModifier)return Command::InsertRegister;
-        if(event.key()==Qt::Key_Insert && modifiers==Qt::NoModifier)return mode_==Mode::Replace?Command::Insert:Command::ReplaceMode;
         return Command::Pass;
     }
     if (modifiers == Qt::ControlModifier &&
@@ -98,6 +101,8 @@ VimController::Action VimController::feed(const QKeyEvent& event) {
         action.text = command;
         return action;
     };
+    if(mode_==Mode::Normal && event.key()==Qt::Key_Insert && key==C::Insert)
+        return finish(operation_==C::Consume && waiting_==C::Consume && !prefixG_ && bracketPrefix_.isNull()?C::Insert:C::Consume);
     if (waiting_ == C::Workspace) {
         if (character.isDigit()) {
             count_ = std::min(10000, count_ * 10 + character.digitValue());

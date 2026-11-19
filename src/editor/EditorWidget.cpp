@@ -431,12 +431,17 @@ EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)
     findReplaceInput_->installEventFilter(this);
     updateScrollBars();
     setMiniMapEnabled(QSettings().value("editor/minimap",true).toBool());
+    vimInsertMappingTimer_.setSingleShot(true);
+    vimInsertMappingTimer_.setTimerType(Qt::PreciseTimer);
+    vimInsertMappingTimer_.setInterval(1000);
+    connect(&vimInsertMappingTimer_, &QTimer::timeout, this, [this] { resolveVimInsertMapping(false); });
     setVimEnabled(QSettings().value("editor/vimMode",false).toBool());
     attachVimAnchors();
 }
 
 void EditorWidget::setBusy(bool busy) {
     if (busy_ == busy) return;
+    if (busy) flushVimInsertMapping();
     busy_ = busy;
     emit document_->busyChanged(busy);
 }
@@ -463,6 +468,8 @@ void EditorWidget::initializeSharedView(const EditorWidget& source) {
 }
 
 void EditorWidget::loadBuffer(PieceTreeBuffer buffer, const QString& path) {
+    vimInsertMappingTimer_.stop();
+    vimInsertMappingPending_.clear();
     vimChanges_.clear();vimPendingChange_.reset();vimChangeIndex_=0;vimPreviousVisualRows_=vimPreviousVisualWidth_=1;
     const bool loadingEx=busy_ && property("openingPath").isValid() && vimExExecuting_;
     if(loadingEx)for(auto& frame:vimExFrames_)if(frame.marks)frame.marks=std::make_shared<VimEx::LineMarks>();
@@ -2408,7 +2415,11 @@ bool EditorWidget::event(QEvent* event) {
         emit viewFocused();
         if (!busy_) { refreshEditorConfig(); QTimer::singleShot(0,this,&EditorWidget::updateVimSearchHighlights); }
     }
-    if(event->type()==QEvent::FocusIn || event->type()==QEvent::FocusOut){if(vim_.enabled()){if(event->type()==QEvent::FocusOut && static_cast<QFocusEvent*>(event)->reason()!=Qt::PopupFocusReason){history_.endGroup();vimInsertCount_=1;if(!busy_)finishVimChange();}vim_.resetPending();}viewport()->update();}
+    if(event->type()==QEvent::FocusIn || event->type()==QEvent::FocusOut){if(vim_.enabled()){if(event->type()==QEvent::FocusOut && static_cast<QFocusEvent*>(event)->reason()!=Qt::PopupFocusReason){flushVimInsertMapping();history_.endGroup();vimInsertCount_=1;if(!busy_)finishVimChange();}vim_.resetPending();}viewport()->update();}
+    if (event->type() == QEvent::ShortcutOverride && hasFocus() && reserveVimInsertMapping(*static_cast<QKeyEvent*>(event))) {
+        event->accept();
+        return true;
+    }
     if(event->type()==QEvent::ShortcutOverride && hasFocus() && !busy_ && (vim_.reserves(*static_cast<QKeyEvent*>(event)) || (vim_.enabled() && (!vimLiteral_.isEmpty() || !vimDigraph_.isEmpty() || vimInsertCtrlX_ || vimInsertCtrlG_)))) {
         // Completion menus retain first refusal for Escape/Enter/Tab.
         const int key=static_cast<QKeyEvent*>(event)->key();
@@ -2431,6 +2442,10 @@ bool EditorWidget::event(QEvent* event) {
 }
 
 void EditorWidget::keyPressEvent(QKeyEvent* event) {
+    if (!handleVimInsertMapping(*event)) processEditorKey(event);
+}
+
+void EditorWidget::processEditorKey(QKeyEvent* event) {
     if(vimSubConfirm_ && answerVimSubstitution(event))return;
     if(vimExActive_){QApplication::sendEvent(vimExInput_,event);return;}
     if(vimExExecuting_ && (!vimExNormal_ || !vimSendingReplay_)){if(event->key()==Qt::Key_Escape){vimExRemaining_.clear();cancelVimExFrames();emit vimExInterruptRequested();cancelVimReplay();for(auto* progress:findChildren<QProgressDialog*>())progress->cancel();}event->accept();return;}
@@ -2679,6 +2694,7 @@ void EditorWidget::contextMenuEvent(QContextMenuEvent* event) {
     event->accept();
 }
 void EditorWidget::mousePressEvent(QMouseEvent* event) {
+    flushVimInsertMapping();
     if(vim_.enabled()){history_.endGroup();vimInsertCount_=1;vim_.resetPending();}
     hideCompletions();
     if (busy_) { event->accept(); return; }
@@ -2901,6 +2917,7 @@ bool EditorWidget::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void EditorWidget::inputMethodEvent(QInputMethodEvent* event) {
+    if (!event->commitString().isEmpty() || !event->preeditString().isEmpty()) flushVimInsertMapping();
     if(vim_.enabled() && !event->commitString().isEmpty()){vimLiteral_.clear();vimDigraph_.clear();vimInsertCtrlX_=vimInsertCtrlG_=vimInsertJoinMovement_=false;vimInsertCandidates_.clear();}
     const auto captureBefore=vimCaptureInsertEdit_;vimCaptureInsertEdit_=vim_.enabled();
     const auto captureGuard=qScopeGuard([this,captureBefore]{vimCaptureInsertEdit_=captureBefore;});
