@@ -19,6 +19,8 @@
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDrag>
+#include <QDragEnterEvent>
 #include <algorithm>
 #include <QFile>
 #include <QFileInfo>
@@ -28,12 +30,26 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QUrl>
 #include <QtConcurrent/QtConcurrentRun>
 
 namespace {
 constexpr qint64 directoryPageSize = 500;
 constexpr int compactStartRole = Qt::UserRole + 2;
+const QString projectDragMimeType = QStringLiteral("application/x-turtle-code-project-item");
+
+class ProjectDragData final : public QMimeData {
+public:
+    ProjectDragData(const ProjectExplorer* explorer, quint64 generation, const QString& path)
+        : explorer(explorer), generation(generation), path(path) {
+        setData(projectDragMimeType, {});
+    }
+
+    const ProjectExplorer* const explorer;
+    const quint64 generation;
+    const QString path;
+};
 
 QString cleanPath(const QString& path) {
     return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
@@ -112,6 +128,16 @@ ProjectExplorer::ProjectExplorer(QWidget* parent) : QTreeWidget(parent) {
     setMinimumWidth(190);
     setMaximumWidth(440);
     setContextMenuPolicy(Qt::CustomContextMenu);
+    setDragDropMode(QAbstractItemView::DragDrop);
+    setDragDropOverwriteMode(true);
+
+    // Qt 6.2's built-in hover timer can also collapse expanded folders.
+    dragExpandTimer_.setSingleShot(true);
+    dragExpandTimer_.setInterval(650);
+    connect(&dragExpandTimer_, &QTimer::timeout, this, [this] {
+        const auto index = indexAt(dragPosition_);
+        if (index.isValid() && dragExpandIndex_ == index) expand(index);
+    });
 
     connect(this, &QWidget::customContextMenuRequested,
             this, &ProjectExplorer::showContextMenu);
@@ -151,6 +177,89 @@ ProjectExplorer::ProjectExplorer(QWidget* parent) : QTreeWidget(parent) {
         for (const auto& path : paths) refreshDirectory(path);
     });
     fallbackTimer_.start();
+}
+
+QStringList ProjectExplorer::mimeTypes() const {
+    return {projectDragMimeType};
+}
+
+QMimeData* ProjectExplorer::mimeData(const QList<QTreeWidgetItem*>& items) const {
+    if (items.size() != 1 || !items.front()) return nullptr;
+    const QString source = itemPath(items.front());
+    if (copyingPath_ || !canCutOrDuplicate(source)) return nullptr;
+    return new ProjectDragData(this, generation_, source);
+}
+
+void ProjectExplorer::startDrag(Qt::DropActions) {
+    const auto items = selectedItems();
+    auto* data = mimeData(items);
+    if (!data) return;
+    auto* drag = new QDrag(this);
+    drag->setMimeData(data);
+    drag->setPixmap(items.front()->icon(0).pixmap(iconSize()));
+    // The filesystem transfer refreshes the tree after a successful drop.
+    drag->exec(Qt::MoveAction);
+}
+
+QString ProjectExplorer::draggedPath(const QDropEvent& event) const {
+    if (copyingPath_ || !(event.possibleActions() & Qt::MoveAction)) return {};
+    const auto* data = dynamic_cast<const ProjectDragData*>(event.mimeData());
+    return data && data->explorer == this && data->generation == generation_ ? data->path : QString{};
+}
+
+QString ProjectExplorer::dropDirectory(const QPoint& position, const QString& source) const {
+    const auto* item = itemAt(position);
+    if (source.isEmpty() || !item || !(item->flags() & Qt::ItemIsDropEnabled)) return {};
+    const QString directory = itemPath(item);
+    if (directory == QFileInfo(source).absolutePath() || directory == source || directory.startsWith(source + '/'))
+        return {};
+    return directory;
+}
+
+void ProjectExplorer::dragEnterEvent(QDragEnterEvent* event) {
+    if (draggedPath(*event).isEmpty()) {
+        event->ignore();
+        return;
+    }
+    event->setDropAction(Qt::MoveAction);
+    QTreeWidget::dragEnterEvent(event);
+}
+
+void ProjectExplorer::dragMoveEvent(QDragMoveEvent* event) {
+    dragPosition_ = event->position().toPoint();
+    const bool valid = !dropDirectory(dragPosition_, draggedPath(*event)).isEmpty();
+    setDropIndicatorShown(valid);
+    QTreeWidget::dragMoveEvent(event);
+    const auto hover = valid && event->isAccepted() ? indexAt(dragPosition_) : QModelIndex{};
+    if (dragExpandIndex_ != hover) {
+        dragExpandTimer_.stop();
+        dragExpandIndex_ = hover;
+        if (hover.isValid() && !isExpanded(hover)) dragExpandTimer_.start();
+    }
+    if (!valid) {
+        event->ignore();
+        viewport()->update();
+    }
+}
+
+void ProjectExplorer::dragLeaveEvent(QDragLeaveEvent* event) {
+    dragExpandTimer_.stop();
+    dragExpandIndex_ = QModelIndex{};
+    QTreeWidget::dragLeaveEvent(event);
+}
+
+void ProjectExplorer::dropEvent(QDropEvent* event) {
+    const QString source = draggedPath(*event);
+    const QString directory = dropDirectory(event->position().toPoint(), source);
+    // Clear Qt's drop indicator and autoscroll before a conflict dialog can open.
+    QDragLeaveEvent leave;
+    dragLeaveEvent(&leave);
+    if (directory.isEmpty() || !transferPath(source, directory, true)) {
+        event->ignore();
+        return;
+    }
+    event->setDropAction(Qt::MoveAction);
+    event->accept();
 }
 
 bool ProjectExplorer::event(QEvent* event) {
@@ -424,6 +533,7 @@ void ProjectExplorer::addRoot(const QString& inputPath) {
 
 void ProjectExplorer::addRootItem(const QString& path) {
     auto* item = new QTreeWidgetItem(this);
+    item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled);
     item->setText(0, QFileInfo(path).fileName().isEmpty() ? path : QFileInfo(path).fileName());
     item->setToolTip(0, path);
     item->setData(0, Qt::UserRole, path);
@@ -558,6 +668,7 @@ void ProjectExplorer::loadDirectory(QTreeWidgetItem* item, bool force, bool page
                 child->setData(0, Qt::UserRole + 1, root);
                 child->setIcon(0, entry.directory ? Codicons::folderIcon() : FileIcons::icon(entry.path));
                 child->setChildIndicatorPolicy(indicator);
+                child->setFlags(child->flags().setFlag(Qt::ItemIsDropEnabled, entry.directory));
                 indexItem(child);
                 if (compactFolders_ && entry.directory) {
                     for (const auto& component : itemPaths(child))
@@ -578,12 +689,14 @@ void ProjectExplorer::loadDirectory(QTreeWidgetItem* item, bool force, bool page
             parent->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
             if (page.offset > 0) {
                 auto* previous = new QTreeWidgetItem(parent, {I18n::text("Previous page")});
+                previous->setFlags(previous->flags() & ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled));
                 previous->setData(0, Qt::UserRole + 10, std::max<qint64>(0, page.offset - directoryPageSize));
                 previous->setIcon(0, Codicons::icon("chevron-left"));
             }
             const qint64 nextOffset = page.offset + page.entries.size();
             if (nextOffset < page.listing->size()) {
                 auto* next = new QTreeWidgetItem(parent, {I18n::text("Next page")});
+                next->setFlags(next->flags() & ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled));
                 next->setData(0, Qt::UserRole + 10, nextOffset);
                 next->setIcon(0, Codicons::icon("chevron-right"));
             }

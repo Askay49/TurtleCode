@@ -1,6 +1,7 @@
 #pragma once
 #include <QClipboard>
 #include <QContextMenuEvent>
+#include <QDragEnterEvent>
 #include <QElapsedTimer>
 #include <QMimeData>
 #include <QSignalSpy>
@@ -415,7 +416,8 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     const QString sourceFile = source + "/nested/main.txt";
     const QString target = root.filePath("target");
     const QString targetFile = target + "/report.tar.gz";
-    assert(QDir().mkpath(source + "/nested") && QDir().mkpath(target));
+    const QString compactTarget = root.filePath("archive/assets");
+    assert(QDir().mkpath(source + "/nested") && QDir().mkpath(target) && QDir().mkpath(compactTarget));
     const auto write = [](const QString& path, const QByteArray& text) {
         QFile file(path);
         assert(file.open(QIODevice::WriteOnly) && file.write(text) == text.size());
@@ -451,6 +453,29 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
         }));
     };
     const auto key = [&](Qt::Key shortcut) { QTest::keyClick(tree, shortcut, Qt::ControlModifier); };
+    const auto dragData = [&] {
+        return std::unique_ptr<QMimeData>(tree->model()->mimeData({tree->currentIndex()}));
+    };
+    const auto dragToSelected = [&](const QMimeData* data, bool canDrop, bool hoverToExpand = false) {
+        auto* item = tree->currentItem();
+        tree->scrollToItem(item);
+        const QPoint point = tree->visualItemRect(item).center();
+        assert(tree->itemAt(point) == item);
+        if (hoverToExpand) assert(!item->isExpanded());
+        QDragEnterEvent enter(point, Qt::MoveAction, data, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(tree->viewport(), &enter);
+        if (!enter.isAccepted()) {
+            assert(!canDrop);
+            return false;
+        }
+        QDragMoveEvent move(point, Qt::MoveAction, data, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(tree->viewport(), &move);
+        assert(move.isAccepted() == canDrop);
+        if (hoverToExpand) assert(waitFor([&] { return item->isExpanded(); }));
+        QDropEvent drop(point, Qt::MoveAction, data, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(tree->viewport(), &drop);
+        return drop.isAccepted();
+    };
     const auto menuAction = [&](const QString& name) {
         const QPoint point = tree->visualItemRect(tree->currentItem()).center();
         QTimer::singleShot(0, &window, [&] {
@@ -557,9 +582,55 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     assert(editor->isModified() && editor->lspText().contains("unsaved "));
     assert(debug->breakpoints(sourceFile).isEmpty() && debug->breakpoints(moved) == QSet<int>{1});
     select(moved);
+
+    select(root.path());
+    assert(!dragData());
+    QMimeData external;
+    external.setUrls({QUrl::fromLocalFile(targetFile)});
+    assert(!dragToSelected(&external, false));
+
+    select(sourceCopy);
+    const auto folderDrag = dragData();
+    assert(folderDrag);
+    assert(!dragToSelected(folderDrag.get(), false)); // Current parent.
+    select(sourceCopy + "/nested");
+    assert(!dragToSelected(folderDrag.get(), false));
+    select(targetFile);
+    assert(!dragToSelected(folderDrag.get(), false));
+
+    const QString movedFolder = target + "/source copy";
+    select(movedFolder);
+    const auto movedFolderDrag = dragData();
+    assert(movedFolderDrag);
+    assert(!dragToSelected(movedFolderDrag.get(), false));
+
+    const QString blocker = root.filePath("source copy");
+    assert(QDir().mkpath(blocker));
+    select(root.path());
+    clipboard->setText("clipboard contents");
+    resolveConflict(false);
+    assert(!dragToSelected(movedFolderDrag.get(), true));
+    assert(QFileInfo::exists(moved) && editor->filePath() == moved);
+    resolveConflict(true);
+    assert(dragToSelected(movedFolderDrag.get(), true));
+    const QString draggedFolder = root.filePath("source copy copy");
+    const QString draggedFile = draggedFolder + "/nested/main.txt";
+    assert(editor->filePath() == draggedFile && !QFileInfo::exists(movedFolder));
+    assert(editor->isModified() && editor->lspText().contains("unsaved "));
+    assert(debug->breakpoints(moved).isEmpty() && debug->breakpoints(draggedFile) == QSet<int>{1});
+    assert(clipboard->text() == "clipboard contents");
+
+    tree->setCompactFolders(true);
+    select(targetFile);
+    const auto fileDrag = dragData();
+    assert(fileDrag);
+    select(compactTarget);
+    assert(tree->currentItem()->text(0) == "archive/assets");
+    assert(dragToSelected(fileDrag.get(), true, true));
+    assert(!QFileInfo::exists(targetFile) && read(compactTarget + "/report.tar.gz") == "existing\n");
     closeDiscard(window);
     assert(QFile::setPermissions(sourceCopy + "/nested", privateReadOnly | QFile::WriteOwner));
-    assert(QFile::setPermissions(QFileInfo(moved).absolutePath(), privateReadOnly | QFile::WriteOwner));
+    assert(QFile::setPermissions(QFileInfo(draggedFile).absolutePath(), privateReadOnly | QFile::WriteOwner));
 }
 
 static void explorerCompactFolderTests(QTemporaryDir& temporary) {

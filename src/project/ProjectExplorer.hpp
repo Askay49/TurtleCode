@@ -43,6 +43,13 @@ signals:
 protected:
     bool event(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    QStringList mimeTypes() const override;
+    QMimeData* mimeData(const QList<QTreeWidgetItem*>& items) const override;
+    void startDrag(Qt::DropActions supportedActions) override;
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
+    void dragLeaveEvent(QDragLeaveEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
 
 private:
     using Entry=DirectoryEntry;
@@ -78,6 +85,8 @@ private:
     [[nodiscard]] QString creationDirectory() const;
     void createFileIn(const QString& directory);
     void createFolderIn(const QString& directory);
+    [[nodiscard]] QString draggedPath(const QDropEvent& event) const;
+    [[nodiscard]] QString dropDirectory(const QPoint& position, const QString& source) const;
     [[nodiscard]] bool canCutOrDuplicate(const QString& path) const;
     [[nodiscard]] static QString clipboardPath();
     void copyPathToClipboard(const QString& path, bool cut);
@@ -91,6 +100,9 @@ private:
 
     void watchDirectory(const QString& path);
     QTimer refreshTimer_, fallbackTimer_;
+    QTimer dragExpandTimer_;
+    QPersistentModelIndex dragExpandIndex_;
+    QPoint dragPosition_;
     QSet<QString> dirtyDirectories_, failedWatches_;
     mutable QHash<QString,QPersistentModelIndex> pathIndex_;
     QStringList roots_;
