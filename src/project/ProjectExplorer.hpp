@@ -19,6 +19,7 @@ public:
     void setShowHidden(bool show);
     void setIncludeIgnored(bool include);
     void setCompactFolders(bool compact);
+    void setConfirmMoveToTrash(bool enabled) { confirmMoveToTrash_ = enabled; }
     void setVimEnabled(bool enabled) { vimEnabled_ = enabled; }
     void setPathBusyCheck(std::function<bool(const QString&)> check);
     void revealPath(const QString& path, bool interactive = false);
@@ -52,6 +53,7 @@ protected:
     void dropEvent(QDropEvent* event) override;
 
 private:
+    enum class Removal { Trash, Permanent };
     using Entry=DirectoryEntry;
     using Entries=QList<Entry>;
     struct Page {
@@ -95,7 +97,7 @@ private:
     bool transferPath(const QString& source, const QString& directory, bool move, bool duplicate = false);
     bool movePath(const QString& source, const QString& destination);
     void renamePath(const QString& path);
-    void deletePath(const QString& path);
+    void deletePath(const QString& path, Removal removal);
     [[nodiscard]] QTreeWidgetItem* findItem(const QString& path) const;
 
     void watchDirectory(const QString& path);
@@ -121,5 +123,7 @@ private:
     bool showHidden_{false}, includeIgnored_{false};
     bool vimEnabled_{false};
     bool compactFolders_{false};
+    bool confirmMoveToTrash_{true};
     bool copyingPath_{false};
+    bool removingPath_{false};
 };

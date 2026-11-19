@@ -68,6 +68,14 @@ With the tree focused, **Ctrl+C**, **Ctrl+X** and **Ctrl+V** copy, cut and
 paste files or folders. Paste uses the selected folder, the selected file's
 parent, or the project root. The context menu also offers **Duplicate**.
 
+With the tree focused, **Delete** moves the selected file or folder to the
+system Trash. The confirmation opens with **Yes** focused. Press **Enter** to
+continue or **Esc** to cancel. You can turn off the prompt under **Settings →
+Files and search → Confirm before moving items to Trash**. On the project root,
+**Delete** asks to remove the folder from the workspace and keep its contents
+on disk. **Delete Permanently** is available from the context menu for files
+and folders inside the project.
+
 Line operations are available in **Code / Код**:
 
 | Command | Default shortcut |

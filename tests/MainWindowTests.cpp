@@ -789,6 +789,7 @@ int main(int argc,char**argv) {
         explorerKeyboardTests(directory);
         explorerHeaderTests(directory);
         explorerFileTransferTests(directory);
+        explorerRemovalTests(directory);
         explorerCompactFolderTests(directory);
         return 0;
     }

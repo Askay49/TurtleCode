@@ -96,6 +96,37 @@ bool matchesFileClipboardKey(const QKeyEvent* event) {
            event->matches(QKeySequence::Paste);
 }
 
+bool removePermanently(const QString& path, const std::atomic_bool& cancel) {
+    struct Frame {
+        QString path;
+        std::unique_ptr<QDirIterator> entries;
+    };
+    std::vector<Frame> stack;
+    bool success = true;
+    const auto enter = [&](const QString& entry) {
+        const QFileInfo info(entry);
+        if (info.isSymLink() || !info.isDir()) {
+            if (!QFile::remove(entry)) success = false;
+            return;
+        }
+        stack.push_back({entry, std::make_unique<QDirIterator>(entry,
+            QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System)});
+    };
+    if (cancel.load()) return false;
+    enter(path);
+    while (!stack.empty()) {
+        if (cancel.load()) return false;
+        auto& frame = stack.back();
+        if (frame.entries->hasNext()) {
+            enter(frame.entries->next());
+        } else {
+            if (!QDir().rmdir(frame.path)) success = false;
+            stack.pop_back();
+        }
+    }
+    return success;
+}
+
 QString compactEnd(const QString& first, WorkspaceFiles& filter,
                    const std::shared_ptr<std::atomic_bool>& cancel) {
     QString path = first;
@@ -265,7 +296,8 @@ void ProjectExplorer::dropEvent(QDropEvent* event) {
 bool ProjectExplorer::event(QEvent* event) {
     if (event->type() == QEvent::ShortcutOverride) {
         const auto* key = static_cast<QKeyEvent*>(event);
-        if (key->keyCombination() == QKeyCombination(Qt::Key_F2) || matchesFileClipboardKey(key)) {
+        if (key->keyCombination() == QKeyCombination(Qt::Key_F2) ||
+            key->keyCombination() == QKeyCombination(Qt::Key_Delete) || matchesFileClipboardKey(key)) {
             event->accept();
             return true;
         }
@@ -301,10 +333,13 @@ void ProjectExplorer::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    if (key == Qt::Key_F2 && modifiers == Qt::NoModifier) {
+    if ((key == Qt::Key_F2 || key == Qt::Key_Delete) && modifiers == Qt::NoModifier) {
         if (const auto* item = currentItem(); item && !event->isAutoRepeat()) {
-            const auto path = item->data(0, Qt::UserRole).toString();
-            if (!path.isEmpty()) renamePath(path);
+            const auto path = itemPath(item);
+            if (!path.isEmpty()) {
+                if (key == Qt::Key_F2) renamePath(path);
+                else if (item->isSelected()) deletePath(path, Removal::Trash);
+            }
         }
         event->accept();
         return;
@@ -965,6 +1000,7 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
         terminalAction = menu.addAction(Codicons::icon("terminal"), I18n::text("New Terminal Here"));
     }
     QAction* renameAction = nullptr;
+    QAction* trashAction = nullptr;
     QAction* deleteAction = nullptr;
     QAction* copyPathAction = nullptr;
     QAction* copyRelativePathAction = nullptr;
@@ -992,9 +1028,12 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
     if (item) {
         menu.addSeparator();
         renameAction = menu.addAction(Codicons::icon("edit"), I18n::text("Rename..."));
-        deleteAction = menu.addAction(Codicons::icon("trash"),
-            roots_.contains(cleanPath(selectedPath))
-                ? I18n::text("Remove Folder from Workspace") : I18n::text("Delete"));
+        const bool isRoot = roots_.contains(selectedPath);
+        trashAction = menu.addAction(Codicons::icon(isRoot ? "close" : "trash"),
+            I18n::text(isRoot ? "Remove Folder from Workspace" : "Move to Trash"));
+        trashAction->setShortcut(QKeySequence(Qt::Key_Delete));
+        if (!isRoot)
+            deleteAction = menu.addAction(Codicons::icon("trash"), I18n::text("Delete Permanently..."));
         menu.addSeparator();
         copyPathAction = menu.addAction(Codicons::icon("copy"), I18n::text("Copy path"));
         copyRelativePathAction = menu.addAction(Codicons::icon("copy"), I18n::text("Copy relative path"));
@@ -1024,8 +1063,10 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
         duplicatePath(selectedPath);
     } else if (renameAction && chosen == renameAction) {
         renamePath(selectedPath);
+    } else if (trashAction && chosen == trashAction) {
+        deletePath(selectedPath, Removal::Trash);
     } else if (deleteAction && chosen == deleteAction) {
-        deletePath(selectedPath);
+        deletePath(selectedPath, Removal::Permanent);
     } else if (copyPathAction && chosen == copyPathAction) {
         QApplication::clipboard()->setText(QDir::toNativeSeparators(selectedPath));
     } else if (copyRelativePathAction && chosen == copyRelativePathAction) {
@@ -1142,73 +1183,94 @@ void ProjectExplorer::renamePath(const QString& path) {
     emit pathRenamed(normalizedOldPath, normalizedNewPath);
 }
 
-void ProjectExplorer::deletePath(const QString& path) {
+void ProjectExplorer::deletePath(const QString& path, Removal removal) {
+    if (removingPath_) return;
     const QString normalized = cleanPath(path);
-    const int rootIndex = roots_.indexOf(normalized);
-    if (rootIndex >= 0) {
+    const auto generation = generation_;
+    if (roots_.contains(normalized)) {
         const auto answer = IconDialogs::MessageBox::question(
             this, I18n::text("Remove Folder"), I18n::text("Remove this folder from the workspace?\n\n")
             + normalized + I18n::text("\n\nFiles on disk will not be deleted."),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer != QMessageBox::Yes)
+        if (answer != QMessageBox::Yes || generation != generation_)
             return;
         QStringList updatedRoots = roots_;
-        updatedRoots.removeAt(rootIndex);
+        updatedRoots.removeOne(normalized);
         setRoots(updatedRoots);
         emit rootsChanged(updatedRoots);
         return;
     }
 
+    const bool trash = removal == Removal::Trash;
+    const QString errorTitle = I18n::text(trash ? "Move to Trash failed" : "Delete failed");
     const QFileInfo info(normalized);
-    const QString description = info.isDir() ? I18n::text("folder and all its contents") : I18n::text("file");
-    const auto answer = IconDialogs::MessageBox::warning(
-        this, I18n::text("Delete"), I18n::text("Permanently delete this ") + description + "?\n\n" + normalized,
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (answer != QMessageBox::Yes)
+    const QString parent = info.absolutePath();
+    if (!info.exists() && !info.isSymLink()) {
+        refreshDirectory(parent);
+        IconDialogs::MessageBox::warning(this, errorTitle, I18n::text("The selected item no longer exists."));
         return;
-
-    auto cancel=std::make_shared<std::atomic_bool>(false);
-    auto* progress=new QProgressDialog(I18n::text("Deleting files…"),I18n::text("Cancel"),0,0,this);
-    progress->setCancelButton(new QPushButton(Codicons::icon("close"),I18n::text("Cancel"),progress));
-    progress->setWindowModality(Qt::WindowModal);progress->setMinimumDuration(0);
-    connect(progress,&QProgressDialog::canceled,this,[cancel]{cancel->store(true);});
-    connect(this,&QObject::destroyed,[cancel]{cancel->store(true);});
-    const auto generation=generation_;
-    auto* worker=new QFutureWatcher<bool>(this);
-    connect(worker,&QFutureWatcher<bool>::finished,this,[this,worker,progress,normalized,info,cancel,generation] {
-        const bool removed=worker->result();worker->deleteLater();progress->deleteLater();
-        emit filesChanged();
-        if(generation!=generation_)return;
-        refreshDirectory(info.absolutePath());
-        if(!removed) {
-            IconDialogs::MessageBox::warning(this,I18n::text("Delete failed"),I18n::text(cancel->load()?"Deletion cancelled; some files may already have been deleted.":"Could not delete the selected item."));
+    }
+    if (!trash || confirmMoveToTrash_) {
+        const bool directory = info.isDir() && !info.isSymLink();
+        const QString prompt = trash
+            ? I18n::text(directory ? "Move this folder and all its contents to the Trash?" : "Move this item to the Trash?")
+            : I18n::text(directory ? "Permanently delete this folder and all its contents?" : "Permanently delete this item?");
+        IconDialogs::MessageBox confirmation(trash ? QMessageBox::Question : QMessageBox::Warning,
+            I18n::text(trash ? "Move to Trash" : "Delete Permanently"),
+            prompt + "\n\n" + QDir::toNativeSeparators(normalized), QMessageBox::Yes | QMessageBox::No, this);
+        confirmation.setTextFormat(Qt::PlainText);
+        confirmation.setDefaultButton(trash ? QMessageBox::Yes : QMessageBox::No);
+        if (trash) confirmation.defaultButton()->setFocus();
+        confirmation.setEscapeButton(QMessageBox::No);
+        if (confirmation.exec() != QMessageBox::Yes || generation != generation_ || removingPath_)
             return;
-        }
+    }
+    if (copyingPath_ || (pathBusyCheck_ && pathBusyCheck_(normalized))) {
+        emit backgroundError(I18n::text(copyingPath_ ? "Wait for file copying to finish and retry."
+                                                     : "Wait for file loading/saving to finish and retry."));
+        return;
+    }
 
-    const QString deletedPrefix = normalized + QDir::separator();
-    pendingExpandedPaths_.erase(
-        std::remove_if(pendingExpandedPaths_.begin(), pendingExpandedPaths_.end(),
-            [&normalized, &deletedPrefix](const QString& pendingPath) {
-                return pendingPath == normalized || pendingPath.startsWith(deletedPrefix);
-            }), pendingExpandedPaths_.end());
-    emit pathDeleted(normalized);
-    refreshDirectory(info.absolutePath());
-    });
-    worker->setFuture(QtConcurrent::run([normalized,cancel] {
-        struct Frame {QString path;std::unique_ptr<QDirIterator> entries;};
-        std::vector<Frame> stack;bool success=true;
-        const auto enter=[&](const QString& path) {
-            const QFileInfo info(path);
-            if(info.isSymLink() || !info.isDir()){if(!QFile::remove(path))success=false;return;}
-            stack.push_back({path,std::make_unique<QDirIterator>(path,QDir::AllEntries|QDir::NoDotAndDotDot|QDir::Hidden|QDir::System)});
-        };
-        enter(normalized);
-        while(!stack.empty()) {
-            if(cancel->load())return false;
-            auto& frame=stack.back();
-            if(frame.entries->hasNext()){const auto path=frame.entries->next();enter(path);}
-            else {if(!QDir().rmdir(frame.path))success=false;stack.pop_back();}
+    removingPath_ = true;
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    auto* progress = new QProgressDialog(I18n::text(trash ? "Moving to Trash…" : "Deleting files…"),
+                                         QString(), 0, 0, this);
+    auto* worker = new QFutureWatcher<bool>(this);
+    if (trash) {
+        progress->setCancelButton(nullptr);
+        progress->setWindowFlag(Qt::WindowCloseButtonHint, false);
+    } else {
+        progress->setCancelButton(new QPushButton(Codicons::icon("close"), I18n::text("Cancel"), progress));
+        connect(progress, &QProgressDialog::canceled, worker, [cancel] { cancel->store(true); });
+        connect(this, &QObject::destroyed, worker, [cancel] { cancel->store(true); });
+    }
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    connect(worker, &QFutureWatcher<bool>::finished, this,
+            [this, worker, progress, normalized, parent, cancel, generation, trash, errorTitle] {
+        const bool removed = worker->result();
+        worker->deleteLater();
+        progress->hide();
+        progress->deleteLater();
+        removingPath_ = false;
+        if (generation == generation_ && removed) {
+            const QString deletedPrefix = normalized + '/';
+            pendingExpandedPaths_.removeIf([&](const QString& path) {
+                return path == normalized || path.startsWith(deletedPrefix);
+            });
         }
-        return success;
+        // Open buffers can still refer to this path after the project changes.
+        if (removed) emit pathDeleted(normalized);
+        refreshDirectory(parent);
+        emit filesChanged();
+        if (!removed) {
+            const QString message = trash ? I18n::text("Could not move the selected item to the system Trash.")
+                : I18n::text(cancel->load() ? "Deletion cancelled; some files may already have been deleted."
+                                           : "Could not delete the selected item.");
+            IconDialogs::MessageBox::warning(this, errorTitle, message);
+        }
+    });
+    worker->setFuture(QtConcurrent::run([normalized, trash, cancel] {
+        return trash ? QFile::moveToTrash(normalized) : removePermanently(normalized, *cancel);
     }));
 }

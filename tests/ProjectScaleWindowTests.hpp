@@ -4,6 +4,7 @@
 #include <QDragEnterEvent>
 #include <QElapsedTimer>
 #include <QMimeData>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStatusBar>
 #include "debug/DebugPanel.hpp"
@@ -23,6 +24,8 @@ static void projectScaleWindowTests(QTemporaryDir& temporary) {
     assert(tree->topLevelItem(0)->childCount()==501);
     tree->setFocus();
     tree->setCurrentItem(pager(500));
+    QTest::keyClick(tree, Qt::Key_Delete);
+    assert(tree->currentItem() == pager(500) && QFileInfo(root).isDir());
     QTest::keyClick(tree, Qt::Key_Return);
     assert(waitFor([&]{return pager(0)!=nullptr && tree->topLevelItem(0)->childCount()==151;}));
     assert(gap<1000);window.grab().save("/tmp/turtle-large-project.png");
@@ -631,6 +634,187 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     closeDiscard(window);
     assert(QFile::setPermissions(sourceCopy + "/nested", privateReadOnly | QFile::WriteOwner));
     assert(QFile::setPermissions(QFileInfo(draggedFile).absolutePath(), privateReadOnly | QFile::WriteOwner));
+}
+
+static void explorerRemovalTests(QTemporaryDir& temporary) {
+    const QDir root(temporary.filePath("tree-removal"));
+    const QString fixtureName = QFileInfo(temporary.path()).fileName();
+    const QString folderName = fixtureName + "-discard-folder";
+    const QString fileName = fixtureName + "-trash-file.txt";
+    const QString permanentName = fixtureName + "-permanent.txt";
+    const QString folder = root.filePath(folderName);
+    const QString nested = folder + "/nested/draft.txt";
+    const QString file = root.filePath(fileName);
+    const QString permanent = root.filePath(permanentName);
+    const QString keep = root.filePath("keep.txt");
+    assert(QDir().mkpath(QFileInfo(nested).absolutePath()));
+    for (const auto& path : {file, nested, permanent, keep}) {
+        QFile output(path);
+        assert(output.open(QIODevice::WriteOnly) && output.write("sample\n") == 7);
+    }
+
+    MainWindow window;
+    window.show();
+    window.activateWindow();
+    window.openPaths({root.path()});
+    auto* tree = window.findChild<ProjectExplorer*>();
+    auto* tabs = window.findChild<QTabWidget*>("editorTabs");
+    assert(tree && tabs);
+    QSignalSpy removed(tree, &ProjectExplorer::pathDeleted);
+    const auto select = [&](const QString& path) {
+        tree->revealPath(path, true);
+        window.activateWindow();
+        tree->setFocus();
+        assert(waitFor([&] {
+            return tree->hasFocus() && tree->currentItem() &&
+                tree->currentItem()->data(0, Qt::UserRole).toString() == path;
+        }));
+        tree->scrollToItem(tree->currentItem());
+    };
+    const auto answerConfirmation = [&](const QString& title, const QString& path, QMessageBox::StandardButton answer) {
+        QTimer::singleShot(0, &window, [title, path, answer] {
+            auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            assert(dialog && dialog->windowTitle() == title && dialog->text().contains(path));
+            const bool trashPrompt = title == I18n::text("Move to Trash");
+            assert(dialog->defaultButton() == dialog->button(trashPrompt ? QMessageBox::Yes : QMessageBox::No));
+            if (trashPrompt) {
+                auto* yes = dialog->defaultButton();
+                assert(dialog->focusWidget() == yes);
+                assert(waitFor([&] { return yes->hasFocus(); }));
+                QTest::keyClick(yes, answer == QMessageBox::Yes ? Qt::Key_Return : Qt::Key_Escape);
+            } else {
+                dialog->button(answer)->click();
+            }
+        });
+    };
+    const auto chooseMenuAction = [&](const QString& text, const QString& title, const QString& path,
+                                      QMessageBox::StandardButton answer, bool isRoot = false) {
+        const QPoint position = tree->visualItemRect(tree->currentItem()).center();
+        assert(tree->itemAt(position) == tree->currentItem());
+        QTimer::singleShot(0, &window, [&, text, title, path, answer, isRoot] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            assert(menu);
+            const auto actions = menu->actions();
+            const auto findAction = [&](const QString& label) {
+                return std::find_if(actions.begin(), actions.end(), [&](const QAction* action) {
+                    return action->text() == label;
+                });
+            };
+            const auto action = findAction(text);
+            assert(action != actions.end());
+            if (isRoot) {
+                assert(findAction(I18n::text("Move to Trash")) == actions.end());
+                assert(findAction(I18n::text("Delete Permanently...")) == actions.end());
+            }
+            answerConfirmation(title, path, answer);
+            QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(*action).center());
+        });
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position, tree->viewport()->mapToGlobal(position));
+        QApplication::sendEvent(tree->viewport(), &event);
+    };
+
+    select(file);
+    answerConfirmation(I18n::text("Move to Trash"), file, QMessageBox::No);
+    QTest::keyClick(tree, Qt::Key_Delete);
+    assert(removed.count() == 0 && QFileInfo::exists(file));
+
+#ifdef Q_OS_LINUX
+    const auto setTrashConfirmation = [&](bool enabled) {
+        QTimer::singleShot(0, &window, [enabled] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            assert(dialog);
+            auto* sections = dialog->findChild<QListWidget*>("settingsSections");
+            assert(sections);
+            const auto files = sections->findItems(I18n::text("Files and search"), Qt::MatchExactly);
+            assert(files.size() == 1);
+            sections->setCurrentItem(files.front());
+            auto* box = dialog->findChild<QCheckBox*>("settingsConfirmMoveToTrash");
+            assert(box && box->isVisible() && box->isChecked() != enabled);
+            box->click();
+            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->click();
+        });
+        window.findChild<QAction*>("settings.open")->trigger();
+        assert(QSettings().value("project/confirmMoveToTrash").toBool() == enabled);
+    };
+    // Qt can use a volume's own trash when the fixtures live on a separate mount.
+    assert(QDir().mkpath(temporary.filePath("data")));
+    QFile probe(root.filePath(fixtureName + "-trash-probe.txt"));
+    assert(probe.open(QIODevice::WriteOnly));
+    probe.close();
+    assert(probe.moveToTrash());
+    const QDir trash(QFileInfo(probe.fileName()).absolutePath());
+    const auto cleanupTrash = qScopeGuard([&] {
+        QFile::remove(probe.fileName());
+        QFile::remove(trash.filePath(fileName));
+        QDir(trash.filePath(folderName)).removeRecursively();
+        for (const auto& name : {QFileInfo(probe.fileName()).fileName(), fileName, folderName})
+            QFile::remove(trash.filePath("../info/" + name + ".trashinfo"));
+    });
+    window.openPaths({file});
+    auto* editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
+    assert(editor && waitFor([&] { return !editor->isBusy() && editor->filePath() == file; }));
+    window.activateWindow();
+    editor->setFocus();
+    assert(waitFor([&] { return editor->hasFocus(); }));
+    QTest::keyClick(editor, Qt::Key_Delete);
+    assert(editor->isModified() && QFileInfo::exists(file) && removed.isEmpty());
+    QTest::keyClick(editor, Qt::Key_Z, Qt::ControlModifier);
+    assert(!editor->isModified());
+
+    select(file);
+    answerConfirmation(I18n::text("Move to Trash"), file, QMessageBox::Yes);
+    QTest::keyClick(tree, Qt::Key_Delete);
+    assert(waitFor([&] { return removed.count() == 1 && tabs->count() == 0; }));
+    assert(removed.takeFirst().front().toString() == file && !QFileInfo::exists(file));
+    assert(QFileInfo::exists(trash.filePath(fileName)));
+    assert(waitFor([&] { return tree->findItems(fileName, Qt::MatchExactly | Qt::MatchRecursive).isEmpty(); }));
+
+    window.openPaths({nested});
+    editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
+    assert(editor && waitFor([&] { return !editor->isBusy() && editor->filePath() == nested; }));
+    window.activateWindow();
+    editor->setFocus();
+    assert(waitFor([&] { return editor->hasFocus(); }));
+    QTest::keyClicks(editor, "unsaved ");
+    const auto draft = editor->document()->buffer().text();
+    assert(editor->isModified() && draft.find("unsaved ") != std::string::npos);
+    select(folder);
+    chooseMenuAction(I18n::text("Move to Trash"), I18n::text("Move to Trash"), folder, QMessageBox::No);
+    assert(removed.isEmpty() && QFileInfo::exists(folder));
+    setTrashConfirmation(false);
+    select(folder);
+    QTimer::singleShot(0, &window, [] {
+        assert(!qobject_cast<QMessageBox*>(QApplication::activeModalWidget()));
+    });
+    QTest::keyClick(tree, Qt::Key_Delete);
+    assert(waitFor([&] { return removed.count() == 1; }));
+    assert(removed.takeFirst().front().toString() == folder && !QFileInfo::exists(folder));
+    assert(QFileInfo::exists(trash.filePath(folderName + "/nested/draft.txt")));
+    assert(tabs->count() == 1 && tabs->widget(0) == editor && editor->filePath().isEmpty() &&
+        editor->isModified() && editor->document()->buffer().text() == draft);
+#endif
+
+    select(permanent);
+    chooseMenuAction(I18n::text("Delete Permanently..."), I18n::text("Delete Permanently"), permanent, QMessageBox::Yes);
+    assert(waitFor([&] { return removed.count() == 1; }));
+    assert(removed.takeFirst().front().toString() == permanent && !QFileInfo::exists(permanent));
+#ifdef Q_OS_LINUX
+    assert(!QFileInfo::exists(trash.filePath(permanentName)));
+#endif
+
+    select(root.path());
+    chooseMenuAction(I18n::text("Remove Folder from Workspace"), I18n::text("Remove Folder"),
+                     root.path(), QMessageBox::No, true);
+    assert(tree->roots() == QStringList{root.path()});
+    select(root.path());
+    answerConfirmation(I18n::text("Remove Folder"), root.path(), QMessageBox::Yes);
+    QTest::keyClick(tree, Qt::Key_Delete);
+    assert(tree->roots().isEmpty() && tree->topLevelItemCount() == 0);
+    assert(QFileInfo::exists(keep) && removed.isEmpty());
+#ifdef Q_OS_LINUX
+    setTrashConfirmation(true);
+#endif
+    closeDiscard(window);
 }
 
 static void explorerCompactFolderTests(QTemporaryDir& temporary) {

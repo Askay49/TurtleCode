@@ -373,6 +373,9 @@ void MainWindow::showSettings(SettingsPage initialPage) {
     auto* compactFolders = checkBox(files, "settingsCompactFolders", "Compact folders in the project tree",
                                     "view/compactFolders", false);
     filesLayout->addWidget(compactFolders);
+    auto* confirmMoveToTrash = checkBox(files, "settingsConfirmMoveToTrash", "Confirm before moving items to Trash",
+                                        "project/confirmMoveToTrash", true);
+    filesLayout->addWidget(confirmMoveToTrash);
     filesLayout->addSpacing(10);
     auto* hidden = checkBox(files, "settingsShowHidden", "Show Hidden Files", "view/showHidden", false);
     auto* ignored = checkBox(files, "settingsIncludeIgnored", "Include ignored files", "project/includeIgnored", false);
@@ -515,6 +518,7 @@ void MainWindow::showSettings(SettingsPage initialPage) {
         settings.setValue("view/showHidden", hidden->isChecked());
         settings.setValue("view/autoRevealActiveFile", autoReveal->isChecked());
         settings.setValue("view/compactFolders", compactFolders->isChecked());
+        settings.setValue("project/confirmMoveToTrash", confirmMoveToTrash->isChecked());
         settings.setValue("project/includeIgnored", ignored->isChecked());
         settings.setValue("editor/previewFiles", preview->isChecked());
         settings.setValue("editor/pinPreviewOnEdit", pinOnEdit->isChecked());
@@ -542,6 +546,7 @@ void MainWindow::showSettings(SettingsPage initialPage) {
         for (auto* widget : QApplication::allWidgets()) {
             if (auto* window = qobject_cast<MainWindow*>(widget)) {
                 window->explorer_->setCompactFolders(compactFolders->isChecked());
+                window->explorer_->setConfirmMoveToTrash(confirmMoveToTrash->isChecked());
                 if (window->autoRevealActiveFile_ != autoReveal->isChecked()) {
                     window->autoRevealActiveFile_ = autoReveal->isChecked();
                     window->syncExplorerToActiveFile();

@@ -342,6 +342,7 @@ void MainWindow::createUi() {
     updateExplorerButtons();
     explorer_->setVimEnabled(QSettings().value("editor/vimMode", false).toBool());
     explorer_->setCompactFolders(QSettings().value("view/compactFolders", false).toBool());
+    explorer_->setConfirmMoveToTrash(QSettings().value("project/confirmMoveToTrash", true).toBool());
     autoRevealActiveFile_ = QSettings().value("view/autoRevealActiveFile", false).toBool();
     connect(explorer_, &ProjectExplorer::filesChanged, workspaceIndex_, &WorkspaceIndex::invalidate);
     connect(explorer_,&ProjectExplorer::backgroundError,this,[this](const QString& error){statusBar()->showMessage(error,10000);});
