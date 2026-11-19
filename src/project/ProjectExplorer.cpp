@@ -67,7 +67,13 @@ ProjectExplorer::ProjectExplorer(QWidget* parent) : QTreeWidget(parent) {
         }
 
         if (QFileInfo(path).isFile())
-            emit fileActivated(path);
+            emit fileClicked(path);
+    });
+
+    connect(this, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int) {
+        if (!item) return;
+        const auto path = item->data(0, Qt::UserRole).toString();
+        if (QFileInfo(path).isFile()) emit fileActivated(path);
     });
 
     connect(this, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) {

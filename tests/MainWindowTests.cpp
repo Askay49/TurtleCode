@@ -30,6 +30,7 @@
 #include <QMenu>
 #include <QCheckBox>
 #include "editor/EditorWidget.hpp"
+#include "editor/EditorPaneWorkspace.hpp"
 #include "language/LspClient.hpp"
 #include "language/LanguageRegistry.hpp"
 #include "project/ProjectExplorer.hpp"
@@ -69,6 +70,155 @@ static void closeDiscard(MainWindow& window) {
     });responder.start();window.close();
     assert(waitFor([&]{const auto editors=window.findChildren<EditorWidget*>();return !window.isVisible() || std::any_of(editors.begin(),editors.end(),[](auto* e){return e->isBusy();});}));
 }
+
+static void filePreviewTests(QTemporaryDir& directory) {
+    const auto project = directory.filePath("preview-project");
+    assert(QDir().mkpath(project));
+    const QStringList names{"regular.txt", "first.txt", "second.txt", "third.txt", "split.txt"};
+    for (const auto& name : names) {
+        QFile file(QDir(project).filePath(name));
+        assert(file.open(QIODevice::WriteOnly) && file.write("sample\n") == 7);
+    }
+    MainWindow window;
+    window.show();
+    window.openPaths({project});
+    auto* tree = window.findChild<ProjectExplorer*>();
+    auto* tabs = window.findChild<QTabWidget*>("editorTabs");
+    auto* title = window.findChild<QToolButton*>("editorPaneTitle");
+    const auto findFile = [&](const QString& name) {
+        return tree->findItems(name, Qt::MatchExactly | Qt::MatchRecursive).value(0);
+    };
+    assert(waitFor([&] {
+        return std::all_of(names.begin(), names.end(), [&](const auto& name) { return findFile(name); });
+    }));
+    const auto clickFile = [&](const QString& name, bool twice = false) {
+        const auto point = tree->visualItemRect(findFile(name)).center();
+        if (twice) QTest::mouseDClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        else QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    };
+    const auto setPreviewSettings = [&](bool enabled, bool pin, bool save = true) {
+        QTimer::singleShot(0, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            dialog->findChild<QListWidget*>("settingsSections")->setCurrentRow(4);
+            auto* preview = dialog->findChild<QCheckBox*>("settingsPreviewFiles");
+            auto* pinOnEdit = dialog->findChild<QCheckBox*>("settingsPinPreviewOnEdit");
+            assert(preview->isChecked() == QSettings().value("editor/previewFiles", false).toBool());
+            assert(pinOnEdit->isEnabled() == preview->isChecked());
+            assert(pinOnEdit->isChecked() == QSettings().value("editor/pinPreviewOnEdit", true).toBool());
+            if (enabled) {
+                preview->setChecked(true);
+                assert(pinOnEdit->isEnabled());
+                pinOnEdit->setChecked(pin);
+            } else {
+                preview->setChecked(false);
+                assert(!pinOnEdit->isEnabled());
+            }
+            if (save) dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->click();
+            else dialog->reject();
+        });
+        window.findChild<QAction*>("settings.open")->trigger();
+    };
+    const auto waitForCurrent = [&](const QString& name, int count) {
+        assert(waitFor([&] {
+            auto* editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
+            return editor && !editor->isBusy() && QFileInfo(editor->filePath()).fileName() == name && tabs->count() == count;
+        }));
+        return qobject_cast<EditorWidget*>(tabs->currentWidget());
+    };
+    const auto isPreview = [&] { return title->accessibleName().startsWith(QStringLiteral("Preview of ")); };
+
+    clickFile("regular.txt");
+    waitForCurrent("regular.txt", 1);
+    assert(!isPreview());
+    setPreviewSettings(true, true, false);
+    assert(!QSettings().value("editor/previewFiles", false).toBool());
+    setPreviewSettings(true, true);
+
+    clickFile("first.txt");
+    clickFile("second.txt");
+    auto* second = waitForCurrent("second.txt", 2);
+    assert(isPreview());
+    second->setNavigationPosition(1, 4);
+    const auto position = second->navigationPosition();
+    clickFile("second.txt", true);
+    assert(waitForCurrent("second.txt", 2) == second && !isPreview() && second->navigationPosition() == position);
+    clickFile("third.txt");
+    auto* third = waitForCurrent("third.txt", 3);
+    assert(isPreview());
+    window.activateWindow();
+    third->setFocus();
+    QApplication::processEvents();
+    QTest::keyPress(third, Qt::Key_Tab, Qt::ControlModifier);
+    auto* list = window.findChild<QListWidget*>("openFileSwitchList");
+    assert(list->isVisible() && list->count() == 2 && list->currentItem()->text() == "second.txt");
+    QTest::keyRelease(list, Qt::Key_Control);
+    waitForCurrent("second.txt", 2);
+
+    clickFile("first.txt");
+    auto* first = waitForCurrent("first.txt", 3);
+    QTest::keyClick(first, Qt::Key_X);
+    assert(first->isModified() && !isPreview());
+    clickFile("regular.txt");
+    waitForCurrent("regular.txt", 3);
+    assert(!isPreview());
+
+    setPreviewSettings(true, false);
+    clickFile("third.txt");
+    third = waitForCurrent("third.txt", 4);
+    QTest::keyClick(third, Qt::Key_X);
+    assert(third->isModified() && isPreview());
+    QTimer responder;
+    auto answer = QMessageBox::Cancel;
+    QObject::connect(&responder, &QTimer::timeout, [&] {
+        if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            if (auto* button = dialog->button(answer)) button->click();
+        }
+    });
+    responder.start(1);
+    clickFile("regular.txt");
+    assert(waitForCurrent("third.txt", 4) == third && third->isModified() && isPreview());
+    answer = QMessageBox::Save;
+    clickFile("regular.txt");
+    waitForCurrent("regular.txt", 3);
+    responder.stop();
+    QFile saved(QDir(project).filePath("third.txt"));
+    assert(saved.open(QIODevice::ReadOnly) && saved.readAll() == "xsample\n");
+
+    clickFile("third.txt");
+    waitForCurrent("third.txt", 4);
+    setPreviewSettings(false, false);
+    assert(!isPreview());
+    clickFile("regular.txt");
+    auto* regular = waitForCurrent("regular.txt", 4);
+
+    setPreviewSettings(true, false);
+    window.findChild<QAction*>("editor.splitRight")->trigger();
+    auto* workspace = window.findChild<EditorPaneWorkspace*>();
+    auto* right = workspace->activePane();
+    auto* left = workspace->panes().front();
+    assert(left && right && left != right);
+    clickFile("split.txt");
+    waitForCurrent("split.txt", 5);
+    window.activateWindow();
+    left->editor()->setFocus();
+    assert(waitForCurrent("regular.txt", 5) == regular && right->editor()->filePath().endsWith("/split.txt"));
+    right->editor()->setFocus();
+    clickFile("regular.txt");
+    waitForCurrent("regular.txt", 4);
+    assert(workspace->panes().size() == 2);
+    clickFile("split.txt");
+    waitForCurrent("split.txt", 5);
+    closeDiscard(window);
+    QDir recoveryRoot(RecoveryStore::rootDirectory());
+    const auto sessions = recoveryRoot.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    assert(sessions.size() == 1);
+    const auto session = RecoveryStore::readObject(recoveryRoot.filePath(sessions.front() + "/session.json"));
+    assert(session["clean"].toBool() && session["documents"].toArray().size() == 4);
+    for (const auto& entry : session["documents"].toArray()) {
+        assert(!entry.toObject()["path"].toString().endsWith("/split.txt"));
+    }
+}
+
 static void externalFileTests(QTemporaryDir& directory) {
     const auto path = directory.filePath("external.txt");
     const auto write = [&](const QByteArray& text, bool atomic = false) {
@@ -513,6 +663,7 @@ int main(int argc,char**argv) {
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--memory-workload") return memoryWorkload(argc,argv);
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--external-files"){externalFileTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--safety"){safetyTests(directory);return 0;}
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--file-preview"){filePreviewTests(directory);return 0;}
     if (argc>1 && QString::fromLocal8Bit(argv[1])=="--russian-ui") {
         assert(I18n::saveLanguage("ru")); assert(I18n::initialize());
         QSettings().setValue("appearance/theme","tokyo-night");

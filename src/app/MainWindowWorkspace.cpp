@@ -77,7 +77,8 @@ EditorWidget* MainWindow::showBufferInPane(EditorPane* pane, EditorWidget* sourc
     auto* current = pane->editor();
     if (current && current->document() == source->document()) return current;
     if (current) {
-        pane->alternate = documentEditor(current);
+        auto* previous = documentEditor(current);
+        if (!filePreviews_.contains(previous)) pane->alternate = previous;
         removeVimDiffView(current);
     }
     auto* view = pane->viewFor(source->document().get());
@@ -130,6 +131,7 @@ void MainWindow::updateWorkspaceFocus(bool focus) {
     updateEditorPaneActions();
     updateWindowTitle();
     scheduleOutline();
+    scheduleFilePreviewCleanup();
 }
 
 void MainWindow::updateEditorPaneActions() {
@@ -148,7 +150,8 @@ void MainWindow::updateEditorHeaders() {
     singleEditorHeader_->setVisible(single != nullptr);
     if (single) {
         const auto path = paneBufferPath(single);
-        singleEditorHeader_->setDocumentTitle(BufferNames{}.label(path, single), path, single->isModified());
+        singleEditorHeader_->setDocumentTitle(BufferNames{}.label(path, single), path, single->isModified(),
+                                              filePreviews_.contains(documentEditor(single)));
         singleEditorHeader_->setActive(true);
         singleEditorHeader_->setCloseAction(!closing_ && !single->isBusy(), false);
     }
@@ -173,7 +176,7 @@ void MainWindow::updateEditorHeaders() {
             const auto path = paneBufferPath(view);
             const auto label = names.label(path, view);
             const bool dirty = view->isModified();
-            header->setDocumentTitle(label, path, dirty);
+            header->setDocumentTitle(label, path, dirty, filePreviews_.contains(documentEditor(view)));
             header->setActive(pane == activePane);
             header->setCloseAction(!closing_ && !view->isBusy(), canClosePane);
             if (files.isEmpty()) firstTitle = label;

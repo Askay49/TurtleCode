@@ -68,6 +68,7 @@
 #include <QPushButton>
 #include <QHBoxLayout>
 #include <QScopedValueRollback>
+#include <utility>
 #include <QSignalBlocker>
 #include <QPointer>
 #include <QSet>
@@ -506,6 +507,11 @@ void MainWindow::createUi() {
     connect(gitActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(2); });
     connect(debugActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(3); });
     connect(sidebarStack_, &QStackedWidget::currentChanged, this, [this] { updateSidebarActivities(); });
+    connect(explorer_, &ProjectExplorer::fileClicked, this, [this](const QString& path) {
+        const auto mode = QSettings().value("editor/previewFiles", false).toBool()
+            ? FileOpenMode::Preview : FileOpenMode::Regular;
+        openFile(path, 0, 0, 0, true, mode);
+    });
     connect(explorer_, &ProjectExplorer::fileActivated, this, [this](const QString& path) {
         openFile(path);
     });
@@ -648,11 +654,16 @@ void MainWindow::createUi() {
         }
         if (!paneWorkspace_->count()) {
             auto* current = activeEditor();
-            if (current && current != vimLastEditor_) { vimAlternateEditor_ = vimLastEditor_; vimLastEditor_ = current; }
+            if (current && current != vimLastEditor_) {
+                if (!filePreviews_.contains(vimLastEditor_)) vimAlternateEditor_ = vimLastEditor_;
+                if (vimAlternateEditor_ == current) vimAlternateEditor_.clear();
+                vimLastEditor_ = current;
+            }
             if (current) current->setProperty("vimAlternatePath", vimAlternateEditor_ ? vimAlternateEditor_->filePath() : QString{});
         }
         updateEditorPaneActions();
         if (!paneWorkspace_->count()) updateEditorHeaders();
+        scheduleFilePreviewCleanup();
     });
 
     splitter->addWidget(sidebar_);
@@ -1133,14 +1144,47 @@ void MainWindow::quickOpen() {
 }
 
 void MainWindow::updateTabMru(QWidget* current) {
-    if (!current) return;
-    tabMru_.erase(std::remove_if(tabMru_.begin(), tabMru_.end(), [this](const QPointer<QWidget>& tab) {
-        return tab.isNull() || tabs_->indexOf(tab.data()) < 0;
+    tabMru_.erase(std::remove_if(tabMru_.begin(), tabMru_.end(), [this, current](const QPointer<QWidget>& tab) {
+        return tab.isNull() || tab == current || tabs_->indexOf(tab.data()) < 0;
     }), tabMru_.end());
-    tabMru_.erase(std::remove_if(tabMru_.begin(), tabMru_.end(), [current](const QPointer<QWidget>& tab) {
-        return tab.data() == current;
-    }), tabMru_.end());
-    tabMru_.prepend(QPointer<QWidget>(current));
+    if (current && !filePreviews_.contains(qobject_cast<EditorWidget*>(current))) tabMru_.prepend(current);
+}
+
+void MainWindow::pinFilePreview(EditorWidget* editor) {
+    if (!filePreviews_.remove(editor)) return;
+    if (!editor->isBusy()) rememberRecentFile(editor->filePath());
+    if (documentEditor(activeEditor()) == editor) updateTabMru(editor);
+    else tabMru_.append(editor);
+    updateEditorHeaders();
+}
+
+void MainWindow::scheduleFilePreviewCleanup() {
+    if (filePreviews_.isEmpty() || filePreviewCleanupScheduled_ || closing_) return;
+    filePreviewCleanupScheduled_ = true;
+    QTimer::singleShot(0, this, [this] {
+        filePreviewCleanupScheduled_ = false;
+        closeInactiveFilePreviews();
+    });
+}
+
+void MainWindow::closeInactiveFilePreviews() {
+    if (closing_ || recoveryWriting_ || renameInProgress_ || !replaceLockedEditors_.isEmpty()) return;
+    auto inactive = filePreviews_;
+    inactive.remove(documentEditor(activeEditor()));
+    // A preview can stay on screen in another split or on another Vim tab page.
+    for (auto* pane : paneWorkspace_->panes(true)) inactive.remove(documentEditor(pane->editor()));
+    for (auto* editor : inactive) {
+        if (tabs_->indexOf(editor) < 0) continue;
+        if (editor->isBusy() && !editor->property("openingPath").isValid()) continue;
+        if (editor->isModified()) {
+            if (!editor->isBusy()) {
+                requestClose({editor}, false, false, true);
+                return;
+            }
+        } else {
+            removeClosedEditor(editor);
+        }
+    }
 }
 
 bool MainWindow::closeTab(int index) {
@@ -1170,7 +1214,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     requestClose(editors,true);
 }
 
-void MainWindow::requestClose(QVector<QPointer<EditorWidget>> editors,bool window,bool discard) {
+void MainWindow::requestClose(QVector<QPointer<EditorWidget>> editors,bool window,bool discard,bool inactivePreview) {
     if(closing_)return;
     if(renameInProgress_ || !replaceLockedEditors_.isEmpty()) {
         statusBar()->showMessage(I18n::text("Wait for the current operation to finish before closing."),6000);return;
@@ -1179,6 +1223,7 @@ void MainWindow::requestClose(QVector<QPointer<EditorWidget>> editors,bool windo
         statusBar()->showMessage(I18n::text("Wait for the current operation to finish before closing."),6000);return;
     }
     closing_=true;closingWindow_=window;closingIndex_=0;
+    closingInactivePreview_=inactivePreview;
     menuBar()->setEnabled(false);sidebar_->setEnabled(false);paneWorkspace_->setEnabled(false);
     vimPageTabs_->setEnabled(false);
     findChild<QWidget*>("activityBar")->setEnabled(false);
@@ -1193,7 +1238,7 @@ void MainWindow::advanceClose() {
         auto editor=closingEditors_[closingIndex_++];
         if(!editor || !editor->isModified())continue;
         if(discardedRevisions_.contains(editor) && discardedRevisions_.value(editor)==editor->lspRevision())continue;
-        activateEditor(editor);
+        if (!closingInactivePreview_) activateEditor(editor);
         const auto answer=IconDialogs::MessageBox::warning(this,I18n::text("Unsaved changes"),
             I18n::text("Save changes to “%1” before closing?").arg(editor->filePath().isEmpty()?I18n::text("Untitled"):QFileInfo(editor->filePath()).fileName()),
             QMessageBox::Save|QMessageBox::Discard|QMessageBox::Cancel,QMessageBox::Save);
@@ -1217,7 +1262,22 @@ void MainWindow::finishClose(bool accepted) {
     vimPageTabs_->setEnabled(true);
     findChild<QWidget*>("activityBar")->setEnabled(true);
     for(const auto& editor:closingEditors_)if(editor)editor->setEnabled(true);
-    if(!accepted){closing_=false;closingEditors_.clear();closingVimBuffer_.clear();updateEditorPaneActions();updateEditorHeaders();return;}
+    const bool inactivePreview = std::exchange(closingInactivePreview_, false);
+    if (!accepted) {
+        const auto preview = inactivePreview ? closingEditors_.value(0) : QPointer<EditorWidget>{};
+        closing_=false;closingEditors_.clear();closingVimBuffer_.clear();
+        if (preview) {
+            auto* view = preview.data();
+            for (auto* pane : paneWorkspace_->panes(true)) {
+                if (auto* existing = pane->viewFor(preview->document().get())) {
+                    view = existing;
+                    break;
+                }
+            }
+            activateEditor(view, true);
+        }
+        updateEditorPaneActions();updateEditorHeaders();scheduleFilePreviewCleanup();return;
+    }
     finishTabSwitch(false);
     if(closingWindow_) {
         // Modified documents explicitly discarded by the user are reopened from disk.
@@ -1245,22 +1305,28 @@ void MainWindow::finishClose(bool accepted) {
             const auto error=RecoveryStore::retireDocument(source,editor->property("recoveryOriginId").toString());
             if(!error.isEmpty()){IconDialogs::MessageBox::warning(this,I18n::text("Recovery failed"),error);closing_=false;return;}
         }
-        if(recovery_)recovery_->forgetDocument(editor->property("recoveryId").toString());
-        recoveredRevisions_.remove(editor);
-        externalFileStates_.remove(editor);
-        externallyReloading_.remove(editor);
         if (closingVimBuffer_ == editor) {
             if (wipeVimBuffer_) editor->discardVimBufferMarks();
             else unloadedVimBuffers_.append({editor->property("vimBufferId").toULongLong(), editor->filePath()});
             closingVimBuffer_.clear();
         }
-        removeBufferViews(editor);
-        tabs_->removeTab(tabs_->indexOf(editor));editor->deleteLater();
+        removeClosedEditor(editor);
     }
     closingEditors_.clear();closing_=false;
-    if(auto* current=activeEditor())current->setFocus();
+    if (!inactivePreview) if(auto* current=activeEditor())current->setFocus();
     updateEditorPaneActions();
-    updateWindowTitle();checkpointRecovery();
+    updateWindowTitle();checkpointRecovery();scheduleFilePreviewCleanup();
+}
+
+void MainWindow::removeClosedEditor(EditorWidget* editor) {
+    if(recovery_)recovery_->forgetDocument(editor->property("recoveryId").toString());
+    recoveredRevisions_.remove(editor);
+    externalFileStates_.remove(editor);
+    externallyReloading_.remove(editor);
+    removeBufferViews(editor);
+    tabs_->removeTab(tabs_->indexOf(editor));
+    filePreviews_.remove(editor);
+    editor->deleteLater();
 }
 
 void MainWindow::positionTabSwitcher() {
@@ -1287,11 +1353,13 @@ void MainWindow::positionTabSwitcher() {
 }
 
 void MainWindow::switchRecentTab(int direction) {
-    if (tabSwitcher_->isHidden()) {
+    const bool opening = tabSwitcher_->isHidden();
+    if (opening) {
         auto* currentEditor = documentEditor(activeEditor());
         if (!currentEditor) return;
         updateTabMru(currentEditor);
         tabSwitchOrder_ = tabMru_;
+        if (tabSwitchOrder_.isEmpty()) return;
         tabSwitchList_->clear();
         for (const auto& page : tabSwitchOrder_) {
             const int index = tabs_->indexOf(page);
@@ -1305,7 +1373,8 @@ void MainWindow::switchRecentTab(int direction) {
         qApp->installEventFilter(this);
         tabSwitchList_->setFocus();
     }
-    const auto current = std::max(0, tabSwitchList_->currentRow());
+    const bool fromPreview = opening && filePreviews_.contains(documentEditor(activeEditor()));
+    const int current = fromPreview && direction > 0 ? -1 : std::max(0, tabSwitchList_->currentRow());
     const auto count = tabSwitchOrder_.size();
     tabSwitchList_->setCurrentRow((current + direction + count) % count);
     tabSwitchList_->scrollToItem(tabSwitchList_->currentItem());
@@ -1433,7 +1502,7 @@ void MainWindow::openFile() {
         openFile(path);
 }
 
-void MainWindow::openFile(const QString& inputPath, int line, int column, int length, bool centerTarget) {
+void MainWindow::openFile(const QString& inputPath, int line, int column, int length, bool centerTarget, FileOpenMode mode) {
     if(closing_)return;
     const QString path = QDir::cleanPath(QFileInfo(inputPath).absoluteFilePath());
     if(!property("vimRestoringLocation").toBool())if(auto* current=activeEditor();current && (line>0 || current->filePath()!=path))current->recordVimJump();
@@ -1441,14 +1510,15 @@ void MainWindow::openFile(const QString& inputPath, int line, int column, int le
         auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
         if (editor && (editor->filePath()==path ||
             (editor->isBusy() && editor->filePath().isEmpty() && editor->property("openingPath").toString()==path))) {
+            if (mode == FileOpenMode::Regular) pinFilePreview(editor);
             auto* view = activateEditor(editor);
-            rememberRecentFile(path);
+            if (!filePreviews_.contains(editor)) rememberRecentFile(path);
             if (line > 0 && view) view->revealMatch(line, column, length, centerTarget);
             return;
         }
     }
 
-    auto* editor = createEditor(path);
+    auto* editor = createEditor(path, mode);
 
     QPointer<EditorWidget> editorGuard(editor), viewGuard(activeEditor());
     auto* watcher = new QFutureWatcher<LoadedFile>(this);
@@ -1472,7 +1542,7 @@ void MainWindow::openFile(const QString& inputPath, int line, int column, int le
         editorGuard->document()->diskState=result.diskState;
         editorGuard->setProperty("openingPath",QVariant{});
         editorGuard->setProperty("loadingPreview",false);editorGuard->setBusy(false);editorGuard->applyHistorySettings();
-        rememberRecentFile(path);
+        if (!filePreviews_.contains(editorGuard)) rememberRecentFile(path);
         if (lsp_ && lsp_->available() && editorGuard->lspAutomaticEligible()) {
             if (lsp_->supports(path)) {
                 lsp_->open(path, editorGuard->lspText());
@@ -1986,6 +2056,7 @@ void MainWindow::finishProjectReplace(const ProjectReplaceResult& result) {
         }));
     }
     replaceLockedEditors_.clear();
+    scheduleFilePreviewCleanup();
 }
 
 void MainWindow::configureLsp() {
@@ -2244,7 +2315,7 @@ void MainWindow::showLspProblems() {
     connect(close,&QDialogButtonBox::rejected,&dialog,&QDialog::reject); dialog.exec();
 }
 
-EditorWidget* MainWindow::createEditor(const QString& path) {
+EditorWidget* MainWindow::createEditor(const QString& path, FileOpenMode mode) {
     auto* editor = new EditorWidget(this, std::make_shared<Document>());
     auto id = vimNextBufferId_++;
     if (!path.isEmpty()) {
@@ -2259,6 +2330,7 @@ EditorWidget* MainWindow::createEditor(const QString& path) {
     editor->setProperty("openingPath", path);
     editor->setBusy(true);
     connectEditor(editor, path, true);
+    if (mode == FileOpenMode::Preview) filePreviews_.insert(editor);
     const int index = tabs_->addTab(editor, QFileInfo(path).fileName() + I18n::text(" (loading…)"));
     tabs_->setTabToolTip(index, path);
     activateEditor(editor);
@@ -2275,9 +2347,10 @@ EditorWidget* MainWindow::createUntitledEditor() {
 }
 
 void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool primary) {
-    if (primary) connect(editor->document().get(), &Document::busyChanged, editor, [this, editor](bool) {
+    if (primary) connect(editor->document().get(), &Document::busyChanged, editor, [this, editor](bool busy) {
         if (documentEditor(activeEditor()) == editor) updateEditorPaneActions();
         updateEditorHeaders();
+        if (!busy && filePreviews_.contains(editor)) scheduleFilePreviewCleanup();
     });
     else connect(editor, &EditorWidget::modifiedChanged, this, &MainWindow::updateEditorHeaders);
     connect(editor, &EditorWidget::viewFocused, this, [this, editor] { viewFocused(editor); });
@@ -2396,6 +2469,7 @@ void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool p
     });
     const auto document = editor->document();
     connect(editor, &QObject::destroyed, this, [this, document, editor] {
+        filePreviews_.remove(editor);
         recoveredRevisions_.remove(editor);
         externalFileStates_.remove(editor);
         externallyReloading_.remove(editor);
@@ -2403,6 +2477,8 @@ void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool p
     });
 
     connect(editor, &EditorWidget::modifiedChanged, this, [this, editor] {
+        if (editor->isModified() && filePreviews_.contains(editor) &&
+            QSettings().value("editor/pinPreviewOnEdit", true).toBool()) pinFilePreview(editor);
         const int index = tabs_->indexOf(editor);
         if (index >= 0) {
             const QString name = editor->filePath().isEmpty()
@@ -2486,7 +2562,10 @@ void MainWindow::renameSymbol() {
     QPointer<MainWindow> owner(this);
     const auto operation=std::shared_ptr<int>(new int(0),[owner](int* value) {
         delete value;
-        if (owner) owner->renameInProgress_=false;
+        if (owner) {
+            owner->renameInProgress_ = false;
+            owner->scheduleFilePreviewCleanup();
+        }
     });
     for (int i=0;i<tabs_->count();++i) if (auto* item=qobject_cast<EditorWidget*>(tabs_->widget(i)))
         if (!item->isBusy() && item->lspEligible() && lsp_->supports(item->filePath())) lsp_->change(item->filePath(),item->lspText());
@@ -2659,11 +2738,12 @@ QJsonObject MainWindow::sessionState(bool clean) const {
     const bool backupsEnabled=QSettings().value("editor/recoveryEnabled",true).toBool();
     QString active;
     for(int i=0;i<tabs_->count();++i)if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i))) {
-        if(editor->isBusy())continue;
+        if (editor->isBusy()) continue;
         const auto path=editor->filePath();
         if(clean && path.isEmpty())continue;
         const auto id=editor->property("recoveryId").toString();
         const bool hasCopy=recovery_ && QFileInfo::exists(recovery_->directory()+"/"+id+".json");
+        if (filePreviews_.contains(editor) && (clean || !editor->isModified() || (!backupsEnabled && !hasCopy))) continue;
         if(!clean && !backupsEnabled && path.isEmpty() && !hasCopy)continue;
         const auto* view = activeEditor();
         if (!view || view->document() != editor->document()) view = editor;
@@ -2704,6 +2784,7 @@ void MainWindow::checkpointRecovery() {
     connect(watcher,&QFutureWatcher<QString>::finished,this,[this,watcher,jobs] {
         auto error=watcher->result();watcher->deleteLater();recoveryWriting_=false;
         if(recoveryStopped_)return;
+        scheduleFilePreviewCleanup();
         if(error.isEmpty()) {
             for(const auto& job:*jobs)if(job.editor)recoveredRevisions_[job.editor]=job.revision;
             auto state=sessionState();

@@ -358,6 +358,16 @@ void MainWindow::showSettings(SettingsPage initialPage) {
 
     auto* files = new QWidget;
     auto* filesLayout = new QVBoxLayout(files);
+    auto* preview = checkBox(files, "settingsPreviewFiles", "Preview files on single click", "editor/previewFiles", false);
+    auto* pinOnEdit = checkBox(files, "settingsPinPreviewOnEdit", "Keep preview files open after editing", "editor/pinPreviewOnEdit", true);
+    pinOnEdit->setEnabled(preview->isChecked());
+    connect(preview, &QCheckBox::toggled, pinOnEdit, &QCheckBox::setEnabled);
+    filesLayout->addWidget(preview);
+    auto* previewOptions = new QHBoxLayout;
+    previewOptions->addSpacing(20);
+    previewOptions->addWidget(pinOnEdit);
+    filesLayout->addLayout(previewOptions);
+    filesLayout->addSpacing(10);
     auto* hidden = checkBox(files, "settingsShowHidden", "Show Hidden Files", "view/showHidden", false);
     auto* ignored = checkBox(files, "settingsIncludeIgnored", "Include ignored files", "project/includeIgnored", false);
     const auto addFilter = [&](QCheckBox* box, const char* description) {
@@ -473,6 +483,8 @@ void MainWindow::showSettings(SettingsPage initialPage) {
         const bool languageChanged = selectedLanguage != I18n::selectedLanguage();
         const bool visibilityChanged = hidden->isChecked() != settings.value("view/showHidden", false).toBool()
             || ignored->isChecked() != settings.value("project/includeIgnored", false).toBool();
+        const bool previewChanged = preview->isChecked() != settings.value("editor/previewFiles", false).toBool()
+            || pinOnEdit->isChecked() != settings.value("editor/pinPreviewOnEdit", true).toBool();
         const bool vimChanged = vim->isChecked() != settings.value("editor/vimMode", false).toBool();
         const bool historyChanged = memory->value() != settings.value("editor/historyMemoryMiB", 64).toInt()
             || disk->value() != settings.value("editor/historyDiskMiB", 0).toInt()
@@ -496,6 +508,8 @@ void MainWindow::showSettings(SettingsPage initialPage) {
         settings.setValue("appearance/backgroundOpacity", opacity->value());
         settings.setValue("view/showHidden", hidden->isChecked());
         settings.setValue("project/includeIgnored", ignored->isChecked());
+        settings.setValue("editor/previewFiles", preview->isChecked());
+        settings.setValue("editor/pinPreviewOnEdit", pinOnEdit->isChecked());
         settings.setValue("editor/historyMemoryMiB", memory->value());
         settings.setValue("editor/historySpillToDisk", spill->isChecked());
         settings.setValue("editor/historyDiskMiB", disk->value());
@@ -519,6 +533,13 @@ void MainWindow::showSettings(SettingsPage initialPage) {
             || semanticBeforeSave != settings.value("lsp/semanticHighlighting", true).toBool();
         for (auto* widget : QApplication::allWidgets()) {
             if (auto* window = qobject_cast<MainWindow*>(widget)) {
+                if (previewChanged) {
+                    const auto previews = window->filePreviews_;
+                    for (auto* editor : previews) {
+                        if (!preview->isChecked() || (pinOnEdit->isChecked() && editor->isModified()))
+                            window->pinFilePreview(editor);
+                    }
+                }
                 if (recoveryChanged) window->applyRecoverySettings();
                 if (lspChanged) window->applyLspSettings(lsp->serverChanged);
                 if (fontsChanged) {

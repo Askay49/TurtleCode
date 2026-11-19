@@ -64,9 +64,11 @@ protected:
 
 private:
     void createUi();
-    void requestClose(QVector<QPointer<EditorWidget>> editors, bool window, bool discard = false);
+    void requestClose(QVector<QPointer<EditorWidget>> editors, bool window, bool discard = false,
+                      bool inactivePreview = false);
     void advanceClose();
     void finishClose(bool accepted);
+    void removeClosedEditor(EditorWidget* editor);
     void checkpointRecovery();
     QJsonObject sessionState(bool clean = false) const;
     void initializeRecovery();
@@ -81,6 +83,7 @@ private:
     bool allowWindowClose_{false};
     int closingIndex_{0};
     QVector<QPointer<EditorWidget>> closingEditors_;
+    bool closingInactivePreview_{false};
     QHash<EditorWidget*,quint64> discardedRevisions_;
     QHash<EditorWidget*,quint64> recoveredRevisions_;
     QSet<QString> recoveredSourceDirectories_;
@@ -134,9 +137,13 @@ private:
     void startProjectReplace(ProjectReplaceRequest request);
     void finishProjectReplace(const ProjectReplaceResult& result);
     void setProjectRoots(const QStringList& roots, bool explicitProject = true);
+    enum class FileOpenMode { Regular, Preview };
     void openFile(const QString& path, int line = 0, int column = 0, int length = 0,
-                  bool centerTarget = true);
-    EditorWidget* createEditor(const QString& path);
+                  bool centerTarget = true, FileOpenMode mode = FileOpenMode::Regular);
+    EditorWidget* createEditor(const QString& path, FileOpenMode mode = FileOpenMode::Regular);
+    void pinFilePreview(EditorWidget* editor);
+    void scheduleFilePreviewCleanup();
+    void closeInactiveFilePreviews();
     EditorWidget* createUntitledEditor();
     EditorWidget* openVimFile(const QString& path);
     void connectEditor(EditorWidget* editor, const QString& path, bool primary);
@@ -229,6 +236,8 @@ private:
     QStringList projectRoots_;
     bool explicitProject_{false};
     QTabWidget* tabs_{nullptr};
+    QSet<EditorWidget*> filePreviews_;
+    bool filePreviewCleanupScheduled_{false};
     EditorPaneHeader* singleEditorHeader_{nullptr};
     GrammarManager* grammarManager_{nullptr};
     LspManager* lsp_{nullptr};

@@ -22,6 +22,7 @@ public:
 signals:
     void filesChanged();
     void backgroundError(const QString& error);
+    void fileClicked(const QString& path);
     void fileActivated(const QString& path);
     void pathRenamed(const QString& oldPath, const QString& newPath);
     void pathDeleted(const QString& path);

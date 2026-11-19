@@ -14,7 +14,7 @@ class EditorPaneHeader final : public QFrame {
     Q_OBJECT
 public:
     explicit EditorPaneHeader(QWidget* parent);
-    void setDocumentTitle(const QString& title, const QString& path, bool modified);
+    void setDocumentTitle(const QString& title, const QString& path, bool modified, bool preview);
     void setActive(bool active);
     void setCloseAction(bool enabled, bool closesPane);
 

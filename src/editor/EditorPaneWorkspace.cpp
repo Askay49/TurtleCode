@@ -16,6 +16,7 @@ class EditorPaneHeader::TitleButton final : public QToolButton {
 public:
     using QToolButton::QToolButton;
     bool modified{false};
+    bool preview{false};
 
 protected:
     void paintEvent(QPaintEvent*) override {
@@ -24,10 +25,16 @@ protected:
         option.text.clear();
         QPainter painter(this);
         style()->drawComplexControl(QStyle::CC_ToolButton, &option, &painter, this);
+        if (preview) {
+            auto italic = font();
+            italic.setItalic(true);
+            painter.setFont(italic);
+        }
         const QRect label = rect().adjusted(7, 0, -6, 0);
         const QString suffix = modified ? QStringLiteral(" •  ▾") : QStringLiteral("  ▾");
-        const auto title = fontMetrics().elidedText(text(), Qt::ElideMiddle,
-            std::max(0, label.width() - fontMetrics().horizontalAdvance(suffix)));
+        const QFontMetrics metrics(painter.font());
+        const auto title = metrics.elidedText(text(), Qt::ElideMiddle,
+            std::max(0, label.width() - metrics.horizontalAdvance(suffix)));
         style()->drawItemText(&painter, label, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine,
                              palette(), isEnabled(), title + suffix, QPalette::ButtonText);
     }
@@ -68,13 +75,15 @@ EditorPaneHeader::EditorPaneHeader(QWidget* parent)
     connect(close_, &QToolButton::clicked, this, &EditorPaneHeader::closeRequested);
 }
 
-void EditorPaneHeader::setDocumentTitle(const QString& title, const QString& path, bool modified) {
+void EditorPaneHeader::setDocumentTitle(const QString& title, const QString& path, bool modified, bool preview) {
     if (title_->text() != title) {
         title_->setText(title);
         title_->setShortcut({});
     }
     title_->modified = modified;
-    const auto description = modified ? title + QStringLiteral(" •") : title;
+    title_->preview = preview;
+    auto description = preview ? I18n::text("Preview of %1").arg(title) : title;
+    if (modified) description += QStringLiteral(" •");
     title_->setAccessibleName(description);
     title_->setToolTip(path.isEmpty() ? description : path);
     title_->update();
