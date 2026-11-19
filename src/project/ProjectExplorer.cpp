@@ -542,6 +542,11 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
     QMenu menu(this);
     QAction* newFileAction = menu.addAction(Codicons::icon("new-file"), I18n::text("New File..."));
     QAction* newFolderAction = menu.addAction(Codicons::icon("new-folder"), I18n::text("New Folder..."));
+    QAction* searchAction = nullptr;
+    if (item && selectedInfo.isDir()) {
+        menu.addSeparator();
+        searchAction = menu.addAction(Codicons::icon("search"), I18n::text("Search in This Folder"));
+    }
     QAction* renameAction = nullptr;
     QAction* deleteAction = nullptr;
     QAction* copyPathAction = nullptr;
@@ -565,6 +570,8 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
         createFileIn(targetDirectory);
     } else if (chosen == newFolderAction) {
         createFolderIn(targetDirectory);
+    } else if (searchAction && chosen == searchAction) {
+        emit searchInFolderRequested(targetDirectory);
     } else if (renameAction && chosen == renameAction) {
         renamePath(selectedPath);
     } else if (deleteAction && chosen == deleteAction) {

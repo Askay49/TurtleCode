@@ -64,16 +64,38 @@ int main(int argc, char** argv) {
     Q_ASSERT(root.mkpath("src"));
     Q_ASSERT(root.mkpath("build"));
     Q_ASSERT(root.mkpath(".private"));
+    Q_ASSERT(root.mkpath("src/ignored/deep"));
     writeFile(root.filePath("src/main.cpp"), "Blink blink\nBLINK\n");
     writeFile(root.filePath("src/other.txt"), "blinking blink\n");
     writeFile(root.filePath("build/generated.cpp"), "blink\n");
     writeFile(root.filePath(".secret.txt"), "blink\n");
     writeFile(root.filePath(".private/note.txt"), "blink\n");
     writeFile(root.filePath(".gitignore"), "build/\n");
+    writeFile(root.filePath(".turtleignore"), "/src/ignored/\n");
+    writeFile(root.filePath("src/ignored/deep/note.txt"), "blink\n");
 
     ProjectSearchOptions options;
     options.roots = {directory.path()};
     options.query = "blink";
+    auto scoped = options;
+    scoped.directory = root.filePath("src");
+    scoped.filesToInclude = "src/*.cpp";
+    const auto scopedResult = search(scoped);
+    Q_ASSERT(scopedResult.error.isEmpty() && scopedResult.filesSearched == 1);
+    Q_ASSERT(scopedResult.matches.size() == 3 && scopedResult.matches[0].relativePath == "src/main.cpp");
+    scoped.filesToInclude.clear();
+    scoped.directory = root.filePath("src/ignored/deep");
+    Q_ASSERT(search(scoped).filesSearched == 0);
+    scoped.directory = root.filePath(".private");
+    Q_ASSERT(search(scoped).filesSearched == 0);
+    scoped.showHidden = true;
+    Q_ASSERT(search(scoped).matches.size() == 1);
+    scoped.directory = root.filePath("../");
+    Q_ASSERT(search(scoped).filesSearched == 0);
+    scoped.directory = root.filePath("missing");
+    Q_ASSERT(search(scoped).filesSearched == 0);
+    Q_ASSERT(QFile::remove(root.filePath("src/ignored/deep/note.txt")));
+
     options.includeIgnored = true;
     auto result = search(options);
     Q_ASSERT(result.error.isEmpty());

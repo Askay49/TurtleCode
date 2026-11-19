@@ -91,11 +91,26 @@ bool WorkspaceFiles::accepts(const QFileInfo& info) {
 }
 void WorkspaceFiles::walk(const std::function<void(const QFileInfo&)>& file,
                           const std::shared_ptr<std::atomic_bool>& cancel,
-                          const std::function<void(const QString&)>& directory) {
+                          const std::function<void(const QString&)>& directory,
+                          const QString& startDirectory) {
+    QString start = root_;
+    if (!startDirectory.isEmpty()) {
+        const QString absolute = QDir::cleanPath(QFileInfo(startDirectory).absoluteFilePath());
+        const QString relative = QDir(root_).relativeFilePath(absolute);
+        if (relative == ".." || relative.startsWith("../") || QDir::isAbsolutePath(relative)) return;
+        if (relative != ".") {
+            // Check ancestors as a traversal from the workspace root would.
+            for (const auto& part : relative.split('/')) {
+                const QFileInfo info(QDir(start).filePath(part));
+                if (!accepts(info) || !info.isDir()) return;
+                start = info.absoluteFilePath();
+            }
+        }
+    }
     struct Frame {QString path;std::unique_ptr<QDirIterator> iterator;};
     std::vector<Frame> stack;
     const auto enter=[&](const QString& path){if(directory)directory(path);stack.push_back({path,std::make_unique<QDirIterator>(path,QDir::AllEntries|QDir::NoDotAndDotDot|QDir::Hidden|QDir::System|QDir::NoSymLinks)});};
-    enter(root_);
+    enter(start);
     while(!stack.empty() && (!cancel || !cancel->load())) {
         auto& frame=stack.back();
         if(!frame.iterator->hasNext()){rules_.remove(frame.path);stack.pop_back();continue;}

@@ -21,6 +21,7 @@ struct ProjectSearchOptions {
     bool regularExpression{false};
     bool showHidden{false};
     bool includeIgnored{false};
+    QString directory;
 };
 
 

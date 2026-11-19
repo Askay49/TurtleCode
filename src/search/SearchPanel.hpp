@@ -21,6 +21,7 @@ public:
     explicit SearchPanel(QWidget* parent = nullptr);
     void applyFontSettings();
     void setRoots(const QStringList& roots);
+    void setSearchDirectory(const QString& directory);
     void setShowHidden(bool show);
     void setIncludeIgnored(bool include) { includeIgnored_=include; if(!queryTextEmpty()) scheduleSearch(); }
     void focusSearch();
@@ -50,6 +51,7 @@ private:
     ProjectSearchOptions options() const;
 
     QStringList roots_;
+    QString searchDirectory_;
     bool showHidden_{false},includeIgnored_{false};
     ProjectSearchService service_;
     ProjectReplaceService replaceService_;
@@ -81,6 +83,8 @@ private:
     QToolButton* wholeWord_{nullptr};
     QToolButton* regex_{nullptr};
     QWidget* replaceRow_{nullptr};
+    QWidget* scopeRow_{nullptr};
+    QLabel* scopeLabel_{nullptr};
     QWidget* details_{nullptr};
     QTreeWidget* results_{nullptr};
     QLabel* status_{nullptr};

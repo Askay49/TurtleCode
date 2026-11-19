@@ -6,6 +6,7 @@
 #include "SearchPanel.hpp"
 #include "app/FontSettings.hpp"
 
+#include <QDir>
 #include <QFileInfo>
 #include <QHash>
 #include <QHBoxLayout>
@@ -142,6 +143,24 @@ SearchPanel::SearchPanel(QWidget* parent) : QWidget(parent) {
     details_->hide();
     layout->addWidget(details_);
 
+    scopeRow_ = new QWidget(this);
+    auto* scopeLayout = new QHBoxLayout(scopeRow_);
+    scopeLayout->setContentsMargins(0, 0, 0, 0);
+    scopeLabel_ = new QLabel(scopeRow_);
+    scopeLabel_->setObjectName(QStringLiteral("projectSearchScope"));
+    scopeLabel_->setTextFormat(Qt::PlainText);
+    scopeLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    auto* clearScope = new QToolButton(scopeRow_);
+    clearScope->setObjectName(QStringLiteral("projectSearchClearScope"));
+    clearScope->setIcon(Codicons::icon("close"));
+    clearScope->setAutoRaise(true);
+    clearScope->setToolTip(tr("Search across the workspace"));
+    clearScope->setAccessibleName(clearScope->toolTip());
+    scopeLayout->addWidget(scopeLabel_, 1);
+    scopeLayout->addWidget(clearScope);
+    scopeRow_->hide();
+    layout->addWidget(scopeRow_);
+
     results_ = new QTreeWidget(this);
     results_->setObjectName(QStringLiteral("projectSearchResults"));
     results_->setHeaderHidden(true);
@@ -168,6 +187,10 @@ SearchPanel::SearchPanel(QWidget* parent) : QWidget(parent) {
     debounce_->setSingleShot(true);
     debounce_->setInterval(250);
     connect(debounce_, &QTimer::timeout, this, &SearchPanel::startSearch);
+    connect(clearScope, &QToolButton::clicked, this, [this] {
+        setSearchDirectory({});
+        query_->setFocus();
+    });
     connect(query_, &QLineEdit::textChanged, this, &SearchPanel::scheduleSearch);
     connect(query_, &QLineEdit::returnPressed, this, &SearchPanel::startSearch);
     for (auto* button : {matchCase_, wholeWord_, regex_})
@@ -200,7 +223,7 @@ SearchPanel::SearchPanel(QWidget* parent) : QWidget(parent) {
         replacing_ = false;
         replaceButton_->setText(tr("Replace Selected"));
         for (QWidget* field : std::initializer_list<QWidget*>{query_, replacement_, include_, exclude_,
-                               matchCase_, wholeWord_, regex_, results_}) field->setEnabled(true);
+                               matchCase_, wholeWord_, regex_, results_, scopeRow_}) field->setEnabled(true);
         replaceSummary_ = tr("Replaced %1 matches in %2 files.")
             .arg(result.matchesReplaced).arg(result.filesChanged);
         if (result.cancelled) replaceSummary_ += tr(" Cancelled.");
@@ -284,8 +307,22 @@ SearchPanel::SearchPanel(QWidget* parent) : QWidget(parent) {
 }
 
 void SearchPanel::setRoots(const QStringList& roots) {
+    const bool resetScope = roots_ != roots && !searchDirectory_.isEmpty();
     roots_ = roots;
-    if (!query_->text().isEmpty()) scheduleSearch();
+    if (resetScope) setSearchDirectory({});
+    else if (!queryTextEmpty()) scheduleSearch();
+}
+
+void SearchPanel::setSearchDirectory(const QString& directory) {
+    if (searchDirectory_ == directory) return;
+    searchDirectory_ = directory;
+    scopeRow_->setVisible(!directory.isEmpty());
+    if (!directory.isEmpty()) {
+        const auto name = QFileInfo(directory).fileName();
+        scopeLabel_->setText(tr("Search in %1").arg(name.isEmpty() ? QDir::toNativeSeparators(directory) : name));
+        scopeLabel_->setToolTip(QDir::toNativeSeparators(directory));
+    }
+    scheduleSearch();
 }
 
 void SearchPanel::setShowHidden(bool show) {
@@ -318,7 +355,8 @@ void SearchPanel::scheduleSearch() {
     if (query_->text().isEmpty()) {
         debounce_->stop();
         results_->clear();
-        status_->setText(tr("Type to search across the workspace."));
+        status_->setText(searchDirectory_.isEmpty() ? tr("Type to search across the workspace.")
+                                                   : tr("Type to search this folder."));
         return;
     }
     debounce_->start();
@@ -335,6 +373,7 @@ ProjectSearchOptions SearchPanel::options() const {
     value.regularExpression = regex_->isChecked();
     value.showHidden = showHidden_;
     value.includeIgnored = includeIgnored_;
+    value.directory = searchDirectory_;
     return value;
 }
 
@@ -475,7 +514,7 @@ void SearchPanel::startReplace(ProjectReplaceRequest request) {
     service_.cancel();
     debounce_->stop();
     for (QWidget* field : std::initializer_list<QWidget*>{query_, replacement_, include_, exclude_,
-                           matchCase_, wholeWord_, regex_, results_}) field->setEnabled(false);
+                           matchCase_, wholeWord_, regex_, results_, scopeRow_}) field->setEnabled(false);
     replaceButton_->setText(tr("Cancel"));
     replaceButton_->setEnabled(true);
     status_->setText(tr("Replacing…"));

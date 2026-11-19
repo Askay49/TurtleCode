@@ -522,6 +522,8 @@ void MainWindow::createUi() {
     connect(explorer_, &ProjectExplorer::fileActivated, this, [this](const QString& path) {
         openFile(path);
     });
+    connect(explorer_, &ProjectExplorer::searchInFolderRequested, this, &MainWindow::showProjectSearch,
+            Qt::QueuedConnection);
     connect(searchPanel_, &SearchPanel::fileActivated, this,
             [this](const QString& path, int line, int column, int length) {
         openFile(path, line, column, length);
@@ -751,7 +753,7 @@ void MainWindow::createMenus() {
     auto* searchMenu = menuBar()->addMenu(I18n::text("&Search"));
     auto* searchAction = searchMenu->addAction(Codicons::icon("search"), I18n::text("Search in &Files..."));
     ShortcutManager::instance().bind("search.project", searchAction);
-    connect(searchAction, &QAction::triggered, this, &MainWindow::searchInProject);
+    connect(searchAction, &QAction::triggered, this, [this] { showProjectSearch(); });
     auto* findAction = searchMenu->addAction(Codicons::icon("search"), I18n::text("Find in Current File..."));
     ShortcutManager::instance().bind("search.find", findAction);
     connect(findAction, &QAction::triggered, this, [this] {
@@ -2035,12 +2037,10 @@ void MainWindow::updateWindowTitle() {
     setWindowTitle(parts.join(" — "));
 }
 
-void MainWindow::searchInProject() {
-    setSidebarVisible(true);
+void MainWindow::showProjectSearch(const QString& directory) {
+    searchPanel_->setSearchDirectory(directory);
     sidebarStack_->setCurrentWidget(searchPanel_);
-    explorerActivity_->setChecked(false);
-    searchActivity_->setChecked(true);
-    gitActivity_->setChecked(false);
+    setSidebarVisible(true);
     searchPanel_->focusSearch();
 }
 

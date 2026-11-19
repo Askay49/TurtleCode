@@ -1,4 +1,5 @@
 #pragma once
+#include <QContextMenuEvent>
 #include <QElapsedTimer>
 #include <QStatusBar>
 #include "search/SearchPanel.hpp"
@@ -130,5 +131,92 @@ static void explorerRevealTests(QTemporaryDir& temporary) {
     window.openPaths({earlyFile});
     assert(waitFor([&] { return activeFile() == earlyFile; }));
     assert(selectedPath() == lateFile);
+    closeDiscard(window);
+}
+
+static void explorerFolderSearchTests(QTemporaryDir& temporary) {
+    const QDir root(temporary.filePath("folder-search"));
+    const QString folder = root.filePath("src [old], backup");
+    const QString nested = folder + "/nested/deep.txt";
+    const QString inside = folder + "/inside.txt";
+    const QString outside = root.filePath("src [old], backup-other/outside.txt");
+    assert(QDir().mkpath(QFileInfo(nested).absolutePath()));
+    assert(QDir().mkpath(QFileInfo(outside).absolutePath()));
+    for (const auto& path : {nested, inside, outside}) {
+        QFile file(path);
+        assert(file.open(QIODevice::WriteOnly) && file.write("needle\n") == 7);
+    }
+
+    MainWindow window;
+    window.show();
+    window.activateWindow();
+    assert(waitFor([&] { return window.isActiveWindow(); }));
+    window.openPaths({root.path()});
+    auto* tree = window.findChild<ProjectExplorer*>();
+    auto* panel = window.findChild<SearchPanel*>();
+    auto* query = panel->findChild<QLineEdit*>("projectSearchInput");
+    auto* results = panel->findChild<QTreeWidget*>("projectSearchResults");
+    auto* scope = panel->findChild<QLabel*>("projectSearchScope");
+    auto* clearScope = panel->findChild<QToolButton*>("projectSearchClearScope");
+    auto* replace = panel->findChild<QToolButton*>("projectReplaceButton");
+    assert(tree && query && results && scope && clearScope && replace);
+    const auto resultPaths = [&] {
+        QSet<QString> paths;
+        for (int i = 0; i < results->topLevelItemCount(); ++i)
+            paths.insert(results->topLevelItem(i)->data(0, Qt::UserRole).toString());
+        return paths;
+    };
+    const auto openFolderSearch = [&] {
+        const auto name = QFileInfo(folder).fileName();
+        const auto findFolder = [&] { return tree->findItems(name, Qt::MatchExactly | Qt::MatchRecursive).value(0); };
+        assert(waitFor([&] { return findFolder() && tree->visualItemRect(findFolder()).isValid(); }));
+        tree->setFocus();
+        const auto position = tree->visualItemRect(findFolder()).center();
+        QTimer::singleShot(0, &window, [&] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            assert(menu);
+            const auto actions = menu->actions();
+            const auto action = std::find_if(actions.begin(), actions.end(), [](const QAction* item) {
+                return item->text() == I18n::text("Search in This Folder");
+            });
+            assert(action != actions.end());
+            QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(*action).center());
+        });
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position, tree->viewport()->mapToGlobal(position));
+        QApplication::sendEvent(tree->viewport(), &event);
+        assert(waitFor([&] { return panel->isVisible() && scope->isVisible(); }));
+        assert(scope->toolTip() == QDir::toNativeSeparators(folder));
+        assert(window.focusWidget() == query);
+        // The offscreen platform can leave the window inactive after a popup closes.
+        if (!window.isActiveWindow()) window.activateWindow();
+        assert(waitFor([&] { return query->hasFocus(); }));
+    };
+
+    query->setText("needle");
+    assert(waitFor([&] { return resultPaths() == QSet<QString>{nested, inside, outside}; }));
+    openFolderSearch();
+    assert(query->selectedText() == "needle");
+    assert(waitFor([&] { return resultPaths() == QSet<QString>{nested, inside}; }));
+    clearScope->click();
+    assert(!scope->isVisible());
+    assert(waitFor([&] { return resultPaths() == QSet<QString>{nested, inside, outside}; }));
+
+    window.findChild<QToolButton*>("explorerActivity")->click();
+    openFolderSearch();
+    panel->findChild<QToolButton*>("projectReplaceToggle")->click();
+    panel->findChild<QLineEdit*>("projectReplaceInput")->setText("changed");
+    assert(waitFor([&] { return replace->isEnabled(); }));
+    replace->click();
+    const auto read = [](const QString& path) {
+        QFile file(path);
+        assert(file.open(QIODevice::ReadOnly));
+        return file.readAll();
+    };
+    assert(waitFor([&] { return read(inside) == "changed\n" && read(nested) == "changed\n"; }));
+    assert(read(outside) == "needle\n");
+    assert(waitFor([&] { return results->topLevelItemCount() == 0 && query->isEnabled(); }));
+    QTest::keyClick(query, Qt::Key_F, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(!scope->isVisible());
+    assert(waitFor([&] { return resultPaths() == QSet<QString>{outside}; }));
     closeDiscard(window);
 }

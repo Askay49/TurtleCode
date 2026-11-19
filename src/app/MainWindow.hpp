@@ -133,7 +133,7 @@ private:
     void updateTabMru(QWidget* current);
     void restoreNavigationLocation(const QString& path, int line, int column);
     void openFolder();
-    void searchInProject();
+    void showProjectSearch(const QString& directory = {});
     void startProjectReplace(ProjectReplaceRequest request);
     void finishProjectReplace(const ProjectReplaceResult& result);
     void setProjectRoots(const QStringList& roots, bool explicitProject = true);

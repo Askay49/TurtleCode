@@ -117,7 +117,7 @@ ProjectSearchResult scanProject(const ProjectSearchOptions& options,const std::s
                 if(limited){++result.skippedFiles;if(result.warnings.size()<100)result.warnings<<path+": regular expression exceeded its execution budget";}
             } else if(result.matches.size()>firstMatch){result.fileHashes.insert(path,hash.result());result.matches.sealFile(firstMatch);}
             if(delivery.elapsed()>=200 && !cancelled->load()){progress(result);delivery.restart();}
-        },cancelled);
+        },cancelled,{},options.directory);
     }
     return result;
 }

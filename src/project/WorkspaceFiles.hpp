@@ -20,7 +20,8 @@ public:
     void clearRuleCache() { rules_.clear(); }
     void walk(const std::function<void(const QFileInfo&)>& file,
               const std::shared_ptr<std::atomic_bool>& cancel = {},
-              const std::function<void(const QString&)>& directory = {});
+              const std::function<void(const QString&)>& directory = {},
+              const QString& startDirectory = {});
 private:
     struct Rule { QRegularExpression expression; bool negative{}, directory{}; };
     const QList<Rule>& rules(const QString& directory);
