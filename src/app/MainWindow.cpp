@@ -44,6 +44,7 @@
 #include <QTabBar>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QAbstractItemModel>
 #include <QFrame>
 #include <QFileInfo>
 #include <QFile>
@@ -295,14 +296,50 @@ void MainWindow::createUi() {
 
     sidebarStack_ = new QStackedWidget(sidebar_);
     sidebarStack_->setObjectName("sidebarStack");
-    auto* explorerPage = new QWidget(sidebarStack_);
-    auto* explorerLayout = new QVBoxLayout(explorerPage);
+    explorerPage_ = new QWidget(sidebarStack_);
+    auto* explorerLayout = new QVBoxLayout(explorerPage_);
     explorerLayout->setContentsMargins(0, 0, 0, 0);
     explorerLayout->setSpacing(0);
-    auto* explorerHeading = new QLabel(I18n::text("Explorer"), explorerPage);
+    auto* explorerHeading = new QFrame(explorerPage_);
     explorerHeading->setObjectName("explorerHeading");
+    auto* explorerHeader = new QHBoxLayout(explorerHeading);
+    explorerHeader->setContentsMargins(12, 5, 6, 5);
+    explorerHeader->setSpacing(2);
+    auto* explorerTitle = new QLabel(I18n::text("Explorer"), explorerHeading);
+    explorerTitle->setObjectName("explorerHeadingTitle");
+    explorerTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    explorerHeader->addWidget(explorerTitle, 1);
     explorerLayout->addWidget(explorerHeading);
-    explorer_ = new ProjectExplorer(explorerPage);
+    explorer_ = new ProjectExplorer(explorerPage_);
+    const auto addExplorerButton = [&](const char* name, const char* icon, const char* label,
+                                       void (ProjectExplorer::*action)()) {
+        auto* button = new QToolButton(explorerHeading);
+        button->setObjectName(name);
+        button->setIcon(Codicons::icon(icon));
+        const QString text = I18n::text(label);
+        button->setToolTip(text);
+        button->setAccessibleName(text);
+        button->setAutoRaise(true);
+        button->setFocusPolicy(Qt::TabFocus);
+        button->setIconSize(QSize(16, 16));
+        button->setFixedSize(24, 24);
+        explorerHeader->addWidget(button);
+        connect(button, &QToolButton::clicked, explorer_, action);
+        return button;
+    };
+    auto* newFile = addExplorerButton("explorerNewFile", "new-file", "New File...", &ProjectExplorer::createFile);
+    auto* newFolder = addExplorerButton("explorerNewFolder", "new-folder", "New Folder...", &ProjectExplorer::createFolder);
+    auto* collapse = addExplorerButton("explorerCollapseAll", "collapse-all", "Collapse all", &ProjectExplorer::collapseFolders);
+    const auto updateExplorerButtons = [tree = explorer_, newFile, newFolder, collapse] {
+        const bool hasRoot = tree->topLevelItemCount() > 0;
+        for (auto* button : {newFile, newFolder, collapse}) button->setEnabled(hasRoot);
+    };
+    connect(explorer_->model(), &QAbstractItemModel::modelReset, explorerHeading, updateExplorerButtons);
+    connect(explorer_->model(), &QAbstractItemModel::rowsInserted, explorerHeading,
+            [updateExplorerButtons](const QModelIndex& parent) {
+        if (!parent.isValid()) updateExplorerButtons();
+    });
+    updateExplorerButtons();
     explorer_->setVimEnabled(QSettings().value("editor/vimMode", false).toBool());
     autoRevealActiveFile_ = QSettings().value("view/autoRevealActiveFile", false).toBool();
     connect(explorer_, &ProjectExplorer::filesChanged, workspaceIndex_, &WorkspaceIndex::invalidate);
@@ -312,7 +349,7 @@ void MainWindow::createUi() {
     });
     explorerLayout->addWidget(explorer_, 1);
     searchPanel_ = new SearchPanel(sidebarStack_);
-    sidebarStack_->addWidget(explorerPage);
+    sidebarStack_->addWidget(explorerPage_);
     sidebarStack_->addWidget(searchPanel_);
     gitPanel_ = new GitPanel(sidebarStack_); sidebarStack_->addWidget(gitPanel_);
     connect(gitPanel_, &GitPanel::discardRequested, this, [this](const QString& repository,const GitEntry& entry) {
@@ -332,7 +369,7 @@ void MainWindow::createUi() {
         // A background refresh may have started while the question was open.
         if(gitPanel_->service()->busy() || gitPanel_->service()->repository()!=repository) return;
         gitDiscardInProgress_=true; branchRepository_=repository; branchLockedEditors_=affected;
-        explorer_->setEnabled(false); searchPanel_->setEnabled(false);
+        explorerPage_->setEnabled(false); searchPanel_->setEnabled(false);
         for(const auto& editor:affected) if(editor) editor->setBusy(true);
         if(gitDiff_) gitDiff_->hide();
         gitPanel_->service()->discard(entry);
@@ -353,7 +390,7 @@ void MainWindow::createUi() {
             if(!success) {
                 for(const auto& editor:branchLockedEditors_) if(editor) editor->setBusy(false);
                 branchLockedEditors_.clear(); branchRepository_.clear();
-                explorer_->setEnabled(true); searchPanel_->setEnabled(true); return;
+                explorerPage_->setEnabled(true); searchPanel_->setEnabled(true); return;
             }
         }
         finishGitBranchSwitch(repository);
@@ -725,7 +762,7 @@ QString MainWindow::activeExplorerPath() const {
 
 void MainWindow::syncExplorerToActiveFile() {
     if (closing_ || !autoRevealActiveFile_ || sidebar_->isHidden() ||
-        sidebarStack_->currentWidget() != explorer_->parentWidget()) {
+        sidebarStack_->currentWidget() != explorerPage_) {
         explorer_->cancelAutomaticReveal();
         return;
     }
@@ -1013,7 +1050,7 @@ void MainWindow::createMenus() {
     focusTreeAction->setObjectName("view.focusProjectTree");
     ShortcutManager::instance().bind("view.focusProjectTree", focusTreeAction);
     connect(focusTreeAction, &QAction::triggered, this, [this] {
-        sidebarStack_->setCurrentWidget(explorer_->parentWidget());
+        sidebarStack_->setCurrentWidget(explorerPage_);
         if (sidebar_->isHidden()) setSidebarVisible(true);
         explorer_->setFocus(Qt::ShortcutFocusReason);
     });
@@ -1026,7 +1063,7 @@ void MainWindow::createMenus() {
             statusBar()->showMessage(I18n::text("No active file to show in the project tree."), 5000);
             return;
         }
-        sidebarStack_->setCurrentWidget(explorer_->parentWidget());
+        sidebarStack_->setCurrentWidget(explorerPage_);
         setSidebarVisible(true);
         explorer_->revealPath(path, true);
     });
@@ -1700,7 +1737,7 @@ void MainWindow::switchGitBranch(const QString& repository, const QString& branc
         affected.append(editor);
     }
     branchRepository_ = repository; branchLockedEditors_ = affected;
-    explorer_->setEnabled(false); searchPanel_->setEnabled(false);
+    explorerPage_->setEnabled(false); searchPanel_->setEnabled(false);
     for (const auto& editor : affected) if (editor) editor->setBusy(true);
     if (gitDiff_) gitDiff_->hide();
     if(branch.isEmpty()) gitPanel_->pullRepository(repository);
@@ -1710,7 +1747,7 @@ void MainWindow::switchGitBranch(const QString& repository, const QString& branc
 void MainWindow::finishGitBranchSwitch(const QString& repository) {
     if (repository != branchRepository_) return;
     const auto editors = branchLockedEditors_; branchLockedEditors_.clear(); branchRepository_.clear();
-    explorer_->setEnabled(true); searchPanel_->setEnabled(true);
+    explorerPage_->setEnabled(true); searchPanel_->setEnabled(true);
     QVector<QPointer<EditorWidget>> removed;
     for (const auto& editor : editors) {
         if (!editor) continue;
@@ -2078,12 +2115,12 @@ void MainWindow::startProjectReplace(ProjectReplaceRequest request) {
             replaceLockedEditors_.push_back(editor);
         }
     }
-    explorer_->setEnabled(false);
+    explorerPage_->setEnabled(false);
     searchPanel_->startReplace(std::move(request));
 }
 
 void MainWindow::finishProjectReplace(const ProjectReplaceResult& result) {
-    explorer_->setEnabled(true);
+    explorerPage_->setEnabled(true);
     const QSet<QString> changed(result.changedPaths.cbegin(), result.changedPaths.cend());
     for (const auto& widget : replaceLockedEditors_) {
         auto* editor = qobject_cast<EditorWidget*>(widget.data());

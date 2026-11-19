@@ -320,3 +320,87 @@ static void explorerKeyboardTests(QTemporaryDir& temporary) {
     closeDiscard(window);
     settings.remove("editor/previewFiles");
 }
+
+static void explorerHeaderTests(QTemporaryDir& temporary) {
+    const QDir root(temporary.filePath("tree-header"));
+    assert(QDir().mkpath(root.filePath("src/sub")));
+    {
+        QFile hidden(root.filePath(".hidden.txt"));
+        assert(hidden.open(QIODevice::WriteOnly));
+    }
+
+    MainWindow window;
+    window.show();
+    window.activateWindow();
+    auto* tree = window.findChild<ProjectExplorer*>();
+    auto* header = window.findChild<QFrame*>("explorerHeading");
+    assert(tree && header);
+    auto* newFile = header->findChild<QToolButton*>("explorerNewFile");
+    auto* newFolder = header->findChild<QToolButton*>("explorerNewFolder");
+    auto* collapse = header->findChild<QToolButton*>("explorerCollapseAll");
+    auto* tabs = window.findChild<QTabWidget*>("editorTabs");
+    assert(newFile && newFolder && collapse && tabs);
+    tree->setRoots({});
+    assert(!newFile->isEnabled() && !newFolder->isEnabled() && !collapse->isEnabled());
+    window.openPaths({root.path()});
+    const auto findItem = [&](const QString& name) {
+        return tree->findItems(name, Qt::MatchExactly | Qt::MatchRecursive).value(0);
+    };
+    assert(waitFor([&] { return window.isActiveWindow() && findItem("src"); }));
+    for (auto* button : {newFile, newFolder, collapse}) {
+        assert(button->isEnabled() && button->isVisible());
+        assert(header->rect().contains(button->geometry()) && !button->icon().isNull());
+        assert(!button->accessibleName().isEmpty() && button->accessibleName() == button->toolTip());
+    }
+    assert(newFile->geometry().right() < newFolder->geometry().left());
+    assert(newFolder->geometry().right() < collapse->geometry().left());
+
+    const auto create = [&](QToolButton* button, const QString& title, const QString& name) {
+        QTimer::singleShot(0, &window, [&] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            assert(dialog && dialog->windowTitle() == title);
+            dialog->setTextValue(name);
+            dialog->accept();
+        });
+        QTest::mouseClick(button, Qt::LeftButton);
+    };
+    assert(!tree->currentItem());
+    create(newFolder, I18n::text("New Folder"), "assets");
+    assert(waitFor([&] { return findItem("assets"); }));
+    assert(QFileInfo(root.filePath("assets")).isDir());
+
+    auto* src = findItem("src");
+    tree->setCurrentItem(src);
+    tree->setFocus();
+    QTest::keyClick(tree, Qt::Key_Return);
+    assert(waitFor([&] { return findItem("sub"); }));
+    create(newFile, I18n::text("New File"), "created.txt");
+    const QString created = root.filePath("src/created.txt");
+    assert(waitFor([&] {
+        const auto* editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
+        return findItem("created.txt") && editor && !editor->isBusy() && editor->filePath() == created;
+    }));
+    tree->setCurrentItem(findItem("created.txt"));
+    create(newFolder, I18n::text("New Folder"), "generated");
+    assert(waitFor([&] { return findItem("generated"); }));
+    assert(QFileInfo(root.filePath("src/generated")).isDir());
+
+    auto* sub = findItem("sub");
+    auto* rootItem = tree->topLevelItem(0);
+    if (!window.isActiveWindow()) window.activateWindow();
+    tree->setCurrentItem(sub);
+    tree->setFocus();
+    assert(waitFor([&] { return tree->hasFocus(); }));
+    QTest::keyClick(tree, Qt::Key_Return);
+    assert(rootItem->isExpanded() && src->isExpanded() && sub->isExpanded());
+    tree->setShowHidden(true); // A refresh has saved the current expanded paths.
+    QTest::mouseClick(collapse, Qt::LeftButton);
+    assert(tree->currentItem() == rootItem);
+    assert(waitFor([&] { return findItem(".hidden.txt"); }));
+    assert(!rootItem->isExpanded() && !src->isExpanded() && !sub->isExpanded());
+    assert(tree->hasFocus());
+
+    QTest::keyClick(tree, Qt::Key_Return);
+    assert(rootItem->isExpanded() && !src->isExpanded());
+    closeDiscard(window);
+}

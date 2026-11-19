@@ -20,6 +20,9 @@ public:
     void setVimEnabled(bool enabled) { vimEnabled_ = enabled; }
     void revealPath(const QString& path, bool interactive = false);
     void cancelAutomaticReveal();
+    void createFile();
+    void createFolder();
+    void collapseFolders();
     [[nodiscard]] QStringList roots() const { return roots_; }
 
 signals:
@@ -64,6 +67,7 @@ private:
     void remapTreePaths(const QString& oldPath, const QString& newPath);
     void restoreExpandedPaths();
     void showContextMenu(const QPoint& position);
+    [[nodiscard]] QString creationDirectory() const;
     void createFileIn(const QString& directory);
     void createFolderIn(const QString& directory);
     void renamePath(const QString& path);

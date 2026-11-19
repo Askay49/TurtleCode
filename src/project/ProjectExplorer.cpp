@@ -230,6 +230,16 @@ void ProjectExplorer::cancelAutomaticReveal() {
     if (!interactiveReveal_) revealPaths_.clear();
 }
 
+void ProjectExplorer::collapseFolders() {
+    finishReveal(true);
+    pendingExpandedPaths_.clear();
+    auto* item = currentItem();
+    while (item && item->parent())
+        item = item->parent();
+    collapseAll();
+    if (item) setCurrentItem(item);
+}
+
 void ProjectExplorer::continueReveal() {
     if (revealPaths_.isEmpty()) return;
     auto* item = findItem(revealPaths_.front());
@@ -658,6 +668,27 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
     }
 }
 
+QString ProjectExplorer::creationDirectory() const {
+    for (auto* item = currentItem(); item; item = item->parent()) {
+        const QString path = item->data(0, Qt::UserRole).toString();
+        if (!path.isEmpty()) {
+            if (item->childIndicatorPolicy() == QTreeWidgetItem::ShowIndicator) return path;
+            return QFileInfo(path).absolutePath();
+        }
+    }
+    return roots_.value(0);
+}
+
+void ProjectExplorer::createFile() {
+    const QString directory = creationDirectory();
+    if (!directory.isEmpty()) createFileIn(directory);
+}
+
+void ProjectExplorer::createFolder() {
+    const QString directory = creationDirectory();
+    if (!directory.isEmpty()) createFolderIn(directory);
+}
+
 void ProjectExplorer::createFileIn(const QString& directory) {
     const QString name = IconDialogs::InputDialog::getText(
         this, I18n::text("New File"), I18n::text("File name:"), QLineEdit::Normal, QString());
@@ -677,6 +708,7 @@ void ProjectExplorer::createFileIn(const QString& directory) {
     }
     file.close();
     refreshDirectory(directory);
+    emit filesChanged();
     emit fileActivated(path, false);
 }
 
@@ -696,6 +728,7 @@ void ProjectExplorer::createFolderIn(const QString& directory) {
         return;
     }
     refreshDirectory(directory);
+    emit filesChanged();
 }
 
 

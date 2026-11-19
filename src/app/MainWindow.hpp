@@ -213,6 +213,7 @@ private:
     QHash<QString, QJsonArray> lspProblems_;
     QLabel* lspStatus_{nullptr};
 
+    QWidget* explorerPage_{nullptr};
     ProjectExplorer* explorer_{nullptr};
     SearchPanel* searchPanel_{nullptr};
     GitPanel* gitPanel_{nullptr};
