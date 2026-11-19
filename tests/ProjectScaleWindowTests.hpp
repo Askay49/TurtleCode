@@ -1,8 +1,11 @@
 #pragma once
+#include <QClipboard>
 #include <QContextMenuEvent>
 #include <QElapsedTimer>
+#include <QMimeData>
 #include <QSignalSpy>
 #include <QStatusBar>
+#include "debug/DebugPanel.hpp"
 #include "search/SearchPanel.hpp"
 static void projectScaleWindowTests(QTemporaryDir& temporary) {
     const auto root=temporary.filePath("many-files");assert(QDir().mkpath(root));
@@ -403,6 +406,160 @@ static void explorerHeaderTests(QTemporaryDir& temporary) {
     QTest::keyClick(tree, Qt::Key_Return);
     assert(rootItem->isExpanded() && !src->isExpanded());
     closeDiscard(window);
+}
+
+static void explorerFileTransferTests(QTemporaryDir& temporary) {
+    const QDir root(temporary.filePath("tree-transfer"));
+    const QString original = root.filePath("report.tar.gz");
+    const QString source = root.filePath("source");
+    const QString sourceFile = source + "/nested/main.txt";
+    const QString target = root.filePath("target");
+    const QString targetFile = target + "/report.tar.gz";
+    assert(QDir().mkpath(source + "/nested") && QDir().mkpath(target));
+    const auto write = [](const QString& path, const QByteArray& text) {
+        QFile file(path);
+        assert(file.open(QIODevice::WriteOnly) && file.write(text) == text.size());
+    };
+    const auto read = [](const QString& path) {
+        QFile file(path);
+        assert(file.open(QIODevice::ReadOnly));
+        return file.readAll();
+    };
+    write(original, "original\n");
+    write(targetFile, "existing\n");
+    write(sourceFile, "text\n");
+    write(source + "/.hidden", "hidden\n");
+    assert(QFile::link(root.filePath("missing"), source + "/nested/link"));
+    const auto privateReadOnly = QFile::ReadOwner | QFile::ExeOwner;
+    assert(QFile::setPermissions(source + "/nested", privateReadOnly));
+
+    MainWindow window;
+    window.show();
+    window.activateWindow();
+    window.openPaths({root.path()});
+    auto* tree = window.findChild<ProjectExplorer*>();
+    auto* tabs = window.findChild<QTabWidget*>("editorTabs");
+    auto* debug = window.findChild<DebugPanel*>();
+    auto* clipboard = QApplication::clipboard();
+    assert(tree && tabs && debug);
+    const auto select = [&](const QString& path) {
+        tree->revealPath(path, true);
+        if (!window.isActiveWindow()) window.activateWindow();
+        tree->setFocus();
+        assert(waitFor([&] {
+            return tree->hasFocus() && tree->currentItem() && tree->currentItem()->toolTip(0) == path;
+        }));
+    };
+    const auto key = [&](Qt::Key shortcut) { QTest::keyClick(tree, shortcut, Qt::ControlModifier); };
+    const auto menuAction = [&](const QString& name) {
+        const QPoint point = tree->visualItemRect(tree->currentItem()).center();
+        QTimer::singleShot(0, &window, [&] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            assert(menu);
+            for (auto* action : menu->actions()) {
+                if (action->text() != name) continue;
+                assert(action->isEnabled());
+                QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(action).center());
+                return;
+            }
+            assert(false);
+        });
+        QContextMenuEvent event(QContextMenuEvent::Mouse, point, tree->viewport()->mapToGlobal(point));
+        QApplication::sendEvent(tree->viewport(), &event);
+    };
+    const auto resolveConflict = [&](bool keepBoth) {
+        QTimer::singleShot(0, &window, [keepBoth] {
+            auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            assert(dialog && dialog->windowTitle() == I18n::text("Name conflict"));
+            if (!keepBoth) {
+                QTest::keyClick(dialog, Qt::Key_Escape);
+                return;
+            }
+            for (auto* button : dialog->buttons()) {
+                if (dialog->buttonRole(button) != QMessageBox::AcceptRole) continue;
+                button->click();
+                return;
+            }
+            assert(false);
+        });
+    };
+
+    select(original);
+    key(Qt::Key_C);
+    assert(clipboard->mimeData()->urls() == QList<QUrl>{QUrl::fromLocalFile(original)});
+    select(targetFile);
+    resolveConflict(false);
+    key(Qt::Key_V);
+    const QString targetCopy = target + "/report copy.tar.gz";
+    assert(!QFileInfo::exists(targetCopy) && read(targetFile) == "existing\n");
+    select(targetFile);
+    resolveConflict(true);
+    key(Qt::Key_V);
+    assert(waitFor([&] { return QFileInfo::exists(targetCopy); }));
+    assert(read(targetCopy) == "original\n" && read(targetFile) == "existing\n");
+
+    select(original);
+    menuAction(I18n::text("Duplicate"));
+    const QString duplicate = root.filePath("report copy.tar.gz");
+    assert(waitFor([&] { return QFileInfo::exists(duplicate); }));
+    assert(read(duplicate) == "original\n");
+
+    window.openPaths({sourceFile});
+    assert(waitFor([&] {
+        const auto* editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
+        return editor && !editor->isBusy() && editor->filePath() == sourceFile;
+    }));
+    auto* editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
+    editor->setFocus();
+    clipboard->setText("unsaved ");
+    QTest::keyClick(editor, Qt::Key_V, Qt::ControlModifier);
+    assert(editor->isModified() && editor->lspText().contains("unsaved "));
+    debug->toggleBreakpoint(sourceFile, 1);
+
+    select(source);
+    menuAction(I18n::text("Cut"));
+    select(target);
+    editor->setBusy(true);
+    QSignalSpy errors(tree, &ProjectExplorer::backgroundError);
+    key(Qt::Key_V);
+    assert(errors.count() == 1 && !QFileInfo::exists(target + "/source"));
+    assert(clipboard->mimeData()->urls() == QList<QUrl>{QUrl::fromLocalFile(source)});
+    editor->setBusy(false);
+
+    select(source);
+    menuAction(I18n::text("Copy"));
+    select(source + "/nested");
+    QTimer::singleShot(0, &window, [] {
+        auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        assert(dialog && dialog->text() == I18n::text("A folder cannot be copied or moved into itself."));
+        dialog->button(QMessageBox::Ok)->click();
+    });
+    key(Qt::Key_V);
+    assert(!QFileInfo::exists(source + "/nested/source"));
+    select(target);
+    menuAction(I18n::text("Paste"));
+    const QString sourceCopy = target + "/source";
+    assert(waitFor([&] { return QFileInfo::exists(sourceCopy + "/nested/main.txt"); }));
+    assert(read(sourceCopy + "/nested/main.txt") == "text\n");
+    assert(read(sourceCopy + "/.hidden") == "hidden\n");
+    assert(QFileInfo(sourceCopy + "/nested/link").isSymLink());
+    assert(QFileInfo(sourceCopy + "/nested").permissions() == QFileInfo(source + "/nested").permissions());
+
+    select(source);
+    key(Qt::Key_X);
+    select(target);
+    resolveConflict(true);
+    key(Qt::Key_V);
+    const QString moved = target + "/source copy/nested/main.txt";
+    assert(waitFor([&] { return editor->filePath() == moved; }));
+    assert(read(moved) == "text\n" && !QFileInfo::exists(source));
+    assert(!clipboard->mimeData() || clipboard->mimeData()->urls().isEmpty());
+    assert(editor->isModified() && editor->lspText().contains("unsaved "));
+    assert(debug->breakpoints(sourceFile).isEmpty() && debug->breakpoints(moved) == QSet<int>{1});
+    select(moved);
+    closeDiscard(window);
+    assert(QFile::setPermissions(sourceCopy + "/nested", privateReadOnly | QFile::WriteOwner));
+    assert(QFile::setPermissions(QFileInfo(moved).absolutePath(), privateReadOnly | QFile::WriteOwner));
 }
 
 static void explorerCompactFolderTests(QTemporaryDir& temporary) {

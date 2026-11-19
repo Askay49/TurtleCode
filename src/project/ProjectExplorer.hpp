@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QSet>
 #include <QPersistentModelIndex>
+#include <functional>
 
 class ProjectExplorer final : public QTreeWidget {
     Q_OBJECT
@@ -19,6 +20,7 @@ public:
     void setIncludeIgnored(bool include);
     void setCompactFolders(bool compact);
     void setVimEnabled(bool enabled) { vimEnabled_ = enabled; }
+    void setPathBusyCheck(std::function<bool(const QString&)> check);
     void revealPath(const QString& path, bool interactive = false);
     void cancelAutomaticReveal();
     void createFile();
@@ -76,6 +78,13 @@ private:
     [[nodiscard]] QString creationDirectory() const;
     void createFileIn(const QString& directory);
     void createFolderIn(const QString& directory);
+    [[nodiscard]] bool canCutOrDuplicate(const QString& path) const;
+    [[nodiscard]] static QString clipboardPath();
+    void copyPathToClipboard(const QString& path, bool cut);
+    void pasteInto(const QString& directory);
+    void duplicatePath(const QString& path);
+    bool transferPath(const QString& source, const QString& directory, bool move, bool duplicate = false);
+    bool movePath(const QString& source, const QString& destination);
     void renamePath(const QString& path);
     void deletePath(const QString& path);
     [[nodiscard]] QTreeWidgetItem* findItem(const QString& path) const;
@@ -86,6 +95,7 @@ private:
     mutable QHash<QString,QPersistentModelIndex> pathIndex_;
     QStringList roots_;
     QFileSystemWatcher watcher_;
+    std::function<bool(const QString&)> pathBusyCheck_;
     QHash<QString, bool> loaded_;
     QHash<QString, quint64> loading_;
     QHash<QString, bool> reloadPending_;
@@ -99,4 +109,5 @@ private:
     bool showHidden_{false}, includeIgnored_{false};
     bool vimEnabled_{false};
     bool compactFolders_{false};
+    bool copyingPath_{false};
 };

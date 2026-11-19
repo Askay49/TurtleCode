@@ -173,6 +173,7 @@ if(TURTLE_CODE_BUILD_APP)
         src/debug/DebugConfiguration.hpp
         src/project/ProjectExplorer.cpp
         src/project/ProjectExplorer.hpp
+        src/project/ProjectExplorerTransfer.cpp
         src/search/ProjectSearchService.cpp
         src/search/ProjectSearchService.hpp
         src/search/SearchPanel.cpp

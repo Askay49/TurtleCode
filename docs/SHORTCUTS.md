@@ -64,6 +64,10 @@ the tree. In the editor, F2 invokes symbol rename. With Vim mode enabled,
 `j` and `k` move the tree selection down and up, and `h` and `l` collapse
 and expand the selected folder.
 
+With the tree focused, **Ctrl+C**, **Ctrl+X** and **Ctrl+V** copy, cut and
+paste files or folders. Paste uses the selected folder, the selected file's
+parent, or the project root. The context menu also offers **Duplicate**.
+
 Line operations are available in **Code / Код**:
 
 | Command | Default shortcut |

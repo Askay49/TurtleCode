@@ -590,6 +590,17 @@ void MainWindow::createUi() {
         if (gitDiff_) gitDiff_->hide();
         updateWindowTitle();
     });
+    explorer_->setPathBusyCheck([this](const QString& source) {
+        const QString prefix = source + QDir::separator();
+        for (int i = 0; i < tabs_->count(); ++i) {
+            const auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
+            if (!editor || !editor->isBusy()) continue;
+            const QString path = editor->filePath().isEmpty()
+                ? editor->property("openingPath").toString() : editor->filePath();
+            if (path == source || path.startsWith(prefix)) return true;
+        }
+        return false;
+    });
     connect(explorer_, &ProjectExplorer::pathRenamed, this,
             [this](const QString& oldPath, const QString& newPath) {
         debugPanel_->renameSource(oldPath,newPath);

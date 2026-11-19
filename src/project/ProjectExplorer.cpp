@@ -75,6 +75,11 @@ void setItemPath(QTreeWidgetItem* item, const QString& first, const QString& pat
     item->setToolTip(0, path);
 }
 
+bool matchesFileClipboardKey(const QKeyEvent* event) {
+    return event->matches(QKeySequence::Copy) || event->matches(QKeySequence::Cut) ||
+           event->matches(QKeySequence::Paste);
+}
+
 QString compactEnd(const QString& first, WorkspaceFiles& filter,
                    const std::shared_ptr<std::atomic_bool>& cancel) {
     QString path = first;
@@ -151,8 +156,7 @@ ProjectExplorer::ProjectExplorer(QWidget* parent) : QTreeWidget(parent) {
 bool ProjectExplorer::event(QEvent* event) {
     if (event->type() == QEvent::ShortcutOverride) {
         const auto* key = static_cast<QKeyEvent*>(event);
-        if (key->keyCombination() == QKeyCombination(Qt::Key_F2)) {
-            // Claim F2 before the window shortcut for LSP symbol rename.
+        if (key->keyCombination() == QKeyCombination(Qt::Key_F2) || matchesFileClipboardKey(key)) {
             event->accept();
             return true;
         }
@@ -164,6 +168,18 @@ void ProjectExplorer::keyPressEvent(QKeyEvent* event) {
     pendingSelectionPath_.clear();
     const int key = event->key();
     const auto modifiers = event->modifiers();
+
+    if (matchesFileClipboardKey(event)) {
+        if (!event->isAutoRepeat()) {
+            if (event->matches(QKeySequence::Paste)) {
+                pasteInto(creationDirectory());
+            } else if (const auto* item = currentItem()) {
+                copyPathToClipboard(itemPath(item), event->matches(QKeySequence::Cut));
+            }
+        }
+        event->accept();
+        return;
+    }
 
     if ((key == Qt::Key_Return || key == Qt::Key_Enter) &&
         (modifiers & ~Qt::KeypadModifier) == Qt::NoModifier) {
@@ -841,6 +857,25 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
     QAction* copyRelativePathAction = nullptr;
     const QString selectedRoot = item
         ? item->data(0, Qt::UserRole + 1).toString() : QString();
+    menu.addSeparator();
+    QAction* cutAction = nullptr;
+    QAction* copyAction = nullptr;
+    QAction* duplicateAction = nullptr;
+    if (item) {
+        cutAction = menu.addAction(Codicons::icon("screen-cut"), I18n::text("Cut"));
+        cutAction->setShortcut(QKeySequence::Cut);
+        cutAction->setEnabled(canCutOrDuplicate(selectedPath));
+        copyAction = menu.addAction(Codicons::icon("copy"), I18n::text("Copy"));
+        copyAction->setShortcut(QKeySequence::Copy);
+        copyAction->setEnabled(selectedInfo.exists() || selectedInfo.isSymLink());
+    }
+    auto* pasteAction = menu.addAction(Codicons::icon("clippy"), I18n::text("Paste"));
+    pasteAction->setShortcut(QKeySequence::Paste);
+    pasteAction->setEnabled(!copyingPath_ && !clipboardPath().isEmpty());
+    if (item) {
+        duplicateAction = menu.addAction(Codicons::icon("files"), I18n::text("Duplicate"));
+        duplicateAction->setEnabled(!copyingPath_ && canCutOrDuplicate(selectedPath));
+    }
     if (item) {
         menu.addSeparator();
         renameAction = menu.addAction(Codicons::icon("edit"), I18n::text("Rename..."));
@@ -866,6 +901,14 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
                                      .arg(QDir::toNativeSeparators(targetDirectory)));
     } else if (terminalAction && chosen == terminalAction) {
         emit newTerminalRequested(targetDirectory);
+    } else if (cutAction && chosen == cutAction) {
+        copyPathToClipboard(selectedPath, true);
+    } else if (copyAction && chosen == copyAction) {
+        copyPathToClipboard(selectedPath, false);
+    } else if (chosen == pasteAction) {
+        pasteInto(targetDirectory);
+    } else if (duplicateAction && chosen == duplicateAction) {
+        duplicatePath(selectedPath);
     } else if (renameAction && chosen == renameAction) {
         renamePath(selectedPath);
     } else if (deleteAction && chosen == deleteAction) {
