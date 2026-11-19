@@ -658,6 +658,7 @@ int main(int argc,char**argv) {
         projectScaleWindowTests(directory);
         explorerRevealTests(directory);
         explorerFolderSearchTests(directory);
+        explorerKeyboardTests(directory);
         return 0;
     }
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--vim-insert"){vimInsertWindowTests(directory);return 0;}

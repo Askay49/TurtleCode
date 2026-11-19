@@ -1,6 +1,7 @@
 #pragma once
 #include <QContextMenuEvent>
 #include <QElapsedTimer>
+#include <QSignalSpy>
 #include <QStatusBar>
 #include "search/SearchPanel.hpp"
 static void projectScaleWindowTests(QTemporaryDir& temporary) {
@@ -16,7 +17,9 @@ static void projectScaleWindowTests(QTemporaryDir& temporary) {
     };
     assert(waitFor([&]{return pager(500)!=nullptr;}));
     assert(tree->topLevelItem(0)->childCount()==501);
-    Q_EMIT tree->itemClicked(pager(500),0);
+    tree->setFocus();
+    tree->setCurrentItem(pager(500));
+    QTest::keyClick(tree, Qt::Key_Return);
     assert(waitFor([&]{return pager(0)!=nullptr && tree->topLevelItem(0)->childCount()==151;}));
     assert(gap<1000);window.grab().save("/tmp/turtle-large-project.png");
     auto* panel=window.findChild<SearchPanel*>();assert(panel);
@@ -219,4 +222,101 @@ static void explorerFolderSearchTests(QTemporaryDir& temporary) {
     assert(!scope->isVisible());
     assert(waitFor([&] { return resultPaths() == QSet<QString>{outside}; }));
     closeDiscard(window);
+}
+
+static void explorerKeyboardTests(QTemporaryDir& temporary) {
+    const QDir root(temporary.filePath("tree-keys"));
+    const QString folder = root.filePath("src");
+    const QString original = folder + "/old.txt";
+    const QString renamed = folder + "/renamed.txt";
+    assert(QDir().mkpath(folder));
+    {
+        QFile file(original);
+        assert(file.open(QIODevice::WriteOnly) && file.write("sample\n") == 7);
+    }
+    QSettings settings;
+    settings.setValue("editor/previewFiles", true);
+
+    MainWindow window;
+    window.show();
+    window.activateWindow();
+    window.openPaths({root.path()});
+    auto* tree = window.findChild<ProjectExplorer*>();
+    auto* tabs = window.findChild<QTabWidget*>("editorTabs");
+    auto* search = window.findChild<QToolButton*>("searchActivity");
+    auto* focusTree = window.findChild<QAction*>("view.focusProjectTree");
+    auto* sidebar = window.findChild<QAction*>("view.explorer");
+    auto* vim = window.findChild<QAction*>("settings.vimMode");
+    auto* symbolRename = window.findChild<QAction*>("code.rename");
+    assert(tree && tabs && search && focusTree && sidebar && vim && symbolRename);
+    assert(focusTree->shortcut() == QKeySequence("Ctrl+Shift+E"));
+    const auto findFolder = [&] { return tree->topLevelItem(0)->child(0); };
+    assert(waitFor([&] { return window.isActiveWindow() && findFolder(); }));
+
+    search->click();
+    sidebar->trigger();
+    assert(!tree->isVisible());
+    QTimer::singleShot(0, &window, [] {
+        auto* dialog = QApplication::activeModalWidget();
+        assert(dialog);
+        auto* input = dialog->findChild<QLineEdit*>("commandPaletteInput");
+        assert(input);
+        input->setText("view.focusProjectTree");
+        QTest::keyClick(input, Qt::Key_Return);
+    });
+    window.findChild<QAction*>("navigation.commands")->trigger();
+    assert(waitFor([&] { return tree->isVisible() && tree->hasFocus(); }));
+
+    auto* folderItem = findFolder();
+    tree->setCurrentItem(folderItem);
+    QTest::keyClick(tree, Qt::Key_L);
+    assert(!folderItem->isExpanded());
+    QTest::keyClick(tree, Qt::Key_Return);
+    assert(waitFor([&] { return folderItem->isExpanded() && folderItem->childCount() == 1; }));
+    QTest::keyClick(tree, Qt::Key_Enter, Qt::KeypadModifier);
+    assert(!folderItem->isExpanded());
+
+    vim->trigger();
+    assert(vim->isChecked());
+    QTest::keyClick(tree, Qt::Key_L);
+    assert(folderItem->isExpanded());
+    QTest::keyClick(tree, Qt::Key_J);
+    assert(tree->currentItem() == folderItem->child(0));
+    QTest::keyClick(tree, Qt::Key_K);
+    assert(tree->currentItem() == folderItem);
+    QTest::keyClick(tree, Qt::Key_H);
+    assert(!folderItem->isExpanded() && tabs->count() == 0);
+    QTest::keyClick(tree, Qt::Key_L);
+    QTest::keyClick(tree, Qt::Key_J);
+    QTest::keyClick(tree, Qt::Key_Return);
+    auto* editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
+    assert(editor && waitFor([&] { return !editor->isBusy() && editor->filePath() == original; }));
+    auto* title = window.findChild<QToolButton*>("editorPaneTitle");
+    assert(editor->hasFocus() && title && !title->accessibleName().startsWith("Preview of "));
+
+    QSignalSpy symbolRenames(symbolRename, &QAction::triggered);
+    QTest::keyClick(editor, Qt::Key_F2);
+    assert(symbolRenames.count() == 1);
+    QTest::keyClick(editor, Qt::Key_E, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(tree->hasFocus() && tree->currentItem() == folderItem->child(0));
+    bool renamedFromTree = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        assert(dialog && dialog->textValue() == "old.txt");
+        dialog->setTextValue("renamed.txt");
+        renamedFromTree = true;
+        dialog->accept();
+    });
+    QTest::keyClick(tree, Qt::Key_F2);
+    assert(renamedFromTree && symbolRenames.count() == 1);
+    assert(QFileInfo::exists(renamed) && !QFileInfo::exists(original));
+    assert(editor->filePath() == renamed && tree->currentItem()->text(0) == "renamed.txt");
+
+    vim->trigger();
+    assert(!vim->isChecked());
+    tree->setCurrentItem(folderItem);
+    QTest::keyClick(tree, Qt::Key_H);
+    assert(folderItem->isExpanded());
+    closeDiscard(window);
+    settings.remove("editor/previewFiles");
 }

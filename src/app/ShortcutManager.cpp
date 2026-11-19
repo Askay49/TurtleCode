@@ -87,6 +87,7 @@ ShortcutManager::ShortcutManager() {
     add("debug.breakpoint", "Toggle breakpoint at cursor", "Run and Debug", "F9");
     add("view.git", "Git", "View", "Ctrl+Shift+G");
     add("view.explorer", "Toggle sidebar", "View", "Ctrl+B");
+    add("view.focusProjectTree", "Focus Project Tree", "View", "Ctrl+Shift+E");
     add("view.revealActiveFile", "Reveal Active File in Project Tree", "View");
     add("settings.interfaceLanguage", "Interface language", "Settings");
     add("settings.theme", "Theme", "Settings");

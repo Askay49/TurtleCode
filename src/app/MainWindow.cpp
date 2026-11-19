@@ -303,6 +303,7 @@ void MainWindow::createUi() {
     explorerHeading->setObjectName("explorerHeading");
     explorerLayout->addWidget(explorerHeading);
     explorer_ = new ProjectExplorer(explorerPage);
+    explorer_->setVimEnabled(QSettings().value("editor/vimMode", false).toBool());
     autoRevealActiveFile_ = QSettings().value("view/autoRevealActiveFile", false).toBool();
     connect(explorer_, &ProjectExplorer::filesChanged, workspaceIndex_, &WorkspaceIndex::invalidate);
     connect(explorer_,&ProjectExplorer::backgroundError,this,[this](const QString& error){statusBar()->showMessage(error,10000);});
@@ -519,8 +520,10 @@ void MainWindow::createUi() {
             ? FileOpenMode::Preview : FileOpenMode::Regular;
         openFile(path, 0, 0, 0, true, mode);
     });
-    connect(explorer_, &ProjectExplorer::fileActivated, this, [this](const QString& path) {
+    connect(explorer_, &ProjectExplorer::fileActivated, this, [this](const QString& path, bool focusEditor) {
         openFile(path);
+        if (auto* editor = activeEditor(); focusEditor && editor)
+            editor->setFocus(Qt::ShortcutFocusReason);
     });
     connect(explorer_, &ProjectExplorer::searchInFolderRequested, this, &MainWindow::showProjectSearch,
             Qt::QueuedConnection);
@@ -998,6 +1001,14 @@ void MainWindow::createMenus() {
     ShortcutManager::instance().bind("view.explorer", explorerAction);
     connect(explorerAction, &QAction::triggered, this, [this] {
         setSidebarVisible(sidebar_->isHidden());
+    });
+    auto* focusTreeAction = viewMenu->addAction(Codicons::icon("files"), I18n::text("Focus Project Tree"));
+    focusTreeAction->setObjectName("view.focusProjectTree");
+    ShortcutManager::instance().bind("view.focusProjectTree", focusTreeAction);
+    connect(focusTreeAction, &QAction::triggered, this, [this] {
+        sidebarStack_->setCurrentWidget(explorer_->parentWidget());
+        if (sidebar_->isHidden()) setSidebarVisible(true);
+        explorer_->setFocus(Qt::ShortcutFocusReason);
     });
     auto* revealAction = viewMenu->addAction(Codicons::icon("target"), I18n::text("Reveal Active File in Project Tree"));
     revealAction->setObjectName("view.revealActiveFile");
@@ -2740,6 +2751,7 @@ void MainWindow::applyVimSettings() {
     for(auto* widget:QApplication::allWidgets()) {
         if(auto* editor=qobject_cast<EditorWidget*>(widget))editor->setVimEnabled(enabled);
         if(auto* window=qobject_cast<MainWindow*>(widget)) {
+            window->explorer_->setVimEnabled(enabled);
             if(auto* action=window->findChild<QAction*>("settings.vimMode")){const QSignalBlocker blocker(action);action->setChecked(enabled);}
             window->updateVimIndicator();
         }

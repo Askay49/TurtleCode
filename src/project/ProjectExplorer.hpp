@@ -17,6 +17,7 @@ public:
     void setRoots(const QStringList& roots);
     void setShowHidden(bool show);
     void setIncludeIgnored(bool include);
+    void setVimEnabled(bool enabled) { vimEnabled_ = enabled; }
     void revealPath(const QString& path, bool interactive = false);
     void cancelAutomaticReveal();
     [[nodiscard]] QStringList roots() const { return roots_; }
@@ -26,11 +27,15 @@ signals:
     void backgroundError(const QString& error);
     void revealFailed();
     void fileClicked(const QString& path);
-    void fileActivated(const QString& path);
+    void fileActivated(const QString& path, bool focusEditor);
     void searchInFolderRequested(const QString& directory);
     void pathRenamed(const QString& oldPath, const QString& newPath);
     void pathDeleted(const QString& path);
     void rootsChanged(const QStringList& roots);
+
+protected:
+    bool event(QEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     using Entry=DirectoryEntry;
@@ -48,6 +53,7 @@ private:
 
     void addRoot(const QString& root);
     void addRootItem(const QString& path);
+    bool activatePageItem(QTreeWidgetItem* item);
     void loadDirectory(QTreeWidgetItem* item, bool force = false, bool pageOnly = false,
                        const QString& revealChild = {});
     void continueReveal();
@@ -77,4 +83,5 @@ private:
     bool interactiveReveal_{false};
     quint64 generation_{0};
     bool showHidden_{false}, includeIgnored_{false};
+    bool vimEnabled_{false};
 };

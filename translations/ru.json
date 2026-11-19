@@ -168,6 +168,7 @@
   "Toggle Explorer": "Показать или скрыть проводник",
   "Toggle Side Bar": "Показать или скрыть боковую панель",
   "Toggle sidebar": "Показать или скрыть боковую панель",
+  "Focus Project Tree": "Перейти в дерево проекта",
   "Reveal Active File in Project Tree": "Показать активный файл в дереве проекта",
   "No active file to show in the project tree.": "Нет активного файла для показа в дереве проекта.",
   "The active file is unavailable in the project tree.": "Активный файл недоступен в дереве проекта.",

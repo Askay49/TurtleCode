@@ -21,6 +21,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QKeyEvent>
 #include <QMenu>
 #include <QInputDialog>
 #include <QLineEdit>
@@ -51,15 +52,7 @@ ProjectExplorer::ProjectExplorer(QWidget* parent) : QTreeWidget(parent) {
             this, &ProjectExplorer::showContextMenu);
 
     connect(this, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int){
-        if (!item) return;
-
-        if (item->parent() && item->data(0, Qt::UserRole + 10).isValid()) {
-            auto* parent = item->parent();
-            const auto path = parent->data(0, Qt::UserRole).toString();
-            pageOffsets_[path] = item->data(0, Qt::UserRole + 10).toLongLong();
-            loadDirectory(parent, true, true);
-            return;
-        }
+        if (!item || activatePageItem(item)) return;
 
         const QString path = item->data(0, Qt::UserRole).toString();
 
@@ -75,7 +68,7 @@ ProjectExplorer::ProjectExplorer(QWidget* parent) : QTreeWidget(parent) {
     connect(this, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int) {
         if (!item) return;
         const auto path = item->data(0, Qt::UserRole).toString();
-        if (QFileInfo(path).isFile()) emit fileActivated(path);
+        if (QFileInfo(path).isFile()) emit fileActivated(path, false);
     });
 
     connect(this, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) {
@@ -89,6 +82,74 @@ ProjectExplorer::ProjectExplorer(QWidget* parent) : QTreeWidget(parent) {
     fallbackTimer_.setInterval(10000);
     connect(&fallbackTimer_,&QTimer::timeout,this,[this]{for(const auto& path:failedWatches_)refreshDirectory(path);});
     fallbackTimer_.start();
+}
+
+bool ProjectExplorer::event(QEvent* event) {
+    if (event->type() == QEvent::ShortcutOverride) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        if (key->keyCombination() == QKeyCombination(Qt::Key_F2)) {
+            // Claim F2 before the window shortcut for LSP symbol rename.
+            event->accept();
+            return true;
+        }
+    }
+    return QTreeWidget::event(event);
+}
+
+void ProjectExplorer::keyPressEvent(QKeyEvent* event) {
+    const int key = event->key();
+    const auto modifiers = event->modifiers();
+
+    if ((key == Qt::Key_Return || key == Qt::Key_Enter) &&
+        (modifiers & ~Qt::KeypadModifier) == Qt::NoModifier) {
+        if (auto* item = currentItem(); item && !activatePageItem(item)) {
+            const QFileInfo info(item->data(0, Qt::UserRole).toString());
+            if (info.isDir()) item->setExpanded(!item->isExpanded());
+            else if (info.isFile()) emit fileActivated(info.filePath(), true);
+        }
+        event->accept();
+        return;
+    }
+
+    if (key == Qt::Key_F2 && modifiers == Qt::NoModifier) {
+        if (const auto* item = currentItem(); item && !event->isAutoRepeat()) {
+            const auto path = item->data(0, Qt::UserRole).toString();
+            if (!path.isEmpty()) renamePath(path);
+        }
+        event->accept();
+        return;
+    }
+
+    if (vimEnabled_ && modifiers == Qt::NoModifier) {
+        if (key == Qt::Key_J || key == Qt::Key_K) {
+            // Use the tree's arrow handling for visible rows, scrolling and selection.
+            QKeyEvent arrow(QEvent::KeyPress, key == Qt::Key_J ? Qt::Key_Down : Qt::Key_Up,
+                            Qt::NoModifier);
+            QTreeWidget::keyPressEvent(&arrow);
+            event->accept();
+            return;
+        }
+        if (key == Qt::Key_H || key == Qt::Key_L) {
+            if (auto* item = currentItem(); item &&
+                QFileInfo(item->data(0, Qt::UserRole).toString()).isDir())
+                item->setExpanded(key == Qt::Key_L);
+            event->accept();
+            return;
+        }
+    }
+
+    QTreeWidget::keyPressEvent(event);
+}
+
+bool ProjectExplorer::activatePageItem(QTreeWidgetItem* item) {
+    const auto offset = item->data(0, Qt::UserRole + 10);
+    auto* parent = item->parent();
+    if (!parent || !offset.isValid()) return false;
+
+    const auto path = parent->data(0, Qt::UserRole).toString();
+    pageOffsets_[path] = offset.toLongLong();
+    loadDirectory(parent, true, true);
+    return true;
 }
 
 void ProjectExplorer::setRoots(const QStringList& roots) {
@@ -603,7 +664,7 @@ void ProjectExplorer::createFileIn(const QString& directory) {
     }
     file.close();
     refreshDirectory(directory);
-    emit fileActivated(path);
+    emit fileActivated(path, false);
 }
 
 void ProjectExplorer::createFolderIn(const QString& directory) {
