@@ -31,6 +31,9 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QStyleOption>
 #include <QUrl>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -239,8 +242,10 @@ QString ProjectExplorer::draggedPath(const QDropEvent& event) const {
 }
 
 QString ProjectExplorer::dropDirectory(const QPoint& position, const QString& source) const {
+    if (source.isEmpty() || !viewport()->rect().contains(position)) return {};
     const auto* item = itemAt(position);
-    if (source.isEmpty() || !item || !(item->flags() & Qt::ItemIsDropEnabled)) return {};
+    if (!item) item = topLevelItem(0);
+    if (!item || !(item->flags() & Qt::ItemIsDropEnabled)) return {};
     const QString directory = itemPath(item);
     if (directory == QFileInfo(source).absolutePath() || directory == source || directory.startsWith(source + '/'))
         return {};
@@ -259,9 +264,20 @@ void ProjectExplorer::dragEnterEvent(QDragEnterEvent* event) {
 void ProjectExplorer::dragMoveEvent(QDragMoveEvent* event) {
     dragPosition_ = event->position().toPoint();
     const bool valid = !dropDirectory(dragPosition_, draggedPath(*event)).isEmpty();
-    setDropIndicatorShown(valid);
+    const auto index = indexAt(dragPosition_);
+    const bool overEmptySpace = valid && !index.isValid();
+    const QModelIndex rootDrop = overEmptySpace ? indexFromItem(topLevelItem(0)) : QModelIndex{};
+    if (rootDropIndex_ != rootDrop) {
+        rootDropIndex_ = rootDrop;
+        viewport()->update();
+    }
+    setDropIndicatorShown(valid && !overEmptySpace);
     QTreeWidget::dragMoveEvent(event);
-    const auto hover = valid && event->isAccepted() ? indexAt(dragPosition_) : QModelIndex{};
+    if (overEmptySpace) {
+        event->setDropAction(Qt::MoveAction);
+        event->accept();
+    }
+    const auto hover = valid && event->isAccepted() ? index : QModelIndex{};
     if (dragExpandIndex_ != hover) {
         dragExpandTimer_.stop();
         dragExpandIndex_ = hover;
@@ -276,12 +292,18 @@ void ProjectExplorer::dragMoveEvent(QDragMoveEvent* event) {
 void ProjectExplorer::dragLeaveEvent(QDragLeaveEvent* event) {
     dragExpandTimer_.stop();
     dragExpandIndex_ = QModelIndex{};
+    if (rootDropIndex_.isValid()) {
+        rootDropIndex_ = QModelIndex{};
+        viewport()->update();
+    }
     QTreeWidget::dragLeaveEvent(event);
 }
 
 void ProjectExplorer::dropEvent(QDropEvent* event) {
     const QString source = draggedPath(*event);
-    const QString directory = dropDirectory(event->position().toPoint(), source);
+    const auto position = event->position().toPoint();
+    const QString directory = dropDirectory(position, source);
+    const bool overEmptySpace = !itemAt(position);
     // Clear Qt's drop indicator and autoscroll before a conflict dialog can open.
     QDragLeaveEvent leave;
     dragLeaveEvent(&leave);
@@ -289,8 +311,24 @@ void ProjectExplorer::dropEvent(QDropEvent* event) {
         event->ignore();
         return;
     }
+    if (overEmptySpace) {
+        selectProjectRoot();
+        setFocus(Qt::MouseFocusReason);
+    }
     event->setDropAction(Qt::MoveAction);
     event->accept();
+}
+
+void ProjectExplorer::paintEvent(QPaintEvent* event) {
+    QTreeWidget::paintEvent(event);
+    if (!rootDropIndex_.isValid()) return;
+    const auto indicator = visualRect(rootDropIndex_);
+    if (!indicator.intersects(viewport()->rect())) return;
+    QStyleOption option;
+    option.initFrom(this);
+    option.rect = indicator;
+    QPainter painter(viewport());
+    style()->drawPrimitive(QStyle::PE_IndicatorItemViewItemDrop, &option, &painter, this);
 }
 
 bool ProjectExplorer::event(QEvent* event) {
@@ -303,6 +341,12 @@ bool ProjectExplorer::event(QEvent* event) {
         }
     }
     return QTreeWidget::event(event);
+}
+
+void ProjectExplorer::mousePressEvent(QMouseEvent* event) {
+    QTreeWidget::mousePressEvent(event);
+    if (event->button() == Qt::LeftButton && !itemAt(event->position().toPoint()))
+        selectProjectRoot();
 }
 
 void ProjectExplorer::keyPressEvent(QKeyEvent* event) {
@@ -973,6 +1017,8 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
     QTreeWidgetItem* item = itemAt(position);
     if (item)
         setCurrentItem(item);
+    else
+        selectProjectRoot();
 
     QString selectedPath;
     if (item) {
@@ -1072,6 +1118,14 @@ void ProjectExplorer::showContextMenu(const QPoint& position) {
     } else if (copyRelativePathAction && chosen == copyRelativePathAction) {
         QApplication::clipboard()->setText(
             QDir::toNativeSeparators(QDir(selectedRoot).relativeFilePath(selectedPath)));
+    }
+}
+
+void ProjectExplorer::selectProjectRoot() {
+    if (auto* root = topLevelItem(0)) {
+        pendingSelectionPath_.clear();
+        cancelAutomaticReveal();
+        setCurrentItem(root);
     }
 }
 

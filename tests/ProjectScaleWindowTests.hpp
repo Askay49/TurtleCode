@@ -419,6 +419,7 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     const QString sourceFile = source + "/nested/main.txt";
     const QString target = root.filePath("target");
     const QString targetFile = target + "/report.tar.gz";
+    const QString notesFile = target + "/notes.txt";
     const QString compactTarget = root.filePath("archive/assets");
     assert(QDir().mkpath(source + "/nested") && QDir().mkpath(target) && QDir().mkpath(compactTarget));
     const auto write = [](const QString& path, const QByteArray& text) {
@@ -432,6 +433,7 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     };
     write(original, "original\n");
     write(targetFile, "existing\n");
+    write(notesFile, "notes\n");
     write(sourceFile, "text\n");
     write(source + "/.hidden", "hidden\n");
     assert(QFile::link(root.filePath("missing"), source + "/nested/link"));
@@ -459,12 +461,15 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     const auto dragData = [&] {
         return std::unique_ptr<QMimeData>(tree->model()->mimeData({tree->currentIndex()}));
     };
-    const auto dragToSelected = [&](const QMimeData* data, bool canDrop, bool hoverToExpand = false) {
-        auto* item = tree->currentItem();
-        tree->scrollToItem(item);
-        const QPoint point = tree->visualItemRect(item).center();
-        assert(tree->itemAt(point) == item);
-        if (hoverToExpand) assert(!item->isExpanded());
+    const auto emptyPoint = [&] {
+        const auto rect = tree->viewport()->rect();
+        const QPoint point(rect.center().x(), rect.bottom() - tree->fontMetrics().height());
+        assert(rect.contains(point) && !tree->itemAt(point));
+        return point;
+    };
+    const auto dragTo = [&](const QMimeData* data, const QPoint& point, bool canDrop,
+                            QTreeWidgetItem* folderToExpand = nullptr) {
+        if (folderToExpand) assert(!folderToExpand->isExpanded());
         QDragEnterEvent enter(point, Qt::MoveAction, data, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(tree->viewport(), &enter);
         if (!enter.isAccepted()) {
@@ -474,10 +479,17 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
         QDragMoveEvent move(point, Qt::MoveAction, data, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(tree->viewport(), &move);
         assert(move.isAccepted() == canDrop);
-        if (hoverToExpand) assert(waitFor([&] { return item->isExpanded(); }));
+        if (folderToExpand) assert(waitFor([&] { return folderToExpand->isExpanded(); }));
         QDropEvent drop(point, Qt::MoveAction, data, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(tree->viewport(), &drop);
         return drop.isAccepted();
+    };
+    const auto dragToSelected = [&](const QMimeData* data, bool canDrop, bool hoverToExpand = false) {
+        auto* item = tree->currentItem();
+        tree->scrollToItem(item);
+        const QPoint point = tree->visualItemRect(item).center();
+        assert(tree->itemAt(point) == item);
+        return dragTo(data, point, canDrop, hoverToExpand ? item : nullptr);
     };
     const auto menuAction = [&](const QString& name) {
         const QPoint point = tree->visualItemRect(tree->currentItem()).center();
@@ -531,6 +543,17 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     const QString duplicate = root.filePath("report copy.tar.gz");
     assert(waitFor([&] { return QFileInfo::exists(duplicate); }));
     assert(read(duplicate) == "original\n");
+
+    select(notesFile);
+    key(Qt::Key_C);
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, emptyPoint());
+    auto* rootItem = tree->topLevelItem(0);
+    assert(tree->hasFocus() && tree->currentItem() == rootItem && rootItem->isSelected());
+    assert(rootItem->isExpanded());
+    key(Qt::Key_V);
+    const QString notesCopy = root.filePath("notes.txt");
+    assert(waitFor([&] { return QFileInfo::exists(notesCopy); }));
+    assert(read(notesCopy) == "notes\n" && read(notesFile) == "notes\n");
 
     window.openPaths({sourceFile});
     assert(waitFor([&] {
@@ -591,6 +614,10 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     QMimeData external;
     external.setUrls({QUrl::fromLocalFile(targetFile)});
     assert(!dragToSelected(&external, false));
+    assert(!dragTo(&external, emptyPoint(), false));
+    select(original);
+    const auto originalDrag = dragData();
+    assert(originalDrag && !dragTo(originalDrag.get(), emptyPoint(), false)); // Already in the root.
 
     select(sourceCopy);
     const auto folderDrag = dragData();
@@ -614,8 +641,12 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     resolveConflict(false);
     assert(!dragToSelected(movedFolderDrag.get(), true));
     assert(QFileInfo::exists(moved) && editor->filePath() == moved);
+    select(movedFolder);
     resolveConflict(true);
-    assert(dragToSelected(movedFolderDrag.get(), true));
+    assert(dragTo(movedFolderDrag.get(), emptyPoint(), true));
+    assert(tree->currentItem() == rootItem && rootItem->isSelected());
+    window.activateWindow();
+    assert(waitFor([&] { return tree->hasFocus(); }));
     const QString draggedFolder = root.filePath("source copy copy");
     const QString draggedFile = draggedFolder + "/nested/main.txt";
     assert(editor->filePath() == draggedFile && !QFileInfo::exists(movedFolder));

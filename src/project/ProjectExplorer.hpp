@@ -44,6 +44,8 @@ signals:
 protected:
     bool event(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void paintEvent(QPaintEvent* event) override;
     QStringList mimeTypes() const override;
     QMimeData* mimeData(const QList<QTreeWidgetItem*>& items) const override;
     void startDrag(Qt::DropActions supportedActions) override;
@@ -84,6 +86,7 @@ private:
     void remapTreePaths(const QString& oldPath, const QString& newPath);
     void restoreExpandedPaths();
     void showContextMenu(const QPoint& position);
+    void selectProjectRoot();
     [[nodiscard]] QString creationDirectory() const;
     void createFileIn(const QString& directory);
     void createFolderIn(const QString& directory);
@@ -104,6 +107,7 @@ private:
     QTimer refreshTimer_, fallbackTimer_;
     QTimer dragExpandTimer_;
     QPersistentModelIndex dragExpandIndex_;
+    QPersistentModelIndex rootDropIndex_;
     QPoint dragPosition_;
     QSet<QString> dirtyDirectories_, failedWatches_;
     mutable QHash<QString,QPersistentModelIndex> pathIndex_;
