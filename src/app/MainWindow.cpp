@@ -99,6 +99,8 @@
 
 namespace {
 
+constexpr auto focusNavigationHint = "h Tree · j Terminal · k/l Editor · Esc Cancel";
+
 struct LoadedFile {
     std::shared_ptr<PieceTreeBuffer> buffer;
     QString error;
@@ -154,6 +156,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(lsp_, &LspManager::error, this, [this](const QString& message) {
         statusBar()->showMessage(message, 6000);
     });
+    focusNavigationTimer_ = new QTimer(this);
+    focusNavigationTimer_->setSingleShot(true);
+    connect(focusNavigationTimer_, &QTimer::timeout, this, &MainWindow::finishFocusNavigation);
     createMenus();
     navigationPollTimer_ = new QTimer(this);
     navigationPollTimer_->setInterval(250);
@@ -199,6 +204,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    finishFocusNavigation();
     qApp->removeEventFilter(this);
     // QObject deletes children after C++ members have been destroyed. Disconnect
     // callbacks and dispose of the editors/services while our state is still alive.
@@ -564,6 +570,7 @@ void MainWindow::createUi() {
         if (auto* editor = activeEditor(); focusEditor && editor)
             editor->setFocus(Qt::ShortcutFocusReason);
     });
+    connect(explorer_, &ProjectExplorer::editorFocusRequested, this, &MainWindow::focusEditor);
     connect(explorer_, &ProjectExplorer::searchInFolderRequested, this, &MainWindow::showProjectSearch,
             Qt::QueuedConnection);
     connect(explorer_, &ProjectExplorer::newTerminalRequested, this, [this](const QString& directory) {
@@ -968,15 +975,20 @@ void MainWindow::createMenus() {
     });
 
     auto* viewMenu = menuBar()->addMenu(I18n::text("&View"));
-    auto addPaneAction = [this, viewMenu](const QString& id, const QString& label, const QString& icon, auto action) {
+    auto addViewAction = [this, viewMenu](const QString& id, const QString& label, const QString& icon, auto action) {
         auto* item = viewMenu->addAction(Codicons::icon(icon), I18n::text(label));
         item->setObjectName(id);
         ShortcutManager::instance().bind(id, item);
         connect(item, &QAction::triggered, this, action);
+        return item;
     };
-    addPaneAction("editor.splitBelow", "Split Editor Below", "split-horizontal", [this] { splitEditor(Qt::Vertical); });
-    addPaneAction("editor.splitRight", "Split Editor Right", "split-vertical", [this] { splitEditor(Qt::Horizontal); });
-    addPaneAction("editor.closePane", "Close Editor Pane", "close", [this] { closeEditorPane(activeEditor()); });
+    auto* focusNavigation = addViewAction(ShortcutManager::navigationPrefixId, "Focus navigation prefix",
+                                           "keyboard", &MainWindow::beginFocusNavigation);
+    focusNavigation->setAutoRepeat(false);
+    addViewAction("view.focusEditor", "Focus Editor", "file-code", &MainWindow::focusEditor);
+    addViewAction("editor.splitBelow", "Split Editor Below", "split-horizontal", [this] { splitEditor(Qt::Vertical); });
+    addViewAction("editor.splitRight", "Split Editor Right", "split-vertical", [this] { splitEditor(Qt::Horizontal); });
+    addViewAction("editor.closePane", "Close Editor Pane", "close", [this] { closeEditorPane(activeEditor()); });
     updateEditorPaneActions();
     outline_=new OutlinePanel(editorArea_);
     editorArea_->addDockWidget(Qt::RightDockWidgetArea,outline_);
@@ -1017,24 +1029,18 @@ void MainWindow::createMenus() {
                 }
             }
     });
-    auto* terminalAction = viewMenu->addAction(Codicons::icon("terminal"), I18n::text("Terminal"));
-    terminalAction->setObjectName("view.terminal");
-    ShortcutManager::instance().bind("view.terminal", terminalAction);
-    connect(terminalAction, &QAction::triggered, this, [this] {
-        if (terminalPanel_ && terminalPanel_->isVisible()) {
-            terminalPanel_->hide();
-            return;
+    addViewAction("view.terminal", "Terminal", "terminal", [this] {
+        if (terminalPanel_ && terminalPanel_->isVisible()) terminalPanel_->hide();
+        else showTerminal();
+    });
+    addViewAction("view.focusTerminal", "Toggle Terminal Focus", "terminal", [this] {
+        auto* focused = QApplication::focusWidget();
+        if (terminalPanel_ && focused &&
+            (focused == terminalPanel_ || terminalPanel_->isAncestorOf(focused))) {
+            focusEditor();
+        } else {
+            focusTerminal();
         }
-        terminalPreviousFocus_ = QApplication::focusWidget();
-        const bool firstOpen = !terminalPanel_;
-        ensureTerminal();
-        QString directory = projectRoots_.value(0);
-        if (!explicitProject_) {
-            if (auto* editor = activeEditor(); editor && !editor->filePath().isEmpty())
-                directory = QFileInfo(editor->filePath()).absolutePath();
-        }
-        terminalPanel_->open(directory.isEmpty() ? QDir::homePath() : directory);
-        if (firstOpen) editorArea_->resizeDocks({terminalPanel_}, {qMax(180, editorArea_->height()/3)}, Qt::Vertical);
     });
     auto addFileFilterAction = [this, &addWindowAction](const QString& id, const char* label,
                                                         const QString& icon, const QString& key) {
@@ -1060,13 +1066,9 @@ void MainWindow::createMenus() {
     connect(explorerAction, &QAction::triggered, this, [this] {
         setSidebarVisible(sidebar_->isHidden());
     });
-    auto* focusTreeAction = viewMenu->addAction(Codicons::icon("files"), I18n::text("Focus Project Tree"));
-    focusTreeAction->setObjectName("view.focusProjectTree");
-    ShortcutManager::instance().bind("view.focusProjectTree", focusTreeAction);
-    connect(focusTreeAction, &QAction::triggered, this, [this] {
-        sidebarStack_->setCurrentWidget(explorerPage_);
-        if (sidebar_->isHidden()) setSidebarVisible(true);
-        explorer_->setFocus(Qt::ShortcutFocusReason);
+    addViewAction("view.focusProjectTree", "Toggle Project Tree Focus", "files", [this] {
+        if (explorer_->hasFocus()) focusEditor();
+        else focusProjectTree();
     });
     auto* revealAction = viewMenu->addAction(Codicons::icon("target"), I18n::text("Reveal Active File in Project Tree"));
     revealAction->setObjectName("view.revealActiveFile");
@@ -1507,7 +1509,66 @@ void MainWindow::finishTabSwitch(bool accept) {
     tabSwitchFocus_.clear();
 }
 
+void MainWindow::beginFocusNavigation() {
+    if (closing_) return;
+    finishTabSwitch(false);
+    auto* target = QApplication::focusWidget();
+    if (!target || target->window() != this) return;
+    focusNavigationTarget_ = target;
+    target->installEventFilter(this);
+    focusNavigationTimer_->start(2000);
+    statusBar()->showMessage(I18n::text(focusNavigationHint));
+}
+
+void MainWindow::finishFocusNavigation() {
+    if (focusNavigationTarget_) focusNavigationTarget_->removeEventFilter(this);
+    focusNavigationTarget_.clear();
+    focusNavigationTimer_->stop();
+    if (statusBar()->currentMessage() == I18n::text(focusNavigationHint)) statusBar()->clearMessage();
+}
+
+bool MainWindow::filterFocusNavigationEvent(QEvent* event) {
+    switch (event->type()) {
+    case QEvent::FocusOut: case QEvent::Hide: case QEvent::MouseButtonPress:
+        finishFocusNavigation();
+        return false;
+    case QEvent::ShortcutOverride: case QEvent::KeyPress:
+        break;
+    default:
+        return false;
+    }
+
+    const auto* key = static_cast<QKeyEvent*>(event);
+    switch (key->key()) {
+    case Qt::Key_Shift: case Qt::Key_Control: case Qt::Key_Alt: case Qt::Key_Meta: case Qt::Key_AltGr:
+        return false;
+    default:
+        break;
+    }
+    const int unmodified = key->modifiers() == Qt::NoModifier ? key->key() : Qt::Key_unknown;
+    switch (unmodified) {
+    case Qt::Key_H: case Qt::Key_J: case Qt::Key_K: case Qt::Key_L: case Qt::Key_Escape:
+        break;
+    default:
+        finishFocusNavigation();
+        return false;
+    }
+
+    event->accept();
+    if (event->type() == QEvent::KeyPress) {
+        finishFocusNavigation();
+        switch (unmodified) {
+        case Qt::Key_H: focusProjectTree(); break;
+        case Qt::Key_J: focusTerminal(); break;
+        case Qt::Key_K: case Qt::Key_L: focusEditor(); break;
+        default: break;
+        }
+    }
+    return true;
+}
+
 bool MainWindow::eventFilter(QObject* watched,QEvent* event) {
+    if (watched == focusNavigationTarget_ && filterFocusNavigationEvent(event)) return true;
     if (!tabSwitcher_ || tabSwitcher_->isHidden()) return QMainWindow::eventFilter(watched, event);
     if ((watched == tabs_ || watched == paneWorkspace_)
         && (event->type() == QEvent::Move || event->type() == QEvent::Resize))
@@ -3063,6 +3124,34 @@ void MainWindow::restorePreviousSession(bool restoreClean) {
         }
     }
     recoveryTimer_->start();
+}
+
+void MainWindow::focusEditor() {
+    if (auto* editor = activeEditor()) editor->setFocus(Qt::ShortcutFocusReason);
+}
+
+void MainWindow::focusProjectTree() {
+    sidebarStack_->setCurrentWidget(explorerPage_);
+    if (sidebar_->isHidden()) setSidebarVisible(true);
+    explorer_->setFocus(Qt::ShortcutFocusReason);
+}
+
+void MainWindow::focusTerminal() {
+    if (terminalPanel_ && terminalPanel_->isVisible()) terminalPanel_->focusCurrentTab();
+    else showTerminal();
+}
+
+void MainWindow::showTerminal() {
+    terminalPreviousFocus_ = QApplication::focusWidget();
+    const bool firstOpen = !terminalPanel_;
+    ensureTerminal();
+    QString directory = projectRoots_.value(0);
+    if (!explicitProject_) {
+        if (auto* editor = activeEditor(); editor && !editor->filePath().isEmpty())
+            directory = QFileInfo(editor->filePath()).absolutePath();
+    }
+    terminalPanel_->open(directory.isEmpty() ? QDir::homePath() : directory);
+    if (firstOpen) editorArea_->resizeDocks({terminalPanel_}, {qMax(180, editorArea_->height() / 3)}, Qt::Vertical);
 }
 
 void MainWindow::ensureTerminal() {

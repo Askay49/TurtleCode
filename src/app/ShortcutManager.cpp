@@ -13,6 +13,7 @@
 #include <QHeaderView>
 #include <QPushButton>
 #include <QLabel>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QMessageBox>
@@ -22,6 +23,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSet>
+#include <algorithm>
 namespace {
 bool overlaps(const QKeySequence& a, const QKeySequence& b) {
     return !a.isEmpty() && !b.isEmpty() &&
@@ -42,6 +44,50 @@ bool reserved(const QKeySequence& sequence) {
     for (const auto& value : fixed) if (prefix == QKeySequence(value)) return true;
     return key == Qt::Key_Escape || key == Qt::Key_Return || key == Qt::Key_Enter;
 }
+
+class NavigationPrefixEdit final : public QLineEdit {
+public:
+    explicit NavigationPrefixEdit(QWidget* parent) : QLineEdit(parent) {
+        setObjectName("navigationPrefixKey");
+        setReadOnly(true);
+        setPlaceholderText(I18n::text("Disabled"));
+        setToolTip(I18n::text("Press one key combination. Backspace clears it."));
+    }
+
+    QKeySequence sequence() const { return sequence_; }
+    void setSequence(const QKeySequence& sequence) {
+        sequence_ = sequence;
+        setText(sequence.toString(QKeySequence::NativeText));
+    }
+
+protected:
+    bool event(QEvent* event) override {
+        if (event->type() != QEvent::ShortcutOverride && event->type() != QEvent::KeyPress)
+            return QLineEdit::event(event);
+        const auto* key = static_cast<QKeyEvent*>(event);
+        switch (key->key()) {
+        case Qt::Key_Shift: case Qt::Key_Control: case Qt::Key_Alt: case Qt::Key_Meta:
+        case Qt::Key_AltGr: case Qt::Key_unknown:
+        case Qt::Key_Escape: case Qt::Key_Return: case Qt::Key_Enter:
+            return QLineEdit::event(event);
+        default:
+            break;
+        }
+        if ((key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) &&
+            !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)))
+            return QLineEdit::event(event);
+        if (event->type() == QEvent::KeyPress) {
+            const bool clear = key->modifiers() == Qt::NoModifier &&
+                (key->key() == Qt::Key_Backspace || key->key() == Qt::Key_Delete);
+            setSequence(clear ? QKeySequence{} : QKeySequence(key->keyCombination()));
+        }
+        event->accept();
+        return true;
+    }
+
+private:
+    QKeySequence sequence_;
+};
 }
 ShortcutManager& ShortcutManager::instance() { static ShortcutManager manager; return manager; }
 ShortcutManager::ShortcutManager() {
@@ -71,13 +117,16 @@ ShortcutManager::ShortcutManager() {
     add("code.references", "Find All References", "Code", "Shift+F12");
     add("code.definition", "Go to definition", "Code", "F12");
     add("navigation.quickOpen", "Quick open", "Navigation", "Ctrl+P");
+    add(navigationPrefixId, "Focus navigation prefix", "Navigation", "Ctrl+'");
     add("navigation.line", "Go to line", "Navigation", "Ctrl+G");
     add("navigation.tabNext", "Next recent tab", "Navigation", "Ctrl+Tab");
     add("navigation.tabPrevious", "Previous recent tab", "Navigation", "Ctrl+Shift+Tab");
     add("navigation.back", "Back", "Navigation", "Alt+Left");
     add("navigation.forward", "Forward", "Navigation", "Alt+Right");
     add("view.hidden", "Show hidden files", "Files and search", "Ctrl+H");
+    add("view.focusEditor", "Focus Editor", "View", "F6");
     add("view.terminal", "Toggle terminal", "View", "Ctrl+`");
+    add("view.focusTerminal", "Toggle Terminal Focus", "View", "Ctrl+Shift+T");
     add("view.debug", "Run and Debug", "View", "Ctrl+Shift+D");
     add("debug.start", "Start / Continue Debugging", "Run and Debug", "F5");
     add("debug.stop", "Stop Debugging", "Run and Debug", "Shift+F5");
@@ -87,7 +136,7 @@ ShortcutManager::ShortcutManager() {
     add("debug.breakpoint", "Toggle breakpoint at cursor", "Run and Debug", "F9");
     add("view.git", "Git", "View", "Ctrl+Shift+G");
     add("view.explorer", "Toggle sidebar", "View", "Ctrl+B");
-    add("view.focusProjectTree", "Focus Project Tree", "View", "Ctrl+Shift+E");
+    add("view.focusProjectTree", "Toggle Project Tree Focus", "View", "Ctrl+Shift+E");
     add("view.revealActiveFile", "Reveal Active File in Project Tree", "View");
     add("settings.interfaceLanguage", "Interface language", "Settings");
     add("settings.theme", "Theme", "Settings");
@@ -117,6 +166,13 @@ ShortcutManager::ShortcutManager() {
     QSettings settings; settings.beginGroup("shortcuts");
     for (const auto& command : commands_) if (settings.contains(command.id))
         overrides_[command.id] = QKeySequence(settings.value(command.id).toString(), QKeySequence::PortableText);
+    // Keep a shortcut assigned before the default navigation prefix was added.
+    if (!overrides_.contains(navigationPrefixId)) {
+        const auto prefix = sequence(navigationPrefixId);
+        if (std::any_of(overrides_.cbegin(), overrides_.cend(),
+                        [&prefix](const QKeySequence& key) { return overlaps(prefix, key); }))
+            overrides_.insert(navigationPrefixId, {});
+    }
     // Invalid settings must never break normal editing or introduce ambiguous shortcuts.
     QMap<QString, QKeySequence> values;
     for (const auto& command : commands_) values[command.id] = sequence(command.id);
@@ -164,6 +220,8 @@ void ShortcutManager::refresh() {
 QString ShortcutManager::validate(const QMap<QString, QKeySequence>& values) const {
     for (int i = 0; i < commands_.size(); ++i) {
         const auto& a = commands_[i]; const auto key = values.value(a.id, a.standard);
+        if (a.id == navigationPrefixId && key.count() > 1)
+            return I18n::text("The focus navigation prefix requires one key combination.");
         if (reserved(key)) return a.name + I18n::text(": this shortcut is reserved for text editing or dialog navigation.");
         for (int j = i+1; j < commands_.size(); ++j) {
             const auto& b = commands_[j];
@@ -220,20 +278,31 @@ QWidget* ShortcutManager::createSettingsPage(QWidget* parent, QMap<QString, QKey
     auto* page = new QWidget(parent);
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
+    for (const auto& command : commands_) values[command.id] = sequence(command.id);
+    auto* prefixRow = new QHBoxLayout;
+    auto* prefixLabel = new QLabel(I18n::text("Focus navigation prefix"), page);
+    auto* prefix = new NavigationPrefixEdit(page);
+    prefix->setSequence(values[navigationPrefixId]);
+    prefixLabel->setBuddy(prefix);
+    prefixRow->addWidget(prefixLabel);
+    prefixRow->addWidget(prefix);
+    prefixRow->addStretch();
+    layout->addLayout(prefixRow);
     auto* note = new QLabel(I18n::text("Select a command and press a new shortcut below. Text input, clipboard and normal cursor navigation stay fixed."), page);
     note->setWordWrap(true); layout->addWidget(note);
     auto* search = new QLineEdit(page); search->setPlaceholderText(I18n::text("Search commands…")); layout->addWidget(search);
-    auto* table = new QTableWidget(commands_.size(), 5, page);
+    auto listedCommands = commands_;
+    listedCommands.removeIf([](const ShortcutCommand& command) { return command.id == navigationPrefixId; });
+    auto* table = new QTableWidget(listedCommands.size(), 5, page);
     table->setObjectName("shortcutSettingsTable");
     table->setHorizontalHeaderLabels({I18n::text("Category"), I18n::text("Command"), I18n::text("Shortcut"), I18n::text("Default"), I18n::text("Scope")});
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     table->setSelectionBehavior(QAbstractItemView::SelectRows); table->setSelectionMode(QAbstractItemView::SingleSelection);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers); layout->addWidget(table);
-    for (const auto& command : commands_) values[command.id] = sequence(command.id);
-    auto refreshTable = [this, table, &values] {
-        for (int row = 0; row < commands_.size(); ++row) {
-            const auto& c = commands_[row]; const QStringList columns{c.category, c.name, values[c.id].toString(), c.standard.toString(), c.scope};
+    auto refreshTable = [listedCommands, table, &values] {
+        for (int row = 0; row < listedCommands.size(); ++row) {
+            const auto& c = listedCommands[row]; const QStringList columns{c.category, c.name, values[c.id].toString(), c.standard.toString(), c.scope};
             for (int col = 0; col < columns.size(); ++col) table->setItem(row, col, new QTableWidgetItem(columns[col]));
         }
     }; refreshTable();
@@ -255,20 +324,30 @@ QWidget* ShortcutManager::createSettingsPage(QWidget* parent, QMap<QString, QKey
     auto* import = button(transfer, I18n::text("Import…"), "folder-opened");
     auto* exportButton = button(transfer, I18n::text("Export…"), "export");
     transfer->addStretch();
-    auto update = [this, refreshTable, status, &values] { refreshTable(); status->setText(validate(values)); };
-    QObject::connect(table, &QTableWidget::currentCellChanged, page, [this, edit, &values](int current, int, int, int) {
-        if (current >= 0) edit->setKeySequence(values[commands_[current].id]);
+    auto update = [this, refreshTable, prefix, status, &values] {
+        const QSignalBlocker blocker(prefix);
+        prefix->setSequence(values[navigationPrefixId]);
+        refreshTable();
+        status->setText(validate(values));
+    };
+    QObject::connect(prefix, &QLineEdit::textChanged, page, [this, prefix, status, &values] {
+        values[navigationPrefixId] = prefix->sequence();
+        status->setText(validate(values));
     });
-    QObject::connect(search, &QLineEdit::textChanged, page, [this, table](const QString& text) {
-        for (int i = 0; i < commands_.size(); ++i) table->setRowHidden(i, !(commands_[i].name + " " + commands_[i].category + " " + commands_[i].id).contains(text, Qt::CaseInsensitive));
+    QObject::connect(table, &QTableWidget::currentCellChanged, page, [listedCommands, edit, &values](int current, int, int, int) {
+        if (current >= 0) edit->setKeySequence(values[listedCommands[current].id]);
     });
-    auto setSelected = [this, table, edit, update, &values](const QKeySequence& key) {
+    QObject::connect(search, &QLineEdit::textChanged, page, [listedCommands, table](const QString& text) {
+        for (int i = 0; i < listedCommands.size(); ++i)
+            table->setRowHidden(i, !(listedCommands[i].name + " " + listedCommands[i].category + " " + listedCommands[i].id).contains(text, Qt::CaseInsensitive));
+    });
+    auto setSelected = [listedCommands, table, edit, update, &values](const QKeySequence& key) {
         const int index = table->currentRow(); if (index < 0) return;
-        values[commands_[index].id] = key; edit->setKeySequence(key); update();
+        values[listedCommands[index].id] = key; edit->setKeySequence(key); update();
     };
     QObject::connect(assign, &QPushButton::clicked, page, [setSelected, edit] { setSelected(edit->keySequence()); });
     QObject::connect(clear, &QPushButton::clicked, page, [setSelected] { setSelected({}); });
-    QObject::connect(reset, &QPushButton::clicked, page, [this, table, setSelected] { if (table->currentRow() >= 0) setSelected(commands_[table->currentRow()].standard); });
+    QObject::connect(reset, &QPushButton::clicked, page, [listedCommands, table, setSelected] { if (table->currentRow() >= 0) setSelected(listedCommands[table->currentRow()].standard); });
     QObject::connect(resetAll, &QPushButton::clicked, page, [this, page, update, &values] {
         if (IconDialogs::MessageBox::question(page, I18n::text("Reset shortcuts"), I18n::text("Restore all default shortcuts?")) != QMessageBox::Yes) return;
         for (const auto& c : commands_) values[c.id] = c.standard; update();

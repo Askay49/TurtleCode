@@ -128,6 +128,11 @@ private:
     void switchRecentTab(int direction);
     void finishTabSwitch(bool accept);
     void positionTabSwitcher();
+    void beginFocusNavigation();
+    void finishFocusNavigation();
+    bool filterFocusNavigationEvent(QEvent* event);
+    QPointer<QWidget> focusNavigationTarget_;
+    QTimer* focusNavigationTimer_{nullptr};
     bool closeTab(int index);
     void closeAllTabs();
     void updateTabMru(QWidget* current);
@@ -228,7 +233,11 @@ private:
     GitDiffView* gitDiff_{nullptr};
     QString pendingGitRevert_;
     QMainWindow* editorArea_{nullptr};
+    void focusEditor();
+    void focusProjectTree();
+    void focusTerminal();
     void ensureTerminal();
+    void showTerminal();
     TerminalPanel* terminalPanel_{nullptr};
     QPointer<QWidget> terminalPreviousFocus_;
     QToolButton* gitActivity_{nullptr};

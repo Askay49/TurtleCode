@@ -56,13 +56,23 @@ Explorer/Search/Git/Debug page. The activity icons remain visible. Clicking the
 active icon hides its panel; clicking it again reopens it. Clicking another icon
 switches to that panel. Hiding the sidebar returns focus to the editor.
 
-**Ctrl+Shift+E** shows and focuses the project tree. The configurable command is
-**View → Focus Project Tree** (`view.focusProjectTree`). Use Up/Down to select a
-row, Enter to open a file in a regular tab and focus the editor, expand or
-collapse a folder, or activate a paging row. F2 renames the selected item in
+**F6** focuses the active editor pane (`view.focusEditor`). **Ctrl+Shift+T**
+switches focus between the editor and terminal (`view.focusTerminal`). It opens
+the terminal if needed and leaves it visible when returning to the editor.
+
+Press **Ctrl+'**, then **h** for the project tree, **j** for the terminal, or
+**k/l** for the active editor. Each letter selects the same destination from
+any pane. **Esc** cancels the pending transition. Change the prefix in
+**Settings → Keyboard shortcuts → General → Focus navigation prefix**.
+
+**Ctrl+Shift+E** shows and focuses the project tree. Press it again from the tree
+to return to the active editor pane while keeping the tree visible
+(`view.focusProjectTree`). Use Up/Down to select a row, Enter to open a file in
+a regular tab and focus the editor, expand or collapse a folder, or activate
+a paging row. F2 renames the selected item in
 the tree. In the editor, F2 invokes symbol rename. With Vim mode enabled,
-`j` and `k` move the tree selection down and up, and `h` and `l` collapse
-and expand the selected folder.
+`j` and `k` move the tree selection down and up, `h` and `l` collapse
+and expand the selected folder, and **Esc** focuses the editor.
 
 With the tree focused, **Ctrl+C**, **Ctrl+X** and **Ctrl+V** copy, cut and
 paste files or folders. Paste uses the selected folder, the selected file's

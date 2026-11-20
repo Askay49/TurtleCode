@@ -9,18 +9,30 @@
 #include <QTest>
 #include <QTimer>
 #include <QDialog>
+#include <QDialogButtonBox>
+#include <QLineEdit>
+#include <QPushButton>
 #include <QTableWidget>
 #include <cassert>
 int main(int argc, char** argv) {
     QTemporaryDir directory; assert(directory.isValid());
     qputenv("XDG_CONFIG_HOME", directory.path().toUtf8());
     QApplication app(argc, argv); app.setOrganizationName("TurtleCodeTests"); app.setApplicationName("ShortcutTests");
+    QSettings().setValue("shortcuts/file.open", "Ctrl+'");
     auto& manager = ShortcutManager::instance();
     QMap<QString, QKeySequence> defaults;
     for (const auto& command : manager.commands()) defaults[command.id] = command.standard;
     assert(manager.validate(defaults).isEmpty());
     assert(defaults.value("code.formatDocument")==QKeySequence("Ctrl+Shift+I"));
+    const auto prefix = ShortcutManager::navigationPrefixId;
+    assert(defaults.value(prefix) == QKeySequence("Ctrl+'"));
+    assert(manager.sequence("file.open") == QKeySequence("Ctrl+'") && manager.sequence(prefix).isEmpty());
+    QString error;
+    assert(manager.save(defaults, &error));
     auto values = defaults;
+    values[prefix] = QKeySequence("F7, H"); assert(!manager.validate(values).isEmpty());
+    values = defaults; values[prefix] = QKeySequence("Ctrl+K"); assert(!manager.validate(values).isEmpty());
+    values = defaults;
     values["file.open"] = QKeySequence("Ctrl+S"); assert(!manager.validate(values).isEmpty());
     values = defaults; values["file.open"] = QKeySequence("Ctrl+K"); assert(!manager.validate(values).isEmpty());
     values = defaults; values["file.open"] = QKeySequence("Ctrl+C"); assert(!manager.validate(values).isEmpty());
@@ -32,7 +44,7 @@ int main(int argc, char** argv) {
     values = defaults; values["file.open"] = QKeySequence("Ctrl+Alt+O");
     values["editor.nextOccurrence"] = QKeySequence("Ctrl+Alt+D");
     values["file.save"] = {};
-    QString error; assert(manager.save(values, &error));
+    assert(manager.save(values, &error));
     assert(open.shortcut() == QKeySequence("Ctrl+Alt+O"));
     assert(cursor.key() == QKeySequence("Ctrl+Alt+D"));
     assert(manager.sequence("file.save").isEmpty());
@@ -53,8 +65,17 @@ int main(int argc, char** argv) {
     bool shown = false;
     QTimer::singleShot(0, [&] {
         auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget()); assert(dialog);
-        auto* table = dialog->findChild<QTableWidget*>(); assert(table && table->rowCount() == manager.commands().size());
-        shown = true; dialog->reject();
+        auto* table = dialog->findChild<QTableWidget*>();
+        assert(table && table->rowCount() + 1 == manager.commands().size());
+        auto* edit = dialog->findChild<QLineEdit*>("navigationPrefixKey");
+        assert(edit && edit->text() == QKeySequence("Ctrl+'").toString(QKeySequence::NativeText));
+        edit->setFocus();
+        QTest::keyClick(edit, Qt::Key_F8);
+        assert(edit->text() == "F8");
+        shown = true;
+        dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->click();
     });
     manager.showSettings(&window); assert(shown);
+    assert(manager.sequence(prefix) == QKeySequence("F8"));
+    assert(QSettings().value(QString("shortcuts/") + prefix).toString() == "F8");
 }

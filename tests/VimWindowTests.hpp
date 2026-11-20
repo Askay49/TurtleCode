@@ -53,7 +53,9 @@ static void vimWindowTests(QTemporaryDir& directory) {
     terminal->setFocus();QTest::qWait(20);assert(!indicator->isEnabled());
     QTest::keyClicks(terminal,"echo vim-test");QTest::keyClick(terminal,Qt::Key_Return);
     assert(editor->vimMode()==Mode::Visual && !editor->isModified());
-    first.activateWindow();editor->setFocus();QTest::qWait(30);QTest::keyClick(editor,Qt::Key_Escape);
+    QTest::keyClick(terminal, Qt::Key_F6);
+    assert(editor->hasFocus() && editor->vimMode() == Mode::Visual && !editor->selectedText().isEmpty());
+    QTest::keyClick(editor,Qt::Key_Escape);
     editor->setNavigationPosition(1,1);const auto original=editor->document()->buffer().text();
     QTest::keyClicks(editor,"ciw");assert(editor->vimMode()==Mode::Insert && indicator->text()=="INSERT");
     QTest::keyClicks(editor,"modal");QTest::keyClick(editor,Qt::Key_Escape);QTest::keyClick(editor,Qt::Key_U);

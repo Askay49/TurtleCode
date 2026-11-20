@@ -11,6 +11,7 @@ class QKeyEvent;
 struct ShortcutCommand { QString id, name, category, scope, englishName; QKeySequence standard; };
 class ShortcutManager {
 public:
+    static constexpr auto navigationPrefixId = "navigation.focusPrefix";
     static ShortcutManager& instance();
     const QVector<ShortcutCommand>& commands() const { return commands_; }
     bool hasCommand(const QString& id) const;

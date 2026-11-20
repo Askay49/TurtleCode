@@ -306,6 +306,14 @@ static void explorerKeyboardTests(QTemporaryDir& temporary) {
     assert(symbolRenames.count() == 1);
     QTest::keyClick(editor, Qt::Key_E, Qt::ControlModifier | Qt::ShiftModifier);
     assert(tree->hasFocus() && tree->currentItem() == folderItem->child(0));
+    QTest::keyClick(tree, Qt::Key_E, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(editor->hasFocus() && tree->isVisible());
+    QTest::keyClick(editor, Qt::Key_E, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(tree->hasFocus() && tree->currentItem() == folderItem->child(0));
+    QTest::keyClick(tree, Qt::Key_Escape);
+    assert(editor->hasFocus() && tree->isVisible());
+    QTest::keyClick(editor, Qt::Key_E, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(tree->hasFocus());
     bool renamedFromTree = false;
     QTimer::singleShot(0, &window, [&] {
         auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());

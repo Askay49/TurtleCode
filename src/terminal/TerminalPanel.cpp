@@ -159,7 +159,11 @@ void TerminalPanel::showShell(TerminalWidget* terminal) {
     show();
     raise();
     terminal->applyFontSettings();
-    terminal->setFocus(Qt::ShortcutFocusReason);
+    focusCurrentTab();
+}
+
+void TerminalPanel::focusCurrentTab() {
+    if (auto* current = tabs_->currentWidget()) current->setFocus(Qt::ShortcutFocusReason);
 }
 
 void TerminalPanel::setDirectory(const QString& directory) {

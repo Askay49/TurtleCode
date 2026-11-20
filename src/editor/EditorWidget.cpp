@@ -2418,6 +2418,9 @@ bool EditorWidget::event(QEvent* event) {
         if (!busy_) { refreshEditorConfig(); QTimer::singleShot(0,this,&EditorWidget::updateVimSearchHighlights); }
     }
     if(event->type()==QEvent::FocusIn || event->type()==QEvent::FocusOut){if(vim_.enabled()){if(event->type()==QEvent::FocusOut && static_cast<QFocusEvent*>(event)->reason()!=Qt::PopupFocusReason){flushVimMapping();history_.endGroup();vimInsertCount_=1;if(!busy_)finishVimChange();}vim_.resetPending();}viewport()->update();}
+    if (event->type() == QEvent::ShortcutOverride && hasFocus() &&
+        ShortcutManager::instance().matches(ShortcutManager::navigationPrefixId, static_cast<QKeyEvent*>(event)))
+        return QAbstractScrollArea::event(event);
     if (event->type() == QEvent::ShortcutOverride && hasFocus() && reserveVimMapping(*static_cast<QKeyEvent*>(event))) {
         event->accept();
         return true;

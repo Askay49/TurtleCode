@@ -286,9 +286,10 @@ bool TerminalWidget::event(QEvent* event) {
     }
     if (event->type() == QEvent::ShortcutOverride) {
         auto* key = static_cast<QKeyEvent*>(event);
-        // Preserve the command palette, terminal toggle and MRU switching; shell keys such
-        // as Ctrl+C/S/Z/F belong to the terminal while it owns keyboard focus.
-        for (const auto& id : {"navigation.commands", "view.terminal", "navigation.tabNext", "navigation.tabPrevious"}) {
+        // Keep window navigation available while the shell receives its own shortcuts.
+        for (const auto* id : {"navigation.commands", "view.terminal", "navigation.tabNext", "navigation.tabPrevious",
+                               "view.focusEditor", "view.focusTerminal", "view.focusProjectTree",
+                               ShortcutManager::navigationPrefixId}) {
             const auto sequence = ShortcutManager::instance().sequence(id);
             if (!sequence.isEmpty() && sequence[0] == key->keyCombination()) return QAbstractScrollArea::event(event);
         }

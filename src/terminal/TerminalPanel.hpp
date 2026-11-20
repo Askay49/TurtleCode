@@ -14,6 +14,7 @@ public:
     ~TerminalPanel() override;
     void open(const QString& directory);
     void openNewSession(const QString& directory);
+    void focusCurrentTab();
     // Only the primary shell follows the project directory.
     void setDirectory(const QString& directory);
     void shutdown();

@@ -130,6 +130,17 @@ static void vimWorkspaceTests(QTemporaryDir& directory) {
     window.activateWindow();
     rightPane->editor()->setFocus();
     assert(waitFor([&] { return active() == second && second->hasFocus(); }));
+    auto* tree = window.findChild<ProjectExplorer*>();
+    QTest::keyClick(second, Qt::Key_Apostrophe, Qt::ControlModifier);
+    QTest::keyClick(second, Qt::Key_Escape);
+    QTest::keyClick(second, Qt::Key_H);
+    assert(second->hasFocus());
+    QTest::keyClick(second, Qt::Key_Apostrophe, Qt::ControlModifier);
+    QTest::keyClick(second, Qt::Key_H);
+    assert(tree && tree->hasFocus());
+    QTest::keyClick(tree, Qt::Key_Apostrophe, Qt::ControlModifier);
+    QTest::keyClick(tree, Qt::Key_L);
+    assert(tree->isVisible() && active() == second && second->hasFocus());
     const int originalWidth = sideBySide->sizes().last();
     windowKey(Qt::Key_Greater);
     assert(sideBySide->sizes().last() > originalWidth);

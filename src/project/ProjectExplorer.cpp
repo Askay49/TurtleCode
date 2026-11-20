@@ -390,6 +390,11 @@ void ProjectExplorer::keyPressEvent(QKeyEvent* event) {
     }
 
     if (vimEnabled_ && modifiers == Qt::NoModifier) {
+        if (key == Qt::Key_Escape) {
+            emit editorFocusRequested();
+            event->accept();
+            return;
+        }
         if (key == Qt::Key_J || key == Qt::Key_K) {
             // Use the tree's arrow handling for visible rows, scrolling and selection.
             QKeyEvent arrow(QEvent::KeyPress, key == Qt::Key_J ? Qt::Key_Down : Qt::Key_Up,

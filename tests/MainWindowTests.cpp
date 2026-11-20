@@ -532,7 +532,11 @@ static void terminalWindowTests(const QTemporaryDir& directory) {
     auto* sidebar = workspace->widget(0);
     auto bounds = [&window](QWidget* widget) { return QRect(widget->mapTo(&window, QPoint()), widget->size()); };
     const auto sidebarBefore = bounds(sidebar);
-    QTest::keyClick(editor, Qt::Key_QuoteLeft, Qt::ControlModifier);
+    const auto navigate = [](QWidget* source, Qt::Key destination) {
+        QTest::keyClick(source, Qt::Key_Apostrophe, Qt::ControlModifier);
+        QTest::keyClick(source, destination);
+    };
+    navigate(editor, Qt::Key_J);
     auto* panel = window.findChild<TerminalPanel*>(); assert(panel && panel->isVisible());
     auto checkLayout = [&] {
         QApplication::processEvents();
@@ -576,6 +580,38 @@ static void terminalWindowTests(const QTemporaryDir& directory) {
         closeDiscard(window); return;
     }
     assert(projectReady);
+    const auto terminalBounds = bounds(panel);
+    const auto editorPosition = editor->navigationPosition();
+    QSignalSpy input(terminal, &TerminalWidget::input);
+    navigate(terminal, Qt::Key_Escape);
+    assert(terminal->hasFocus() && input.isEmpty());
+    QTest::keyClick(terminal, Qt::Key_W, Qt::ControlModifier);
+    assert(input.size() == 1 && input.takeFirst().at(0).toByteArray() == "\x17");
+    navigate(terminal, Qt::Key_Return);
+    assert(terminal->hasFocus() && !input.isEmpty());
+    input.clear();
+    navigate(terminal, Qt::Key_K);
+    assert(editor->hasFocus() && panel->isVisible() && input.isEmpty());
+    navigate(editor, Qt::Key_J);
+    auto* tree = window.findChild<ProjectExplorer*>();
+    assert(terminal->hasFocus() && tree);
+    navigate(terminal, Qt::Key_H);
+    assert(tree->hasFocus() && panel->isVisible() && input.isEmpty());
+    navigate(tree, Qt::Key_L);
+    assert(editor->hasFocus() && tree->isVisible());
+    navigate(editor, Qt::Key_J);
+    QTest::keyClick(terminal, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(editor->hasFocus() && panel->isVisible() && bounds(panel) == terminalBounds);
+    QTest::keyClick(editor, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(terminal->hasFocus() && panel->session()->processId() == pid);
+    QTest::keyClick(terminal, Qt::Key_F6);
+    assert(editor->hasFocus() && editor->navigationPosition() == editorPosition && panel->isVisible());
+    QTest::keyClick(editor, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(terminal->hasFocus());
+    QTest::keyClick(terminal, Qt::Key_E, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(tree->hasFocus() && panel->isVisible());
+    QTest::keyClick(tree, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier);
+    assert(terminal->hasFocus() && panel->session()->processId() == pid);
     QTest::keyClick(terminal, Qt::Key_QuoteLeft, Qt::ControlModifier);
     assert(!panel->isVisible());
     assert(editor->hasFocus());
@@ -587,11 +623,15 @@ static void terminalWindowTests(const QTemporaryDir& directory) {
     checkLayout();
     // The configured key is honoured both in the editor and in the terminal.
     QString error;
-    assert(ShortcutManager::instance().save({{"view.terminal", QKeySequence("Ctrl+Alt+T")}}, &error));
-    QTest::keyClick(terminal, Qt::Key_T, Qt::ControlModifier | Qt::AltModifier);
+    assert(ShortcutManager::instance().save({{"view.terminal", QKeySequence("Ctrl+T")},
+        {ShortcutManager::navigationPrefixId, QKeySequence("F8")}}, &error));
+    QTest::keyClick(terminal, Qt::Key_T, Qt::ControlModifier);
     assert(!panel->isVisible());
-    QTest::keyClick(editor, Qt::Key_T, Qt::ControlModifier | Qt::AltModifier);
+    QTest::keyClick(editor, Qt::Key_T, Qt::ControlModifier);
     assert(panel->isVisible() && terminal->hasFocus());
+    QTest::keyClick(terminal, Qt::Key_F8);
+    QTest::keyClick(terminal, Qt::Key_K);
+    assert(editor->hasFocus() && panel->isVisible());
     panel->findChild<QToolButton*>("terminalClose")->click(); assert(!panel->isVisible());
     assert(ShortcutManager::instance().save({}, &error));
     toggle->trigger();
