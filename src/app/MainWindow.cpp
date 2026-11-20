@@ -422,8 +422,8 @@ void MainWindow::createUi() {
         const bool revertFile=!snapshot.staged && pendingGitRevert_==path;
         pendingGitRevert_.clear();
         if (!gitDiff_) {
-            gitDiff_ = new GitDiffView(editorArea_); editorArea_->addDockWidget(Qt::LeftDockWidgetArea, gitDiff_);
-            connect(gitDiff_, &QDockWidget::visibilityChanged, this, [this, restoreOutline=false](bool visible) mutable {
+            gitDiff_ = new GitDiffView(editorArea_->centralWidget());
+            connect(gitDiff_, &GitDiffView::visibilityChanged, this, [this, restoreOutline=false](bool visible) mutable {
                 if(visible) {
                     restoreOutline=outline_ && outline_->isVisible();
                     if(restoreOutline) outline_->hide();
@@ -436,7 +436,6 @@ void MainWindow::createUi() {
                 auto* editor=qobject_cast<EditorWidget*>(gitDiff_->nativeEditor());
                 if(editor && editor->filePath()==path) saveEditor(editor);
             });
-            editorArea_->resizeDocks({gitDiff_}, {qMax(320, (width()-sidebar_->width())/2)}, Qt::Horizontal);
             connect(gitDiff_, &GitDiffView::refreshRequested, this, [this] {
                 if(!gitDiff_ || !gitDiff_->isVisible() || gitPanel_->service()->busy()) return;
                 const auto repository=gitPanel_->service()->repository();
@@ -497,6 +496,7 @@ void MainWindow::createUi() {
                 };
                 live.editor=editor;
                 live.align=[editor](const QVector<int>& rows) { if(editor) editor->setDiffAlignment(rows); };
+                live.showOverview=[editor](bool visible) { if(editor) editor->setMiniMapSuppressed(visible); };
                 live.highlight=[editor](const GitDiff::Model* model) {
                     if(!editor) return;
                     QVector<EditorWidget::DiffHighlight> highlights;
@@ -514,7 +514,8 @@ void MainWindow::createUi() {
                 };
             }
         }
-        gitDiff_->displayVersions(snapshot,std::move(live));
+        auto* editorHost=paneWorkspace_->count() ? paneWorkspace_->activePane()->viewContainer() : static_cast<QWidget*>(tabs_);
+        gitDiff_->displayVersions(snapshot,std::move(live),editorHost);
         if(revertFile) gitDiff_->revertFile();
     });
     debugPanel_ = new DebugPanel(sidebarStack_); sidebarStack_->addWidget(debugPanel_);
@@ -718,7 +719,7 @@ void MainWindow::createUi() {
     connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
         updateVimIndicator();
         scheduleOutline();
-        if(gitDiff_ && gitDiff_->isVisible() && gitDiff_->nativeEditor() && gitDiff_->nativeEditor()!=activeEditor()) gitDiff_->hide();
+        if(gitDiff_ && !gitDiff_->isHidden() && gitDiff_->nativeEditor()!=activeEditor()) gitDiff_->hide();
         if (!tabSwitcher_->isHidden()) finishTabSwitch(false);
         if(lsp_ && lspStatus_) {
             auto* editor=activeEditor();
@@ -1446,7 +1447,9 @@ void MainWindow::removeClosedEditor(EditorWidget* editor) {
 }
 
 void MainWindow::positionTabSwitcher() {
-    const auto area = paneWorkspace_->isVisible() ? paneWorkspace_->geometry() : tabs_->geometry();
+    const QWidget* surface = paneWorkspace_->isVisible() ? static_cast<QWidget*>(paneWorkspace_) :
+        (gitDiff_ && gitDiff_->isVisible() ? static_cast<QWidget*>(gitDiff_.data()) : tabs_);
+    const QRect area(surface->mapTo(tabSwitcher_->parentWidget(), QPoint{}), surface->size());
     const auto margins = tabSwitcher_->layout()->contentsMargins();
     const auto metrics = tabSwitchList_->fontMetrics();
     const int rowHeight = std::max(26, metrics.height() + 10);

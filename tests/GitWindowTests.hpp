@@ -10,16 +10,18 @@
 #include <QHBoxLayout>
 #include <QProcess>
 #include <QMenu>
+#include <QWheelEvent>
 static void diffScrollAlignmentTests() {
     QWidget host; host.resize(1100,500); auto* layout=new QHBoxLayout(&host);
     auto* editor=new EditorWidget(&host); auto* view=new GitDiffView(&host);
-    layout->addWidget(editor); layout->addWidget(view); host.show();
+    layout->addWidget(editor); host.show();
     GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="scroll.txt";
     snapshot.right="inserted at start\n";
     for(int i=0;i<120;++i) {
         const auto line="line "+QByteArray::number(i)+"\n";
         snapshot.left+=line;
-        if(i<20 || i>=40) snapshot.right+=line;
+        if(i==100) snapshot.right+="modified\n";
+        else if(i<20 || i>=40) snapshot.right+=line;
     }
     editor->loadBuffer(PieceTreeBuffer(snapshot.right.toStdString()),"/tmp/scroll.txt");
     GitDiffView::LiveDocument live; live.editor=editor; live.available=[] { return true; };
@@ -33,14 +35,44 @@ static void diffScrollAlignmentTests() {
         editor->setDiffHighlights(highlights);
     };
     QObject::connect(editor,&EditorWidget::contentChanged,view,&GitDiffView::documentChanged);
-    view->displayVersions(snapshot,live);
+    view->displayVersions(snapshot,live,editor);
     auto* old=view->findChild<QTextEdit*>("gitDiffOld");
+    auto* shared=view->findChild<QScrollBar*>("gitDiffScroll");
+    auto* overview=view->findChild<QWidget*>("gitDiffOverview");
     assert(waitFor([&] { return editor->visualRowForLine(21)==41; }));
+    assert(old && shared && overview && view->isAncestorOf(editor));
+    assert(old->viewport()->mapToGlobal(QPoint{}).y()==editor->viewport()->mapToGlobal(QPoint{}).y());
+    assert(!old->verticalScrollBar()->isVisible() && !editor->verticalScrollBar()->isVisible() && shared->isVisible());
+    assert(shared->mapToGlobal(QPoint{}).x()>editor->mapToGlobal(QPoint(editor->width()-1,0)).x());
+    const auto blockTop=[&](int row) { return old->cursorRect(QTextCursor(old->document()->findBlockByNumber(row))).top(); };
+    const int firstTextTop=blockTop(0)+old->verticalScrollBar()->value();
+    const auto marks=overview->grab().toImage();
+    const auto markerColor=[&](int row) { return marks.pixelColor(marks.width()-2,qRound(row*marks.height()/122.0)); };
+    const auto& theme=ThemeManager::instance();
+    assert(markerColor(0).green()>markerColor(0).red());
+    assert(markerColor(30)==theme.color("diagnostic.error"));
+    assert(markerColor(101)==theme.color("accent"));
+    QTest::mouseClick(overview,Qt::LeftButton,Qt::NoModifier,QPoint(3,overview->height()*101/122));
+    assert(shared->value()>60 && shared->value()==editor->verticalScrollBar()->value());
+    shared->setValue(shared->maximum());
+    const int bottom=editor->verticalScrollBar()->value();
+    assert(bottom==shared->maximum());
+    assert(blockTop(bottom)==firstTextTop);
     editor->verticalScrollBar()->setValue(25); QApplication::processEvents();
-    assert(old->cursorRect(QTextCursor(old->document()->findBlockByNumber(25))).top()==int(old->document()->documentMargin()));
+    assert(shared->value()==25);
+    assert(blockTop(25)==firstTextTop);
+    const QPoint wheelPos(60,50);
+    QWheelEvent wheel(wheelPos,old->viewport()->mapToGlobal(wheelPos),{},QPoint(0,-120),
+                      Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
+    QApplication::sendEvent(old->viewport(),&wheel);
+    assert(shared->value()>25 && shared->value()==editor->verticalScrollBar()->value());
+    const int afterOldWheel=shared->value();
+    QWheelEvent nativeWheel(wheelPos,editor->viewport()->mapToGlobal(wheelPos),{},QPoint(0,-120),
+                            Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
+    QApplication::sendEvent(editor->viewport(),&nativeWheel);
+    assert(shared->value()>afterOldWheel && shared->value()==editor->verticalScrollBar()->value());
     const int target=50;
-    const int y=old->cursorRect(QTextCursor(old->document()->findBlockByNumber(target))).top()+
-        old->verticalScrollBar()->value()-int(old->document()->documentMargin());
+    const int y=blockTop(target)+old->verticalScrollBar()->value()-firstTextTop;
     old->verticalScrollBar()->setValue(y); QApplication::processEvents();
     assert(editor->verticalScrollBar()->value()==target);
     editor->goToLine(22); QApplication::processEvents();
@@ -102,8 +134,10 @@ static void diffScrollAlignmentTests() {
     const int cursorY=editor->viewport()->mapFromGlobal(editor->cursorScreenPosition()).y();
     assert(cursorY>=0 && cursorY<=editor->viewport()->height());
     view->hide(); assert(editor->visualRowForLine(21)==21);
+    assert(editor->parentWidget()==&host && editor->verticalScrollBarPolicy()==Qt::ScrollBarAsNeeded);
 }
 static void gitWindowTests(QTemporaryDir& directory) {
+    assert(I18n::saveLanguage("ru")); assert(I18n::initialize()); ThemeManager::instance().initialize();
     diffScrollAlignmentTests();
     if (QStandardPaths::findExecutable("git").isEmpty()) return;
     qputenv("GIT_CONFIG_GLOBAL", "/dev/null"); qputenv("GIT_CONFIG_NOSYSTEM", "1");
@@ -124,7 +158,6 @@ static void gitWindowTests(QTemporaryDir& directory) {
     write(path, "int main() {\n    return 0;\n}\n");
     command({"add", "."}); command({"commit", "-m", "base"}); command({"branch", "side"});
     write(path, "int main() {\n    return 42;\n}\n");
-    assert(I18n::saveLanguage("ru")); assert(I18n::initialize()); ThemeManager::instance().initialize();
     MainWindow window; window.resize(1250, 780); window.show(); window.openPaths({root});
     auto* panel = window.findChild<GitPanel*>(); assert(panel);
     assert(waitFor([&] { return !panel->service()->busy() && panel->service()->repository() == root; }));
@@ -155,8 +188,19 @@ static void gitWindowTests(QTemporaryDir& directory) {
         QApplication::processEvents(); assert(window.grab().save(qEnvironmentVariable("TURTLE_CODE_GIT_PREVIEW")));
     }
     assert(diff->nativeEditor()==editor);
+    assert(diff->isAncestorOf(editor));
+    assert(!qobject_cast<QDockWidget*>(diff));
+    assert(editor->findChild<QWidget*>("editorMiniMap")->isHidden());
     assert(diff->mapToGlobal(QPoint(0,0)).x() < editor->mapToGlobal(QPoint(0,0)).x());
-    diff->hide();
+    auto* closeDiff=diff->findChild<QToolButton*>("gitDiffClose");
+    assert(closeDiff && closeDiff->isVisible());
+    assert(closeDiff->mapTo(diff,closeDiff->rect().topRight()).x()>=diff->width()-6);
+    window.activateWindow();
+    editor->setFocus();
+    QTest::mouseClick(closeDiff,Qt::LeftButton);
+    assert(diff->isHidden() && editor->isVisible() && !diff->isAncestorOf(editor));
+    assert(editor->hasFocus());
+    assert(editor->findChild<QWidget*>("editorMiniMap")->isVisible()==editor->miniMapEnabled());
     assert(QMetaObject::invokeMethod(tree,"itemClicked",Qt::DirectConnection,Q_ARG(QTreeWidgetItem*,row),Q_ARG(int,0)));
     assert(waitFor([&] { return !panel->service()->busy() && diff->isVisible(); }));
     assert(diff->nativeEditor()==editor);
@@ -172,8 +216,8 @@ static void gitWindowTests(QTemporaryDir& directory) {
         QApplication::clipboard()->setText(text); editor->pasteClipboard();
     };
     replaceForAlignment("// new line\nint main() {\n    return 42;\n}\n");
-    assert(waitFor([&] { return original->document()->firstBlock().userState()==-1; }));
-    assert(original->document()->findBlockByNumber(1).text()=="int main() {");
+    assert(waitFor([&] { return original->document()->firstBlock().userState()==-1 &&
+                                original->document()->findBlockByNumber(1).text()=="int main() {"; }));
     assert(original->document()->findBlockByNumber(1).userState()==0);
     assert(editor->visualRowForLine(1)==1);
     assert(read(path)=="int main() {\n    return 42;\n}\n");
@@ -358,5 +402,26 @@ static void gitWindowTests(QTemporaryDir& directory) {
     assert(panel->service()->status().currentBranch == "side");
     assert(editor->document()->buffer().text() == read(path).toStdString());
     assert(panel->findChild<QLabel*>("gitError")->isVisible());
+
+    // Opening Git from an existing editor split wraps only the active pane.
+    auto* splitRight=window.findChild<QAction*>("editor.splitRight"); assert(splitRight && splitRight->isEnabled());
+    splitRight->trigger();
+    auto* workspace=window.findChild<EditorPaneWorkspace*>();
+    assert(workspace && workspace->panes().size()==2);
+    auto* activePane=workspace->activePane();
+    auto* liveView=activePane->editor();
+    auto* sibling=workspace->panes().first();
+    assert(liveView && sibling!=activePane && sibling->editor()->isVisible());
+    auto* editorHost=activePane->viewContainer();
+    panel->service()->diff(discardEntry,false);
+    assert(waitFor([&] { return diff->isVisible() && diff->nativeEditor()==liveView &&
+                                liveView->verticalScrollBarPolicy()==Qt::ScrollBarAlwaysOff; }));
+    assert(diff->parentWidget()==activePane && diff->isAncestorOf(editorHost));
+    assert(sibling->editor()->isVisible() && !diff->isAncestorOf(sibling));
+    window.activateWindow();
+    QApplication::processEvents();
+    QTest::mouseClick(sibling->editor()->viewport(),Qt::LeftButton,Qt::NoModifier,QPoint(55,12));
+    assert(waitFor([&] { return diff->isHidden() && workspace->activePane()==sibling; }));
+    assert(editorHost->parentWidget()==activePane && liveView->isVisible());
     window.close(); assert(waitFor([&] { return !window.isVisible(); }));
 }

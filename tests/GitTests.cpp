@@ -230,10 +230,13 @@ private slots:
         QVERIFY(!view.findChild<QPushButton*>("gitDiffSave")); QVERIFY(!view.findChild<QPushButton*>("gitDiffRevert"));
         QVERIFY(!view.findChild<QPushButton*>("gitDiffOpen")); QVERIFY(!view.findChild<QPushButton*>("gitDiffStage"));
         QVERIFY(!view.findChild<QComboBox*>("gitDiffMode")); QVERIFY(!view.findChild<QCheckBox*>("gitDiffFold"));
-        QVERIFY(view.findChildren<QLabel*>().isEmpty());
+        QCOMPARE(original->verticalScrollBarPolicy(),Qt::ScrollBarAlwaysOff);
+        QCOMPARE(current->verticalScrollBarPolicy(),Qt::ScrollBarAlwaysOff);
+        QVERIFY(view.findChild<QScrollBar*>("gitDiffScroll")->isVisible());
         view.resize(350,500); QVERIFY(original->isVisible() && current->isVisible());
         snapshot.special=true; snapshot.patch="Binary files differ"; view.displayVersions(snapshot);
         auto* patch=view.findChild<QPlainTextEdit*>("gitDiffText"); QVERIFY(patch->isVisible()); QCOMPARE(patch->toPlainText(),snapshot.patch);
+        QVERIFY(!view.findChild<QScrollBar*>("gitDiffScroll")->isVisible());
     }
     void alignedPaddingAndCopy() {
         struct Case { QByteArray before,after; QString oldView,newView; };

@@ -259,7 +259,7 @@ void ThemeManager::apply(const EditorTheme& theme) {
         "QToolButton:pressed, QToolButton:checked { background:%6; }"
         "QToolButton:disabled { color:%8; }"
         "QTabWidget#editorTabs::pane { border:0; margin:0; padding:0; }"
-        "QFrame#editorPaneHeader { background:%4; border:0; border-bottom:1px solid %3; }"
+        "QFrame#editorPaneHeader, QFrame#gitDiffHeader { background:%4; border:0; border-bottom:1px solid %3; }"
         "QToolButton#editorPaneTitle { text-align:left; }"
         "QTabBar::tab { color:%8; border:0; border-top:2px solid transparent; margin:0; padding:7px 14px; min-height:20px; }"
         "QTabBar::tab:hover { color:%1; background:%6; }"
@@ -347,6 +347,9 @@ void ThemeManager::apply(const EditorTheme& theme) {
         "QSplitter#workspaceSplitter::handle:hover { background:%3; }"
         "QWidget#workspaceBackground QMainWindow#editorArea::separator { background:%2; border:0; image:none; height:3px; width:3px; }"
         "QWidget#workspaceBackground QMainWindow#editorArea::separator:hover { background:%3; }"
+        "QLabel#gitDiffTitle { color:%4; font-weight:600; }"
+        "QWidget#workspaceBackground QTextEdit#gitDiffOld, QWidget#workspaceBackground QTextEdit#gitDiffNew, "
+        "QWidget#workspaceBackground QPlainTextEdit#gitDiffText { background:%5; }"
         "QWidget#workspaceBackground QScrollBar:vertical { background:transparent; width:10px; margin:0; border:0; }"
         "QWidget#workspaceBackground QScrollBar:horizontal { background:transparent; height:10px; margin:0; border:0; }"
         "QWidget#workspaceBackground QScrollBar::handle:vertical { background:%4; min-height:28px; border:2px solid transparent; border-radius:4px; }"
@@ -355,7 +358,7 @@ void ThemeManager::apply(const EditorTheme& theme) {
         "QWidget#workspaceBackground QScrollBar::handle:disabled { background:transparent; }"
         "QWidget#workspaceBackground QScrollBar::add-line, QWidget#workspaceBackground QScrollBar::sub-line { width:0; height:0; border:0; background:transparent; }"
         "QWidget#workspaceBackground QScrollBar::add-page, QWidget#workspaceBackground QScrollBar::sub-page { background:transparent; }"
-    ).arg(c("editor.selection").name(), c("border").name(), c("accent").name(), c("text.muted").name());
+    ).arg(c("editor.selection").name(), c("border").name(), c("accent").name(), c("text.muted").name(), c("editor.background").name());
     stylesheet += QStringLiteral(
         "QFrame#openFileSwitcher, QWidget#workspaceBackground QFrame#openFileSwitcher { background:%1; border:1px solid %2; border-radius:8px; }"
         "QListWidget#openFileSwitchList, QListWidget#openFileSwitchList QWidget { background:transparent; outline:0; }"
@@ -374,16 +377,20 @@ void ThemeManager::apply(const EditorTheme& theme) {
             "QWidget#workspaceBackground ProjectExplorer::item:selected { background:%1; }")
             .arg(c("sidebar.selection").name());
     }
+    stylesheet += QStringLiteral(
+        "QSplitter#gitDiffSplitter::handle { background:%1; }"
+        "QSplitter#gitDiffSplitter::handle:hover { background:%2; }")
+        .arg(c("editor.separator").name(), accent.name());
     if (current_.colors.contains("editor.separator")) {
         stylesheet += QStringLiteral(
-            "QWidget#workspaceBackground QFrame#editorPaneHeader { border-bottom-color:%1; }"
+            "QWidget#workspaceBackground QFrame#editorPaneHeader, QFrame#gitDiffHeader { border-bottom-color:%1; }"
             "QWidget#workspaceBackground QSplitter#editorPaneSplitter::handle { background:%1; }"
             "QWidget#workspaceBackground QSplitter#editorPaneSplitter::handle:hover { background:%2; }")
             .arg(c("editor.separator").name(), accent.name());
     }
     if (!WorkspaceBackground::instance().enabled()) {
         if (current_.colors.contains("editor.headerBackground"))
-            stylesheet += QStringLiteral("QWidget#workspaceBackground QFrame#editorPaneHeader { background:%1; }")
+            stylesheet += QStringLiteral("QWidget#workspaceBackground QFrame#editorPaneHeader, QFrame#gitDiffHeader { background:%1; }")
                 .arg(c("editor.headerBackground").name());
         if (current_.colors.contains("status.background"))
             stylesheet += QStringLiteral("QWidget#workspaceBackground QStatusBar, QWidget#workspaceBackground QStatusBar QLabel { background:%1; }")

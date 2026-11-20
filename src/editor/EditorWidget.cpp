@@ -224,11 +224,12 @@ void EditorWidget::invalidateScreenMinimap() {
 
 void EditorWidget::layoutMiniMap() {
     if (!miniMap_) return;
-    const int mapWidth=miniMapEnabled_?std::min(112,std::max(0,width()/4)):0;
+    const bool visible=miniMapEnabled_ && !miniMapSuppressed_;
+    const int mapWidth=visible?std::min(112,std::max(0,width()/4)):0;
     if (viewportMargins().right()!=mapWidth) setViewportMargins(0,0,mapWidth,0);
     const auto area=viewport()->geometry();
     miniMap_->setGeometry(area.right()+1,area.top(),mapWidth,area.height());
-    miniMap_->setVisible(miniMapEnabled_);
+    miniMap_->setVisible(visible);
 }
 
 void EditorWidget::setMiniMapEnabled(bool enabled) {
@@ -238,6 +239,12 @@ void EditorWidget::setMiniMapEnabled(bool enabled) {
     verticalScrollBar()->setValue(top);
     horizontalScrollBar()->setValue(left);
     if (enabled) miniMap_->invalidate();
+}
+
+void EditorWidget::setMiniMapSuppressed(bool suppressed) {
+    if (miniMapSuppressed_==suppressed) return;
+    miniMapSuppressed_=suppressed;
+    setMiniMapEnabled(miniMapEnabled_);
 }
 
 EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)

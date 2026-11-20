@@ -122,7 +122,7 @@ void MainWindow::updateWorkspaceFocus(bool focus) {
         }
         if (focus) view->setFocus();
     }
-    if (gitDiff_ && gitDiff_->isVisible() && gitDiff_->nativeEditor() != view) gitDiff_->hide();
+    if (gitDiff_ && !gitDiff_->isHidden() && gitDiff_->nativeEditor() != view) gitDiff_->hide();
     if (lsp_ && lspStatus_) {
         lspStatus_->setText(lsp_->status(view ? view->filePath() : QString{}));
         requestSemanticHighlighting(view);

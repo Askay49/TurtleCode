@@ -230,7 +230,7 @@ private:
     QToolButton* debugActivity_{nullptr};
     QString debugPath_;
     int debugLine_{0};
-    GitDiffView* gitDiff_{nullptr};
+    QPointer<GitDiffView> gitDiff_;
     QString pendingGitRevert_;
     QMainWindow* editorArea_{nullptr};
     void focusEditor();

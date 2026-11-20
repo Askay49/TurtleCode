@@ -40,6 +40,7 @@ public:
     EditorWidget* viewFor(const Document* document) const;
     bool containsView(const EditorWidget* view) const;
     EditorPaneHeader* header() const { return header_; }
+    QWidget* viewContainer() const { return views_; }
     void showView(EditorWidget* view);
     void removeView(EditorWidget* view);
     QPointer<EditorWidget> alternate;

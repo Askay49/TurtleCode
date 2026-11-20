@@ -91,6 +91,7 @@ public:
     bool insertsSpaces() const { return !editorConfig_.tabs.value_or(false); }
     void prepareEditorConfigSave(const QString& path,std::function<void(bool)> completed);
     void setMiniMapEnabled(bool enabled);
+    void setMiniMapSuppressed(bool suppressed);
     bool miniMapEnabled() const { return miniMapEnabled_; }
     [[nodiscard]] int lineNumberAreaWidth() const { return gutterWidth(); }
     void setDebugBreakpoints(const QSet<int>& lines,const QSet<int>& disabled={}) { debugDisabledBreakpoints_=disabled; debugBreakpoints_=lines; viewport()->update(); }
@@ -439,6 +440,7 @@ private:
     void layoutMiniMap();
     EditorMiniMap* miniMap_{nullptr};
     bool miniMapEnabled_{false};
+    bool miniMapSuppressed_{false};
     using BulkStep=std::function<void(int)>;
     using BulkTask=std::function<HistoryResult(PieceTreeBuffer&,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep&)>;
     void replaceSelectionsInBackground(const QString& text,std::shared_ptr<ChunkedFile> source={});
