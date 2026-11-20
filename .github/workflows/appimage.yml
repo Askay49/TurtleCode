@@ -112,7 +112,7 @@ jobs:
         run: |
           apt-get update
           apt-get install --no-install-recommends -y \
-            ca-certificates git g++ cmake ninja-build pkg-config dpkg-dev \
+            ca-certificates git g++ cmake ninja-build pkg-config dpkg-dev file \
             qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev libgl-dev \
             libpcre2-dev libsqlite3-dev libgit2-dev libtree-sitter-dev libeditorconfig-dev
 

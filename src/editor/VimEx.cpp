@@ -287,17 +287,33 @@ struct LineMarks::Node {qint64 row{},lazy{};unsigned priority{};std::shared_ptr<
 LineMarks::LineMarks()=default;LineMarks::~LineMarks()=default;
 LineMarks::LineMarks(const LineMarks& other):root_(other.root_),random_(other.random_){}
 LineMarks& LineMarks::operator=(const LineMarks& other){if(this!=&other){root_=other.root_;random_=other.random_;}return *this;}
-void LineMarks::shift(std::shared_ptr<Node>& node,qint64 delta){if(node && delta){if(!node.unique())node=std::make_shared<Node>(*node);node->row+=delta;node->lazy+=delta;}}
+void LineMarks::shift(std::shared_ptr<Node>& node, qint64 delta) {
+    if (!node || !delta) return;
+    if (node.use_count() != 1) node = std::make_shared<Node>(*node);
+    node->row += delta;
+    node->lazy += delta;
+}
 void LineMarks::push(Node& node){shift(node.left,node.lazy);shift(node.right,node.lazy);node.lazy=0;}
 std::pair<std::shared_ptr<LineMarks::Node>,std::shared_ptr<LineMarks::Node>> LineMarks::split(std::shared_ptr<Node> node,qint64 row){
-    if(!node)return {};if(!node.unique())node=std::make_shared<Node>(*node);push(*node);
+    if (!node) return {};
+    if (node.use_count() != 1) node = std::make_shared<Node>(*node);
+    push(*node);
     if(node->row<row){auto parts=split(std::move(node->right),row);node->right=std::move(parts.first);return {std::move(node),std::move(parts.second)};}
     auto parts=split(std::move(node->left),row);node->left=std::move(parts.second);return {std::move(parts.first),std::move(node)};
 }
-std::shared_ptr<LineMarks::Node> LineMarks::merge(std::shared_ptr<Node> a,std::shared_ptr<Node> b){
-    if(!a)return b;if(!b)return a;
-    if(a->priority>b->priority){if(!a.unique())a=std::make_shared<Node>(*a);push(*a);a->right=merge(std::move(a->right),std::move(b));return a;}
-    if(!b.unique())b=std::make_shared<Node>(*b);push(*b);b->left=merge(std::move(a),std::move(b->left));return b;
+std::shared_ptr<LineMarks::Node> LineMarks::merge(std::shared_ptr<Node> a, std::shared_ptr<Node> b) {
+    if (!a) return b;
+    if (!b) return a;
+    if (a->priority > b->priority) {
+        if (a.use_count() != 1) a = std::make_shared<Node>(*a);
+        push(*a);
+        a->right = merge(std::move(a->right), std::move(b));
+        return a;
+    }
+    if (b.use_count() != 1) b = std::make_shared<Node>(*b);
+    push(*b);
+    b->left = merge(std::move(a), std::move(b->left));
+    return b;
 }
 void LineMarks::add(qint64 row){random_^=random_<<13;random_^=random_>>17;random_^=random_<<5;auto node=std::make_shared<Node>();node->row=row;node->priority=random_;auto parts=split(std::move(root_),row);root_=merge(merge(std::move(parts.first),std::move(node)),std::move(parts.second));}
 bool LineMarks::empty() const{return !root_;}
