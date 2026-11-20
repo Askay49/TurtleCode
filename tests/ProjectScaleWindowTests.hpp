@@ -23,7 +23,9 @@ static void projectScaleWindowTests(QTemporaryDir& temporary) {
     assert(waitFor([&]{return pager(500)!=nullptr;}));
     assert(tree->topLevelItem(0)->childCount()==501);
     tree->setFocus();
-    tree->setCurrentItem(pager(500));
+    tree->setVimEnabled(true);
+    QTest::keyClick(tree, Qt::Key_G, Qt::ShiftModifier);
+    assert(tree->currentItem() == pager(500));
     QTest::keyClick(tree, Qt::Key_Delete);
     assert(tree->currentItem() == pager(500) && QFileInfo(root).isDir());
     QTest::keyClick(tree, Qt::Key_Return);
@@ -291,11 +293,25 @@ static void explorerKeyboardTests(QTemporaryDir& temporary) {
     assert(tree->currentItem() == folderItem->child(0));
     QTest::keyClick(tree, Qt::Key_K);
     assert(tree->currentItem() == folderItem);
+    QTest::keyClick(tree, Qt::Key_G, Qt::ShiftModifier);
+    assert(tree->currentItem() == folderItem->child(0));
+    QTest::keyClick(tree, Qt::Key_G);
+    assert(tree->currentItem() == folderItem->child(0));
+    QTest::keyClick(tree, Qt::Key_Escape);
+    assert(tree->hasFocus() && tree->currentItem() == folderItem->child(0));
+    QTest::keyClicks(tree, "gg");
+    assert(tree->currentItem() == tree->topLevelItem(0));
+    QTest::keyClick(tree, Qt::Key_L);
+    assert(tree->currentItem() == folderItem);
+    QTest::keyClick(tree, Qt::Key_L);
+    assert(tree->currentItem() == folderItem->child(0));
+    QTest::keyClick(tree, Qt::Key_H);
+    assert(tree->currentItem() == folderItem);
     QTest::keyClick(tree, Qt::Key_H);
     assert(!folderItem->isExpanded() && tabs->count() == 0);
     QTest::keyClick(tree, Qt::Key_L);
     QTest::keyClick(tree, Qt::Key_J);
-    QTest::keyClick(tree, Qt::Key_Return);
+    QTest::keyClick(tree, Qt::Key_L);
     auto* editor = qobject_cast<EditorWidget*>(tabs->currentWidget());
     assert(editor && waitFor([&] { return !editor->isBusy() && editor->filePath() == original; }));
     auto* title = window.findChild<QToolButton*>("editorPaneTitle");
@@ -326,6 +342,76 @@ static void explorerKeyboardTests(QTemporaryDir& temporary) {
     assert(renamedFromTree && symbolRenames.count() == 1);
     assert(QFileInfo::exists(renamed) && !QFileInfo::exists(original));
     assert(editor->filePath() == renamed && tree->currentItem()->text(0) == "renamed.txt");
+    window.activateWindow();
+    tree->setFocus();
+    assert(waitFor([&] { return tree->hasFocus(); }));
+
+    const auto selectedPath = [&] {
+        return tree->currentItem() ? tree->currentItem()->data(0, Qt::UserRole).toString() : QString{};
+    };
+    const auto checkTreeFocus = [&] {
+        assert(window.focusWidget() == tree);
+        // The offscreen platform has no window manager to reactivate the parent of a modal dialog.
+        window.activateWindow();
+        assert(waitFor([&] { return tree->hasFocus(); }));
+    };
+    const auto create = [&](const QString& directory, const QString& name, bool isFolder) {
+        QTimer::singleShot(0, &window, [=] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            assert(dialog && dialog->labelText().contains(QDir::toNativeSeparators(directory)));
+            dialog->setTextValue(name);
+            dialog->accept();
+        });
+        QTest::keyClick(tree, Qt::Key_A, isFolder ? Qt::ShiftModifier : Qt::NoModifier);
+        const auto path = QDir(directory).filePath(name);
+        assert(QFileInfo::exists(path));
+        assert(waitFor([&] { return selectedPath() == path; }));
+        checkTreeFocus();
+        assert(tabs->count() == 1 && tabs->currentWidget() == editor);
+        return path;
+    };
+    const auto newFolder = create(folder, "scratch", true);
+    const auto newFile = create(newFolder, "note.txt", false);
+    QTimer::singleShot(0, &window, [] {
+        auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        assert(dialog && dialog->textValue() == "note.txt");
+        auto* input = dialog->findChild<QLineEdit*>();
+        assert(input && waitFor([&] { return input->selectedText() == "note"; }));
+        QTest::keyClicks(input, "draft");
+        QTest::keyClick(input, Qt::Key_Return);
+    });
+    QTest::keyClick(tree, Qt::Key_R);
+    const auto draft = newFolder + "/draft.txt";
+    assert(waitFor([&] { return selectedPath() == draft; }));
+    checkTreeFocus();
+    assert(QFileInfo::exists(draft) && !QFileInfo::exists(newFile));
+
+    const auto deleteKey = [&](bool permanent, bool accept) {
+        const auto path = selectedPath();
+        QTimer::singleShot(0, &window, [=] {
+            auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            assert(dialog && dialog->text().contains(QDir::toNativeSeparators(path)));
+            assert(dialog->windowTitle() == I18n::text(permanent ? "Delete Permanently" : "Move to Trash"));
+            assert(dialog->defaultButton() == dialog->button(permanent ? QMessageBox::No : QMessageBox::Yes));
+            if (accept) dialog->button(QMessageBox::Yes)->click();
+            else QTest::keyClick(dialog, permanent ? Qt::Key_Return : Qt::Key_Escape);
+        });
+        QTest::keyClick(tree, Qt::Key_D, permanent ? Qt::ShiftModifier : Qt::NoModifier);
+    };
+    deleteKey(false, false);
+    checkTreeFocus();
+    deleteKey(true, false);
+    checkTreeFocus();
+    assert(QFileInfo::exists(draft) && selectedPath() == draft);
+    deleteKey(true, true);
+    assert(waitFor([&] { return !QFileInfo::exists(draft) && selectedPath() == newFolder; }));
+    checkTreeFocus();
+    deleteKey(true, true);
+    assert(waitFor([&] { return !QFileInfo::exists(newFolder) && selectedPath() == renamed; }));
+    checkTreeFocus();
+    QTest::keyClicks(tree, "gg");
+    QTest::keyClick(tree, Qt::Key_D, Qt::ShiftModifier);
+    assert(tree->roots() == QStringList{root.path()} && QFileInfo::exists(renamed));
 
     vim->trigger();
     assert(!vim->isChecked());
@@ -801,8 +887,10 @@ static void explorerRemovalTests(QTemporaryDir& temporary) {
     assert(!editor->isModified());
 
     select(file);
+    tree->setVimEnabled(true);
     answerConfirmation(I18n::text("Move to Trash"), file, QMessageBox::Yes);
-    QTest::keyClick(tree, Qt::Key_Delete);
+    QTest::keyClick(tree, Qt::Key_D);
+    tree->setVimEnabled(false);
     assert(waitFor([&] { return removed.count() == 1 && tabs->count() == 0; }));
     assert(removed.takeFirst().front().toString() == file && !QFileInfo::exists(file));
     assert(QFileInfo::exists(trash.filePath(fileName)));

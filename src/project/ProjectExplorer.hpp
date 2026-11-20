@@ -20,7 +20,7 @@ public:
     void setIncludeIgnored(bool include);
     void setCompactFolders(bool compact);
     void setConfirmMoveToTrash(bool enabled) { confirmMoveToTrash_ = enabled; }
-    void setVimEnabled(bool enabled) { vimEnabled_ = enabled; }
+    void setVimEnabled(bool enabled) { vimEnabled_ = enabled; vimGPending_ = false; }
     void setPathBusyCheck(std::function<bool(const QString&)> check);
     void revealPath(const QString& path, bool interactive = false);
     void cancelAutomaticReveal();
@@ -88,9 +88,11 @@ private:
     void restoreExpandedPaths();
     void showContextMenu(const QPoint& position);
     void selectProjectRoot();
+    void handleVimKey(const QKeyEvent& event);
+    void selectRemovalNeighbor(QTreeWidgetItem* item);
     [[nodiscard]] QString creationDirectory() const;
-    void createFileIn(const QString& directory);
-    void createFolderIn(const QString& directory);
+    void createFileIn(const QString& directory, bool selectInTree = false);
+    void createFolderIn(const QString& directory, bool selectInTree = false);
     [[nodiscard]] QString draggedPath(const QDropEvent& event) const;
     [[nodiscard]] QString dropDirectory(const QPoint& position, const QString& source) const;
     [[nodiscard]] bool canCutOrDuplicate(const QString& path) const;
@@ -100,8 +102,8 @@ private:
     void duplicatePath(const QString& path);
     bool transferPath(const QString& source, const QString& directory, bool move, bool duplicate = false);
     bool movePath(const QString& source, const QString& destination);
-    void renamePath(const QString& path);
-    void deletePath(const QString& path, Removal removal);
+    void renamePath(const QString& path, bool selectInTree = false);
+    void deletePath(const QString& path, Removal removal, bool selectNeighbor = false);
     [[nodiscard]] QTreeWidgetItem* findItem(const QString& path) const;
 
     void watchDirectory(const QString& path);
@@ -127,6 +129,7 @@ private:
     quint64 nextLoad_{0};
     bool showHidden_{false}, includeIgnored_{false};
     bool vimEnabled_{false};
+    bool vimGPending_{false};
     bool compactFolders_{false};
     bool confirmMoveToTrash_{true};
     bool copyingPath_{false};

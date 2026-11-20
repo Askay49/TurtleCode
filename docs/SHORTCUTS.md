@@ -69,10 +69,25 @@ any pane. **Esc** cancels the pending transition. Change the prefix in
 to return to the active editor pane while keeping the tree visible
 (`view.focusProjectTree`). Use Up/Down to select a row, Enter to open a file in
 a regular tab and focus the editor, expand or collapse a folder, or activate
-a paging row. F2 renames the selected item in
-the tree. In the editor, F2 invokes symbol rename. With Vim mode enabled,
-`j` and `k` move the tree selection down and up, `h` and `l` collapse
-and expand the selected folder, and **Esc** focuses the editor.
+a paging row. F2 renames the selected item in the tree. In the editor, F2 invokes
+symbol rename.
+
+With Vim mode enabled and the tree focused:
+
+| Keys | Action |
+| --- | --- |
+| `j` / `k` | Select the next / previous visible row. |
+| `gg` / `G` | Select the first / last visible tree row on the loaded pages. |
+| `h` | Collapse an expanded folder or select the parent. |
+| `l` | Expand a folder, select its first visible child if already expanded, or open the selected file or paging row. |
+| `a` / `A` | Create a file / folder inside the selected folder, beside the selected file, or in the project root if nothing is selected. The tree keeps focus and selects the new item if it passes the tree filters. |
+| `r` | Rename the selected item. For a file with an extension, the name before the extension is selected for editing. |
+| `d` / `D` | Move to Trash / permanently delete. Permanent deletion always asks for confirmation and defaults to **No**. Both commands apply to items inside the project. |
+| `Esc` | Cancel a pending `g` or return focus to the editor. |
+
+After deletion the tree selects the next sibling, the previous sibling, or the
+parent if the folder is empty. Use **Delete** or the context menu to remove the
+root folder from the workspace.
 
 With the tree focused, **Ctrl+C**, **Ctrl+X** and **Ctrl+V** copy, cut and
 paste files or folders. Paste uses the selected folder, the selected file's

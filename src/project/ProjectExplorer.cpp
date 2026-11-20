@@ -99,6 +99,19 @@ bool matchesFileClipboardKey(const QKeyEvent* event) {
            event->matches(QKeySequence::Paste);
 }
 
+bool isVimTreeKey(const QKeyEvent& event) {
+    if (event.modifiers() == Qt::ShiftModifier)
+        return event.key() == Qt::Key_A || event.key() == Qt::Key_D || event.key() == Qt::Key_G;
+    if (event.modifiers() != Qt::NoModifier) return false;
+    switch (event.key()) {
+    case Qt::Key_A: case Qt::Key_D: case Qt::Key_G: case Qt::Key_H:
+    case Qt::Key_J: case Qt::Key_K: case Qt::Key_L: case Qt::Key_R: case Qt::Key_Escape:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool removePermanently(const QString& path, const std::atomic_bool& cancel) {
     struct Frame {
         QString path;
@@ -335,15 +348,18 @@ bool ProjectExplorer::event(QEvent* event) {
     if (event->type() == QEvent::ShortcutOverride) {
         const auto* key = static_cast<QKeyEvent*>(event);
         if (key->keyCombination() == QKeyCombination(Qt::Key_F2) ||
-            key->keyCombination() == QKeyCombination(Qt::Key_Delete) || matchesFileClipboardKey(key)) {
+            key->keyCombination() == QKeyCombination(Qt::Key_Delete) || matchesFileClipboardKey(key) ||
+            (vimEnabled_ && isVimTreeKey(*key))) {
             event->accept();
             return true;
         }
     }
+    if (event->type() == QEvent::FocusOut) vimGPending_ = false;
     return QTreeWidget::event(event);
 }
 
 void ProjectExplorer::mousePressEvent(QMouseEvent* event) {
+    vimGPending_ = false;
     QTreeWidget::mousePressEvent(event);
     if (event->button() == Qt::LeftButton && !itemAt(event->position().toPoint()))
         selectProjectRoot();
@@ -351,6 +367,12 @@ void ProjectExplorer::mousePressEvent(QMouseEvent* event) {
 
 void ProjectExplorer::keyPressEvent(QKeyEvent* event) {
     pendingSelectionPath_.clear();
+    if (vimEnabled_ && isVimTreeKey(*event)) {
+        handleVimKey(*event);
+        event->accept();
+        return;
+    }
+    vimGPending_ = false;
     const int key = event->key();
     const auto modifiers = event->modifiers();
 
@@ -389,30 +411,67 @@ void ProjectExplorer::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    if (vimEnabled_ && modifiers == Qt::NoModifier) {
-        if (key == Qt::Key_Escape) {
-            emit editorFocusRequested();
-            event->accept();
-            return;
-        }
-        if (key == Qt::Key_J || key == Qt::Key_K) {
-            // Use the tree's arrow handling for visible rows, scrolling and selection.
-            QKeyEvent arrow(QEvent::KeyPress, key == Qt::Key_J ? Qt::Key_Down : Qt::Key_Up,
-                            Qt::NoModifier);
-            QTreeWidget::keyPressEvent(&arrow);
-            event->accept();
-            return;
-        }
-        if (key == Qt::Key_H || key == Qt::Key_L) {
-            if (auto* item = currentItem(); item &&
-                QFileInfo(item->data(0, Qt::UserRole).toString()).isDir())
-                item->setExpanded(key == Qt::Key_L);
-            event->accept();
-            return;
-        }
-    }
-
     QTreeWidget::keyPressEvent(event);
+}
+
+void ProjectExplorer::handleVimKey(const QKeyEvent& event) {
+    cancelAutomaticReveal();
+    const bool shifted = event.modifiers() == Qt::ShiftModifier;
+    if (event.key() == Qt::Key_G && !shifted && event.isAutoRepeat()) return;
+    const bool wasGPending = std::exchange(vimGPending_, false);
+    const auto move = [this](Qt::Key key) {
+        QKeyEvent navigation(QEvent::KeyPress, key, Qt::NoModifier);
+        QTreeWidget::keyPressEvent(&navigation);
+    };
+    auto* item = currentItem();
+    const QString path = item ? itemPath(item) : QString{};
+
+    switch (event.key()) {
+    case Qt::Key_G:
+        if (shifted) move(Qt::Key_End);
+        else if (wasGPending) move(Qt::Key_Home);
+        else vimGPending_ = true;
+        break;
+    case Qt::Key_Escape:
+        if (!wasGPending) emit editorFocusRequested();
+        break;
+    case Qt::Key_J: move(Qt::Key_Down); break;
+    case Qt::Key_K: move(Qt::Key_Up); break;
+    case Qt::Key_H:
+        if (item && item->isExpanded()) item->setExpanded(false);
+        else if (item && item->parent()) setCurrentItem(item->parent());
+        break;
+    case Qt::Key_L:
+        if (!item || event.isAutoRepeat() || activatePageItem(item)) break;
+        if (QFileInfo(path).isDir()) {
+            if (!item->isExpanded()) item->setExpanded(true);
+            else if (auto* child = itemBelow(item); child && child->parent() == item) setCurrentItem(child);
+        } else if (QFileInfo(path).isFile()) {
+            emit fileActivated(path, true);
+        }
+        break;
+    case Qt::Key_A:
+        if (!event.isAutoRepeat()) {
+            const QString directory = creationDirectory();
+            if (directory.isEmpty()) break;
+            if (shifted) createFolderIn(directory, true);
+            else createFileIn(directory, true);
+            setFocus(Qt::ShortcutFocusReason);
+        }
+        break;
+    case Qt::Key_R:
+        if (!event.isAutoRepeat() && !path.isEmpty()) {
+            renamePath(path, true);
+            setFocus(Qt::ShortcutFocusReason);
+        }
+        break;
+    case Qt::Key_D:
+        if (!event.isAutoRepeat() && item && item->isSelected() && !path.isEmpty() && !roots_.contains(path)) {
+            deletePath(path, shifted ? Removal::Permanent : Removal::Trash, true);
+            setFocus(Qt::ShortcutFocusReason);
+        }
+        break;
+    }
 }
 
 bool ProjectExplorer::activatePageItem(QTreeWidgetItem* item) {
@@ -427,6 +486,7 @@ bool ProjectExplorer::activatePageItem(QTreeWidgetItem* item) {
 }
 
 void ProjectExplorer::setRoots(const QStringList& roots) {
+    vimGPending_ = false;
     scanCancel_->store(true);scanCancel_=std::make_shared<std::atomic_bool>(false);
     ++generation_;
     clear();
@@ -1155,9 +1215,11 @@ void ProjectExplorer::createFolder() {
     if (!directory.isEmpty()) createFolderIn(directory);
 }
 
-void ProjectExplorer::createFileIn(const QString& directory) {
+void ProjectExplorer::createFileIn(const QString& directory, bool selectInTree) {
+    QString label = I18n::text("File name:");
+    if (selectInTree) label += '\n' + QDir::toNativeSeparators(directory);
     const QString name = IconDialogs::InputDialog::getText(
-        this, I18n::text("New File"), I18n::text("File name:"), QLineEdit::Normal, QString());
+        this, I18n::text("New File"), label);
     if (name.isEmpty())
         return;
     if (QFileInfo(name).fileName() != name || name == "." || name == "..") {
@@ -1175,12 +1237,15 @@ void ProjectExplorer::createFileIn(const QString& directory) {
     file.close();
     refreshDirectory(directory);
     emit filesChanged();
-    emit fileActivated(path, false);
+    if (selectInTree) revealPath(path);
+    else emit fileActivated(path, false);
 }
 
-void ProjectExplorer::createFolderIn(const QString& directory) {
+void ProjectExplorer::createFolderIn(const QString& directory, bool selectInTree) {
+    QString label = I18n::text("Folder name:");
+    if (selectInTree) label += '\n' + QDir::toNativeSeparators(directory);
     const QString name = IconDialogs::InputDialog::getText(
-        this, I18n::text("New Folder"), I18n::text("Folder name:"), QLineEdit::Normal, QString());
+        this, I18n::text("New Folder"), label);
     if (name.isEmpty())
         return;
     if (QFileInfo(name).fileName() != name || name == "." || name == "..") {
@@ -1195,11 +1260,10 @@ void ProjectExplorer::createFolderIn(const QString& directory) {
     }
     refreshDirectory(directory);
     emit filesChanged();
+    if (selectInTree) revealPath(QDir(directory).filePath(name));
 }
 
-
-
-void ProjectExplorer::renamePath(const QString& path) {
+void ProjectExplorer::renamePath(const QString& path, bool selectInTree) {
     const QFileInfo info(path);
     if (!info.exists()) {
         IconDialogs::MessageBox::warning(this, I18n::text("Rename failed"), I18n::text("The selected item no longer exists."));
@@ -1208,8 +1272,18 @@ void ProjectExplorer::renamePath(const QString& path) {
     }
 
     const QString oldName = info.fileName();
-    const QString newName = IconDialogs::InputDialog::getText(
-        this, I18n::text("Rename"), I18n::text("New name:"), QLineEdit::Normal, oldName).trimmed();
+    IconDialogs::InputDialog dialog(this);
+    dialog.setWindowTitle(I18n::text("Rename"));
+    dialog.setLabelText(I18n::text("New name:"));
+    dialog.setTextValue(oldName);
+    const auto extension = oldName.lastIndexOf('.');
+    if (selectInTree && info.isFile() && extension > 0) {
+        QTimer::singleShot(0, &dialog, [&dialog, extension] {
+            if (auto* input = dialog.findChild<QLineEdit*>()) input->setSelection(0, int(extension));
+        });
+    }
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QString newName = dialog.textValue().trimmed();
     if (newName.isEmpty() || newName == oldName)
         return;
     if (QFileInfo(newName).fileName() != newName || newName == "." || newName == "..") {
@@ -1240,9 +1314,21 @@ void ProjectExplorer::renamePath(const QString& path) {
         refreshDirectory(info.absolutePath());
     }
     emit pathRenamed(normalizedOldPath, normalizedNewPath);
+    if (selectInTree) revealPath(normalizedNewPath);
 }
 
-void ProjectExplorer::deletePath(const QString& path, Removal removal) {
+void ProjectExplorer::selectRemovalNeighbor(QTreeWidgetItem* item) {
+    auto* parent = item->parent();
+    if (!parent) return;
+    const int row = parent->indexOfChild(item);
+    auto* next = parent->child(row + 1);
+    if (!next || itemPath(next).isEmpty()) next = parent->child(row - 1);
+    if (!next || itemPath(next).isEmpty()) next = parent;
+    setCurrentItem(next);
+    scrollToItem(next);
+}
+
+void ProjectExplorer::deletePath(const QString& path, Removal removal, bool selectNeighbor) {
     if (removingPath_) return;
     const QString normalized = cleanPath(path);
     const auto generation = generation_;
@@ -1306,7 +1392,7 @@ void ProjectExplorer::deletePath(const QString& path, Removal removal) {
     progress->setWindowModality(Qt::WindowModal);
     progress->setMinimumDuration(0);
     connect(worker, &QFutureWatcher<bool>::finished, this,
-            [this, worker, progress, normalized, parent, cancel, generation, trash, errorTitle] {
+            [this, worker, progress, normalized, parent, cancel, generation, trash, errorTitle, selectNeighbor] {
         const bool removed = worker->result();
         worker->deleteLater();
         progress->hide();
@@ -1317,6 +1403,8 @@ void ProjectExplorer::deletePath(const QString& path, Removal removal) {
             pendingExpandedPaths_.removeIf([&](const QString& path) {
                 return path == normalized || path.startsWith(deletedPrefix);
             });
+            if (auto* item = currentItem(); selectNeighbor && item && itemPath(item) == normalized)
+                selectRemovalNeighbor(item);
         }
         // Open buffers can still refer to this path after the project changes.
         if (removed) emit pathDeleted(normalized);
@@ -1328,6 +1416,7 @@ void ProjectExplorer::deletePath(const QString& path, Removal removal) {
                                            : "Could not delete the selected item.");
             IconDialogs::MessageBox::warning(this, errorTitle, message);
         }
+        if (selectNeighbor && generation == generation_) setFocus(Qt::ShortcutFocusReason);
     });
     worker->setFuture(QtConcurrent::run([normalized, trash, cancel] {
         return trash ? QFile::moveToTrash(normalized) : removePermanently(normalized, *cancel);
