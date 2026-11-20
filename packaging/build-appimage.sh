@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $(uname -m) != x86_64 ]]; then
-    echo 'AppImage packaging requires an x86_64 Linux host.' >&2
-    exit 1
-fi
+arch=$(uname -m)
+case "$arch" in
+    x86_64|aarch64) ;;
+    *) echo "Unsupported AppImage architecture: $arch" >&2; exit 1 ;;
+esac
 
 build_dir=$(realpath "${1:-build/appimage}")
 output_dir=$(realpath -m "${2:-dist}")
@@ -38,10 +39,18 @@ download_tool() {
     printf '%s  %s\n' "$checksum" "$tools_dir/$name" | sha256sum --check --status
     chmod +x "$tools_dir/$name"
 }
-download_tool linuxdeploy/linuxdeploy 1-alpha-20251107-1 linuxdeploy-x86_64.AppImage \
-    c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
-download_tool linuxdeploy/linuxdeploy-plugin-qt 1-alpha-20250213-1 linuxdeploy-plugin-qt-x86_64.AppImage \
-    15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
+if [[ $arch == x86_64 ]]; then
+    download_tool linuxdeploy/linuxdeploy 1-alpha-20251107-1 linuxdeploy-x86_64.AppImage \
+        c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+    download_tool linuxdeploy/linuxdeploy-plugin-qt 1-alpha-20250213-1 linuxdeploy-plugin-qt-x86_64.AppImage \
+        15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
+else
+    # MuseScore publishes a checksummed snapshot of both upstream ARM64 tools.
+    download_tool musescore/muse_deps mirror-appimage-tools-2026.06.13 linuxdeploy-aarch64.AppImage \
+        6d2f140cc8c3b07831b1011922ed453b34f7e90d21a4bfbc65e1ec99ca71b8f3
+    download_tool musescore/muse_deps mirror-appimage-tools-2026.06.13 linuxdeploy-plugin-qt-aarch64.AppImage \
+        5525e6c49c3c774c02b8864d2acc2ae4c5c0ccc3327f7dce626deaa36348e5c6
+fi
 
 # The AppImage runtime sets ARGV0 to the launcher path. Turtle Code does not
 # use it, and zsh would otherwise use it as argv[0] for external commands.
@@ -55,11 +64,12 @@ EOF
 export APPIMAGE_EXTRACT_AND_RUN=1
 export QMAKE="${QMAKE:-/usr/bin/qmake6}"
 export EXTRA_PLATFORM_PLUGINS='libqoffscreen.so;libqwayland-egl.so;libqwayland-generic.so'
-export LDAI_OUTPUT="$output_dir/Turtle_Code-x86_64.AppImage"
+appimage="Turtle_Code-$arch.AppImage"
+export LDAI_OUTPUT="$output_dir/$appimage"
 export LDAI_NO_APPSTREAM=1
-export ARCH=x86_64
+export ARCH="$arch"
 multiarch=$(${CC:-cc} -print-multiarch)
-"$tools_dir/linuxdeploy-x86_64.AppImage" \
+"$tools_dir/linuxdeploy-$arch.AppImage" \
     --appdir "$app_dir" \
     --desktop-file "$app_dir/usr/share/applications/turtle-code.desktop" \
     --icon-file "$app_dir/usr/share/icons/hicolor/256x256/apps/turtle-code.png" \
@@ -106,5 +116,5 @@ EOF
 )
 (
     cd "$output_dir"
-    sha256sum Turtle_Code-x86_64.AppImage > Turtle_Code-x86_64.AppImage.sha256
+    sha256sum "$appimage" > "$appimage.sha256"
 )

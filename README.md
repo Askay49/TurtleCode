@@ -156,11 +156,12 @@ cmake --build build-no-treesitter -j4
 
 ## Установка в Linux
 
-После публикации тега стабильная версия `Turtle_Code-x86_64.AppImage` появляется в
-[GitHub Releases](https://github.com/Askay49/TurtleCode/releases).
-Сборки ветки `main` доступны в разделе Artifacts успешных запусков
+Для новых версий в [GitHub Releases](https://github.com/Askay49/TurtleCode/releases) публикуются
+AppImage и архивы `.tar.gz` для x86_64 и ARM64, пакеты `.deb` для Ubuntu и Debian,
+`.rpm` для Fedora и `.pkg.tar.zst` для Arch Linux. Сборки ветки `main` доступны
+в разделе Artifacts успешных запусков
 [GitHub Actions](https://github.com/Askay49/TurtleCode/actions/workflows/appimage.yml).
-Подробнее — [сборка AppImage](docs/BUILDING.md#appimage-и-github-actions).
+Список целевых выпусков Linux — в [документации по сборке](docs/BUILDING.md#пакеты-и-github-actions).
 
 После сборки установите приложение для текущего пользователя:
 
@@ -185,8 +186,15 @@ update-desktop-database "$HOME/.local/share/applications"
 gtk-update-icon-cache --force --ignore-theme-index "$HOME/.local/share/icons/hicolor"
 ```
 
-Установленная программа использует системные библиотеки Qt, libgit2 и
-Tree-sitter из окружения сборки; эта установка не создаёт автономный пакет.
+Установленная из исходников программа использует системные библиотеки Qt,
+libgit2 и Tree-sitter из окружения сборки.
+
+## Сборки macOS
+
+Для новых версий в [GitHub Releases](https://github.com/Askay49/TurtleCode/releases) публикуются
+`.dmg` и `.app.zip` для Apple Silicon (`arm64`) и Intel (`x86_64`). Сборки
+выпускаются без Developer ID и нотарификации. Для запуска на Apple Silicon
+само приложение получает техническую ad-hoc подпись.
 
 ## Первоначальная настройка
 

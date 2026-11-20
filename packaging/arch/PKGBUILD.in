@@ -1,0 +1,23 @@
+pkgname=turtle-code
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Native Qt code editor with an integrated terminal and debugger'
+arch=('x86_64')
+url='https://github.com/Askay49/TurtleCode'
+license=('MIT' 'CC-BY-4.0' 'Vim')
+depends=('qt6-base' 'pcre2' 'sqlite' 'libgit2' 'tree-sitter' 'editorconfig-core-c')
+makedepends=('cmake' 'ninja' 'pkgconf')
+optdepends=('qt6-wayland: native Wayland support')
+options=('!debug')
+source=('turtle-code.tar.gz')
+sha256sums=('@SOURCE_SHA256@')
+
+build() {
+    cmake -S "$srcdir/turtle-code" -B "$srcdir/build" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
+    cmake --build "$srcdir/build" --parallel 2
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install "$srcdir/build"
+}

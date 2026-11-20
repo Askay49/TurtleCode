@@ -517,6 +517,14 @@ if(BUILD_TESTING)
 endif()
 
 if(TURTLE_CODE_BUILD_APP)
+    if(APPLE)
+        set(TURTLE_CODE_MACOS_ICON packaging/macos/turtle-code.icns)
+        set_source_files_properties(${TURTLE_CODE_MACOS_ICON} PROPERTIES
+            MACOSX_PACKAGE_LOCATION Resources)
+        target_sources(turtle-code PRIVATE ${TURTLE_CODE_MACOS_ICON})
+        set_target_properties(turtle-code PROPERTIES MACOSX_BUNDLE_ICON_FILE "turtle-code.icns")
+    endif()
+
     install(TARGETS turtle-code RUNTIME BUNDLE DESTINATION "${CMAKE_INSTALL_BINDIR}")
     install(FILES packaging/turtle-code.desktop
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
@@ -528,6 +536,15 @@ if(TURTLE_CODE_BUILD_APP)
     install(FILES third_party/catppuccin/LICENSE DESTINATION share/licenses/turtle-code RENAME catppuccin.LICENSE)
     install(FILES third_party/vim-digraphs/COPYING DESTINATION share/licenses/turtle-code RENAME vim-digraphs.COPYING)
     install(FILES third_party/libvterm/LICENSE DESTINATION share/licenses/turtle-code RENAME libvterm.LICENSE)
+    install(FILES third_party/codicons/LICENSE DESTINATION share/licenses/turtle-code RENAME codicons.LICENSE)
+    install(FILES third_party/codicons/LICENSE-CODE DESTINATION share/licenses/turtle-code RENAME codicons.LICENSE-CODE)
+    install(FILES third_party/seti/LICENSE DESTINATION share/licenses/turtle-code RENAME seti.LICENSE)
+    install(FILES third_party/seti/LICENSE-VSCODE DESTINATION share/licenses/turtle-code RENAME seti.LICENSE-VSCODE)
+    install(FILES third_party/tokyo-night-vscode/LICENSE.txt DESTINATION share/licenses/turtle-code RENAME tokyo-night-vscode.LICENSE)
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        include(packaging/LinuxPackages.cmake)
+    endif()
 endif()
 
 foreach(editor_target turtle-code turtle-code-editor-tests turtle-code-window-tests)

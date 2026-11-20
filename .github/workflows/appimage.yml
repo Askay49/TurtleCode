@@ -1,4 +1,4 @@
-name: AppImage
+name: Build packages
 
 on:
   push:
@@ -11,14 +11,22 @@ permissions:
   contents: read
 
 concurrency:
-  group: appimage-${{ github.ref }}
+  group: packages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Linux x86_64
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
+  ubuntu:
+    name: Ubuntu 22.04 (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
     env:
       CC: gcc-12
       CXX: g++-12
@@ -31,7 +39,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            gcc-12 g++-12 ninja-build pkg-config python3-venv \
+            gcc-12 g++-12 ninja-build pkg-config python3-venv dpkg-dev \
             qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-wayland libqt6svg6 \
             libgl1-mesa-dev \
             libpcre2-dev libsqlite3-dev libgit2-dev libtree-sitter-dev libeditorconfig-dev libssl-dev \
@@ -65,13 +73,179 @@ jobs:
           APPIMAGE_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: bash packaging/build-appimage.sh build/appimage dist
 
-      - name: Upload AppImage
+      - name: Package Ubuntu DEB and Linux tarball
+        run: |
+          cpack --config build/appimage/CPackConfig.cmake -B dist -G DEB \
+            -D CPACK_DEBIAN_PACKAGE_RELEASE=1~ubuntu22.04
+          cpack --config build/appimage/CPackConfig.cmake -B dist -G TGZ
+          sudo apt-get install --no-install-recommends -y ./dist/*.deb
+          QT_QPA_PLATFORM=offscreen /usr/bin/turtle-code --version
+
+      - name: Upload Ubuntu and portable Linux packages
         uses: actions/upload-artifact@v7
         with:
-          name: Turtle_Code-x86_64.AppImage
+          name: release-ubuntu-22.04-${{ matrix.arch }}
           path: |
-            dist/Turtle_Code-x86_64.AppImage
-            dist/Turtle_Code-x86_64.AppImage.sha256
+            dist/Turtle_Code-${{ matrix.arch }}.AppImage
+            dist/Turtle_Code-${{ matrix.arch }}.AppImage.sha256
+            dist/*.deb
+            dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  debian:
+    name: Debian 13 (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    container: debian:13
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - name: Install build and packaging dependencies
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y \
+            ca-certificates git g++ cmake ninja-build pkg-config dpkg-dev \
+            qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev libgl-dev \
+            libpcre2-dev libsqlite3-dev libgit2-dev libtree-sitter-dev libeditorconfig-dev
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build and package Debian DEB
+        run: |
+          cmake -S . -B build/debian -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build/debian --parallel 2
+          cpack --config build/debian/CPackConfig.cmake -B dist -G DEB \
+            -D CPACK_DEBIAN_PACKAGE_RELEASE=1~debian13
+          apt-get install --no-install-recommends -y ./dist/*.deb
+          QT_QPA_PLATFORM=offscreen /usr/bin/turtle-code --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-debian-13-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  fedora:
+    name: Fedora 44 (x86_64)
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    timeout-minutes: 35
+    steps:
+      - name: Install build and packaging dependencies
+        run: |
+          dnf -y install git gcc-c++ cmake ninja-build pkgconf-pkg-config rpm-build \
+            qt6-qtbase-devel pcre2-devel sqlite-devel libgit2-devel libtree-sitter-devel editorconfig-devel
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build and package Fedora RPM
+        run: |
+          cmake -S . -B build/fedora -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build/fedora --parallel 2
+          cpack --config build/fedora/CPackConfig.cmake -B dist -G RPM
+          dnf -y install ./dist/*.rpm
+          QT_QPA_PLATFORM=offscreen /usr/bin/turtle-code --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-fedora-44-x86_64
+          path: dist/*.rpm
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  arch:
+    name: Arch Linux (x86_64)
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    timeout-minutes: 35
+    steps:
+      - name: Install build and packaging dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git cmake ninja pkgconf qt6-base pcre2 sqlite libgit2 tree-sitter editorconfig-core-c
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build and verify Arch package
+        shell: bash
+        run: |
+          useradd --create-home package-builder
+          package_dir=$(mktemp -d)
+          git -c safe.directory="$GITHUB_WORKSPACE" archive --prefix=turtle-code/ \
+            --format=tar.gz --output="$package_dir/turtle-code.tar.gz" HEAD
+          version=$(sed -nE 's/^project\(TurtleCode VERSION ([0-9]+\.[0-9]+\.[0-9]+) .*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          source_sha256=$(sha256sum "$package_dir/turtle-code.tar.gz" | cut -d ' ' -f 1)
+          sed -e "s/@VERSION@/$version/" -e "s/@SOURCE_SHA256@/$source_sha256/" \
+            packaging/arch/PKGBUILD.in > "$package_dir/PKGBUILD"
+          chown -R package-builder:package-builder "$package_dir"
+          (cd "$package_dir" && runuser -u package-builder -- makepkg --noconfirm)
+          mkdir -p dist
+          cp "$package_dir"/*.pkg.tar.zst dist/
+          pacman -U --noconfirm ./dist/*.pkg.tar.zst
+          QT_QPA_PLATFORM=offscreen /usr/bin/turtle-code --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-arch-x86_64
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build and packaging dependencies
+        run: brew install cmake ninja pkgconf qtbase pcre2 sqlite libgit2 tree-sitter editorconfig
+
+      - name: Build and package macOS app
+        run: |
+          test "$(uname -m)" = '${{ matrix.arch }}'
+          qt=$(brew --prefix qtbase)
+          export PKG_CONFIG_PATH="$(brew --prefix pcre2)/lib/pkgconfig:$(brew --prefix sqlite)/lib/pkgconfig:$(brew --prefix libgit2)/lib/pkgconfig"
+          cmake -S . -B build/macos -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+            -DCMAKE_PREFIX_PATH="$qt;$(brew --prefix tree-sitter);$(brew --prefix editorconfig)"
+          cmake --build build/macos --parallel 2
+          bash packaging/macos/build-packages.sh build/macos dist "$qt/bin/macdeployqt"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.app.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -79,23 +253,25 @@ jobs:
   release:
     name: Publish GitHub Release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: build
+    needs: [ubuntu, debian, fedora, arch, macos]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: Turtle_Code-x86_64.AppImage
+          pattern: release-*
           path: dist
+          merge-multiple: true
 
-      - name: Publish verified AppImage and checksum
+      - name: Publish packages and checksums
         working-directory: dist
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          sha256sum --check Turtle_Code-x86_64.AppImage.sha256
-          gh release create "$RELEASE_TAG" --verify-tag --generate-notes \
-            Turtle_Code-x86_64.AppImage Turtle_Code-x86_64.AppImage.sha256
+          sha256sum --check -- *.AppImage.sha256
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" .
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes -- *

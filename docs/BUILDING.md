@@ -68,18 +68,36 @@ ctest --preset debug
 
 Для Release доступны аналогичные пресеты `release` и `release-tests`.
 
-## AppImage и GitHub Actions
+## Пакеты и GitHub Actions
 
-Workflow [AppImage](../.github/workflows/appimage.yml) автоматически собирает
-`Turtle_Code-x86_64.AppImage` после push в `main`, push тега `v*` и для pull request.
-Его также можно запустить вручную: GitHub → Actions → AppImage → Run workflow.
-AppImage и файл SHA-256 доступны в разделе Artifacts успешного запуска в течение
-30 дней. При отправке тега, совпадающего с версией приложения, workflow также
-публикует оба файла в GitHub Releases после прохождения тестов.
-После скачивания или распаковки сделайте файл исполняемым:
-`chmod +x Turtle_Code-x86_64.AppImage`.
+Workflow [Build packages](../.github/workflows/appimage.yml) запускается при push
+в `main`, при push тега `v*` и для pull request. Для ручного запуска в GitHub
+Actions выберите **Build packages**, затем **Run workflow**. Пакеты доступны
+в разделе Artifacts успешного запуска в течение 30 дней. При отправке тега,
+совпадающего с версией приложения, workflow публикует все пакеты и `SHA256SUMS`
+в одном GitHub Release после прохождения проверок.
 
-Сборка выполняется на Ubuntu 22.04 x86_64 с GCC 12, Qt 6 и Tree-sitter.
+| Целевая система | Архитектура | Пакеты |
+| --- | --- | --- |
+| Ubuntu 22.04 и совместимые Linux | x86_64, ARM64 | `.AppImage`, `.tar.gz` |
+| Ubuntu 22.04 | amd64, arm64 | `.deb` с суффиксом `~ubuntu22.04` |
+| Debian 13 | amd64, arm64 | `.deb` с суффиксом `~debian13` |
+| Fedora 44 | x86_64 | `.rpm` |
+| Arch Linux | x86_64 | `.pkg.tar.zst` |
+| macOS | Apple Silicon и Intel | `.dmg`, `.app.zip` |
+
+В Linux-архивах `.tar.gz` лежит дерево установки. Для запуска бинарника из
+архива нужны системные библиотеки. Сборки macOS содержат Qt и сторонние
+библиотеки. Для Apple Silicon используется ad-hoc подпись. Developer ID
+и нотарификация Apple в workflow отсутствуют.
+
+### AppImage
+
+После скачивания сделайте AppImage исполняемым, например
+`chmod +x Turtle_Code-x86_64.AppImage`. Файл для ARM64 называется
+`Turtle_Code-aarch64.AppImage`.
+
+Сборки выполняются на Ubuntu 22.04 с GCC 12, Qt 6 и Tree-sitter.
 Перед упаковкой запускается стандартный набор тестов CTest.
 linuxdeploy с Qt-плагином упаковывает приложение и зависимости, включая
 EditorConfig, платформенные плагины X11/Wayland и библиотеки TLS. Версии упаковщиков закреплены
