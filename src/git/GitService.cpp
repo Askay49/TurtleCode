@@ -293,11 +293,19 @@ void GitService::diff(const GitEntry& entry, bool staged) {
     readAsync(this,[snapshot] { return GitBackend::versions(snapshot); },[this,generation](auto result) {
         if(generation==generation_) {
             if(!result.error.isEmpty()) emit error(result.error);
-            else {
-                const auto& snapshot=result.value;
-                emit diffReady(snapshot.entry.path,snapshot.staged,snapshot.patch);
-                if(generation==generation_) emit versionsReady(snapshot);
-            }
+            else emit versionsReady(result.value);
+        }
+        finish();
+    });
+}
+void GitService::requestPatch(const GitEntry& entry, bool staged) {
+    if(repository_.isEmpty() || !begin()) return;
+    const auto generation=generation_;
+    readAsync(this,[repository=repository_,entry,staged] { return GitBackend::patch(repository,entry,staged); },
+              [this,generation,path=entry.path,staged](auto result) {
+        if(generation==generation_) {
+            if(!result.error.isEmpty()) emit error(result.error);
+            else emit diffReady(path,staged,result.value);
         }
         finish();
     });

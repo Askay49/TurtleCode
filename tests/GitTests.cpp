@@ -282,15 +282,52 @@ private slots:
         git(dir.path(),{"add","."}); git(dir.path(),{"commit","-m","base"});
         write(dir.path(),"binary",QByteArray("b\0a",3)); write(dir.path(),"large",QByteArray(8*1024*1024+2,'y'));
         QVERIFY(QFile::remove(dir.filePath("link"))); QVERIFY(QFile::link(dir.filePath("large"),dir.filePath("link")));
+        const QByteArray manyLines = QByteArray("line\n").repeated(30001);
+        write(dir.path(),"many-lines",manyLines);
         GitService service; QSignalSpy errors(&service,&GitService::error),versions(&service,&GitService::versionsReady);
-        service.setRoots({dir.path()}); QTRY_VERIFY(!service.busy()); QCOMPARE(service.status().entries.size(),3);
+        QSignalSpy patches(&service,&GitService::diffReady);
+        GitDiffView view;
+        auto* preview=view.findChild<QPlainTextEdit*>("gitDiffText"); QVERIFY(preview);
+        service.setRoots({dir.path()}); QTRY_VERIFY(!service.busy()); QCOMPARE(service.status().entries.size(),4);
         for(const auto& entry:service.status().entries) {
             service.diff(entry,false); QTRY_VERIFY(!service.busy()); QVERIFY(!versions.isEmpty());
             const auto snapshot=qvariant_cast<GitDiffSnapshot>(versions.last()[0]);
-            if(entry.path=="binary") { QCOMPARE(snapshot.left,QByteArray("a\0b",3)); QVERIFY(snapshot.patch.contains("Binary")); }
-            else { QVERIFY(snapshot.special); QVERIFY(snapshot.right.isEmpty()); QVERIFY(!snapshot.patch.isEmpty()); }
+            QCOMPARE(snapshot.entry.path,entry.path);
+            if(entry.path=="binary") QCOMPARE(snapshot.left,QByteArray("a\0b",3));
+            else if(entry.path=="many-lines") QCOMPARE(snapshot.right,manyLines);
+            else { QVERIFY(snapshot.special); QVERIFY(snapshot.right.isEmpty()); }
+            view.displayVersions(snapshot);
+            QTRY_VERIFY(preview->isVisible() && preview->toPlainText().contains("diff --git a/"+entry.path+" b/"+entry.path));
+            if(entry.path=="binary" || entry.path=="large") QVERIFY(preview->toPlainText().contains("Binary"));
+            if(entry.path=="link") QVERIFY(preview->toPlainText().contains("120000"));
+            if(entry.path=="many-lines") QVERIFY(preview->toPlainText().contains("Diff preview limited"));
+            QVERIFY(!view.findChild<QScrollBar*>("gitDiffScroll")->isVisible());
         }
+        QVERIFY(patches.isEmpty());
         QCOMPARE(errors.size(),0);
+    }
+    void patchModesAndGitlinks() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); init(dir.path());
+        write(dir.path(),"script","echo test\n");
+        git(dir.path(),{"add","script"}); git(dir.path(),{"commit","-m","base"});
+        const auto commit=QString::fromUtf8(git(dir.path(),{"rev-parse","HEAD"})).trimmed();
+        git(dir.path(),{"update-index","--chmod=+x","script"});
+        git(dir.path(),{"update-index","--add","--cacheinfo","160000,"+commit+",submodule"});
+        GitService service; QSignalSpy patches(&service,&GitService::diffReady);
+        service.setRoots({dir.path()}); QTRY_VERIFY(!service.busy());
+        QCOMPARE(service.status().entries.size(),2);
+        for(const auto& entry:service.status().entries) {
+            service.requestPatch(entry,true); QTRY_VERIFY(!service.busy());
+            QVERIFY(!patches.isEmpty());
+            const auto result=patches.takeFirst();
+            QCOMPARE(result[0].toString(),entry.path);
+            const auto patch=result[2].toString();
+            if(entry.path=="script") QVERIFY(patch.contains("old mode 100644\nnew mode 100755"));
+            else {
+                QVERIFY(patch.contains("new file mode 160000"));
+                QVERIFY(patch.contains("Subproject commit "+commit));
+            }
+        }
     }
     void versionsAndSelections() {
         qRegisterMetaType<GitDiffSnapshot>();
@@ -339,8 +376,9 @@ private slots:
         QCOMPARE(current->verticalScrollBarPolicy(),Qt::ScrollBarAlwaysOff);
         QVERIFY(view.findChild<QScrollBar*>("gitDiffScroll")->isVisible());
         view.resize(350,500); QVERIFY(original->isVisible() && current->isVisible());
-        snapshot.special=true; snapshot.patch="Binary files differ"; view.displayVersions(snapshot);
-        auto* patch=view.findChild<QPlainTextEdit*>("gitDiffText"); QVERIFY(patch->isVisible()); QCOMPARE(patch->toPlainText(),snapshot.patch);
+        auto* patch=view.findChild<QPlainTextEdit*>("gitDiffText"); QVERIFY(!patch->isVisible()); QVERIFY(patch->toPlainText().isEmpty());
+        view.displayPatch("/tmp/example.cpp",false,"Binary files differ");
+        QVERIFY(patch->isVisible()); QCOMPARE(patch->toPlainText(),QString("Binary files differ"));
         QVERIFY(!view.findChild<QScrollBar*>("gitDiffScroll")->isVisible());
     }
     void alignedPaddingAndCopy() {
@@ -415,17 +453,21 @@ private slots:
         GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="unicode.cpp";
         snapshot.left=QByteArray::fromHex("61c2a0620a"); snapshot.right=QByteArray("X")+snapshot.left;
         QByteArray bytes=snapshot.right; QPlainTextEdit editor; editor.setPlainText(QString::fromUtf8(bytes)); editor.show();
-        int changes=-1; quint64 revision=0;
+        int changes=-1; quint64 revision=0; QByteArray rendered;
         GitDiffView::LiveDocument live; live.editor=&editor; live.read=[&] { return bytes; }; live.available=[] { return true; };
         live.revision=[&] { return revision; };
         live.replace=[&](const QByteArray& before,const QByteArray& after) { if(before!=bytes) return false; bytes=after; editor.setPlainText(QString::fromUtf8(bytes)); return true; };
-        live.highlight=[&](const GitDiff::Model* model) { changes=model?model->hunks.size():0; };
+        live.highlight=[&](const GitDiff::Model* model) {
+            changes=model?model->hunks.size():0;
+            if(model) rendered=GitDiff::join(model->right);
+        };
         QObject::connect(&editor,&QPlainTextEdit::textChanged,[&] { auto text=editor.document()->toRawText(); text.replace(QChar(0x2029),'\n'); bytes=text.toUtf8(); ++revision; });
         GitDiffView view; view.displayVersions(snapshot,live);
         QTRY_COMPARE(changes,1);
         QVERIFY(view.findChild<QTextEdit*>("gitDiffNew")->isHidden()); QVERIFY(view.findChild<GitDiffSourcePane*>("gitDiffOld")->isVisible());
         editor.setFocus(); auto cursor=editor.textCursor(); cursor.setPosition(0); editor.setTextCursor(cursor); QTest::keyClick(&editor,Qt::Key_Y);
-        view.documentChanged(); QTRY_VERIFY(view.findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().contains("+yX"));
+        view.documentChanged(); QTRY_COMPARE(rendered,QByteArray("y")+snapshot.right);
+        QVERIFY(view.findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().isEmpty());
         QVERIFY(bytes.contains(QByteArray::fromHex("c2a0")));
         view.revertFile(); QTRY_COMPARE(bytes,snapshot.left);
         view.hide(); QCOMPARE(changes,0);
@@ -483,6 +525,8 @@ private slots:
         auto entry = service.status().entries[0];
         for (const auto& value : service.status().entries) if (value.path == path) entry = value;
         service.diff(entry, false); QTRY_VERIFY(!service.busy());
+        QVERIFY(diffs.isEmpty());
+        service.requestPatch(entry, false); QTRY_VERIFY(!service.busy());
         QCOMPARE(diffs.size(), 1); QVERIFY(diffs.last()[2].toString().contains("+one"));
         service.stage({path}); QTRY_VERIFY(!service.busy());
         QVERIFY(git(dir.path(), {"diff", "--cached", "--name-only", "-z"}).contains(QFile::encodeName(path)));
@@ -498,9 +542,9 @@ private slots:
         write(dir.path(), path, "three\n"); service.refresh(); QTRY_VERIFY(!service.busy());
         for (const auto& value : service.status().entries) if (value.path == path) entry = value;
         QVERIFY(entry.staged() && entry.unstaged());
-        service.diff(entry, true); QTRY_VERIFY(!service.busy());
+        service.requestPatch(entry, true); QTRY_VERIFY(!service.busy());
         QVERIFY(diffs.last()[2].toString().contains("+two")); QVERIFY(!diffs.last()[2].toString().contains("+three"));
-        service.diff(entry, false); QTRY_VERIFY(!service.busy());
+        service.requestPatch(entry, false); QTRY_VERIFY(!service.busy());
         QVERIFY(diffs.last()[2].toString().contains("-two")); QVERIFY(diffs.last()[2].toString().contains("+three"));
         service.commit("Only index"); QTRY_VERIFY(!service.busy());
         QCOMPARE(commits.size(), 2);
@@ -519,7 +563,9 @@ private slots:
         service.setRoots({dir.path()}); QTRY_VERIFY(!service.busy());
         QCOMPARE(service.status().entries.size(), 1); const auto rename = service.status().entries[0];
         QCOMPARE(rename.index, 'R'); QCOMPARE(rename.originalPath, QString("old.txt"));
-        service.diff(rename, true); QTRY_VERIFY(!service.busy()); QVERIFY(diffs.last()[2].toString().contains("rename"));
+        service.requestPatch(rename, true); QTRY_VERIFY(!service.busy()); QCOMPARE(diffs.size(),1);
+        QVERIFY(diffs.last()[2].toString().contains("rename from old.txt"));
+        QVERIFY(diffs.last()[2].toString().contains("rename to new.txt"));
         service.unstage(rename.paths()); QTRY_VERIFY(!service.busy()); QVERIFY(QFile::exists(dir.filePath("new.txt")));
         service.stage({"old.txt", "new.txt"}); QTRY_VERIFY(!service.busy()); service.commit("rename"); QTRY_VERIFY(!service.busy());
         QVERIFY(QFile::remove(dir.filePath("new.txt"))); service.stage({"new.txt"}); QTRY_VERIFY(!service.busy());
@@ -582,10 +628,13 @@ private slots:
         git(dir.path(), {"checkout", "-b", "side"}); write(dir.path(), "a", "side\n");
         git(dir.path(), {"commit", "-am", "side"}); git(dir.path(), {"checkout", "main"});
         write(dir.path(), "a", "main\n"); git(dir.path(), {"commit", "-am", "main"}); git(dir.path(), {"merge", "side"}, 1);
-        GitService service; QSignalSpy diffs(&service, &GitService::diffReady);
+        GitService service; QSignalSpy versions(&service, &GitService::versionsReady);
         service.setRoots({dir.path()}); QTRY_VERIFY(!service.busy());
         QVERIFY(service.status().entries[0].conflict());
-        service.diff(service.status().entries[0], false); QTRY_VERIFY(!service.busy()); QVERIFY(!diffs.isEmpty());
+        service.diff(service.status().entries[0], false); QTRY_VERIFY(!service.busy()); QCOMPARE(versions.size(),1);
+        const auto snapshot=qvariant_cast<GitDiffSnapshot>(versions.last()[0]);
+        QCOMPARE(snapshot.left,QByteArray("main\n"));
+        QVERIFY(snapshot.right.contains("<<<<<<<"));
         const auto head = git(dir.path(), {"rev-parse", "HEAD"}); service.commit("blocked"); QVERIFY(!service.busy());
         QCOMPARE(git(dir.path(), {"rev-parse", "HEAD"}), head);
     }
@@ -743,7 +792,7 @@ private slots:
         QTRY_VERIFY(!panel.service()->busy()); QVERIFY(commit->isEnabled());
         commit->click(); QTRY_VERIFY(!panel.service()->busy()); QVERIFY(message->toPlainText().isEmpty());
         QVERIFY(panel.service()->status().entries.isEmpty());
-        GitDiffView diff; diff.display(dir.filePath("a.txt"), false, "@@ -1 +1,2 @@\n base\n+new\n");
+        GitDiffView diff; diff.displayPatch(dir.filePath("a.txt"), false, "@@ -1 +1,2 @@\n base\n+new\n");
         auto* text = diff.findChild<QPlainTextEdit*>("gitDiffText"); QVERIFY(text && text->isReadOnly());
         QVERIFY(text->toPlainText().contains("+new"));
 

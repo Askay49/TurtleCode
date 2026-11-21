@@ -6,6 +6,7 @@
 #include <QWidget>
 #include <functional>
 #include <optional>
+#include <variant>
 class QLabel;
 class QPlainTextEdit;
 class QScrollBar;
@@ -30,11 +31,12 @@ public:
         std::function<int()> tabSize;
     };
     explicit GitDiffView(QWidget* parent = nullptr);
-    void display(const QString& path, bool staged, const QString& text);
+    void displayPatch(const QString& path, bool staged, const QString& text, QWidget* editorHost = nullptr);
     void displayVersions(const GitDiffSnapshot& snapshot, LiveDocument live = {}, QWidget* editorHost = nullptr);
     void refreshVersions(const GitDiffSnapshot& snapshot);
     QString path() const { return path_; }
     bool staged() const { return staged_; }
+    bool textOnly() const { return textOnly_; }
     QAbstractScrollArea* nativeEditor() const { return live_.editor; }
     void setOperationBusy(bool busy);
     void documentChanged();
@@ -49,12 +51,12 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 private:
     class Overview;
-    struct Comparison { GitDiff::Model model; QString patch; };
+    using Comparison = std::variant<GitDiff::Model, QString>;
     void queueComparison(bool debounce = false);
     void startComparison();
-    void finishComparison(QFutureWatcher<std::optional<Comparison>>* watcher);
+    void finishComparison(QFutureWatcher<Comparison>* watcher);
     void restoreEditorComparison();
-    void render(Comparison comparison);
+    void render(GitDiff::Model model);
     void tryRevertFile();
     void pollDocument();
     void showPatch(const QString& patch);
@@ -66,8 +68,10 @@ private:
     int editorLineForRow(int row) const;
     void scrollToRow(int row);
     void clearBinding();
+    void attachEditorHost(QWidget* editorHost);
     QString path_;
-    bool staged_{false}, updating_{false}, syncing_{false}, busy_{false}, legacy_{true}, previewOnly_{false}, revertPending_{false}, sourceReady_{false}, comparisonPending_{false};
+    QString visiblePatch_;
+    bool staged_{false}, updating_{false}, syncing_{false}, busy_{false}, textOnly_{true}, previewOnly_{false}, revertPending_{false}, sourceReady_{false}, comparisonPending_{false};
     quint64 revision_{0}, modelRevision_{0};
     std::optional<quint64> sourceRevision_, runningRevision_;
     GitDiffSnapshot snapshot_;

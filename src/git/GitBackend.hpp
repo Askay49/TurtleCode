@@ -6,4 +6,5 @@ namespace GitBackend {
 QString discover(const QString& root);
 GitStatus status(const QString& repository);
 GitDiffSnapshot versions(GitDiffSnapshot snapshot);
+QString patch(const QString& repository, const GitEntry& entry, bool staged);
 }

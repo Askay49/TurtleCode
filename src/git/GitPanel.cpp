@@ -470,6 +470,9 @@ void GitPanel::showFileMenu(Section* section,const QPoint& point) {
     auto* menu=new QMenu(files); menu->setObjectName("gitFileMenu"); menu->setAttribute(Qt::WA_DeleteOnClose);
     auto* diff=menu->addAction(Codicons::icon("diff"),I18n::text("Open changes"));
     connect(diff,&QAction::triggered,this,[this,section,entry,staged] { if(select(section)) service_.diff(entry,staged); });
+    auto* patch=menu->addAction(I18n::text("Open Git patch"));
+    patch->setObjectName("gitFilePatch");
+    connect(patch,&QAction::triggered,this,[this,section,entry,staged] { if(select(section)) service_.requestPatch(entry,staged); });
     auto* open=menu->addAction(Codicons::icon("go-to-file"),I18n::text("Open file")); open->setEnabled(entry.worktree!='D' && entry.index!='D');
     connect(open,&QAction::triggered,this,[this,repository,entry] { emit openFileRequested(repository+"/"+entry.path); });
     menu->addSeparator();

@@ -200,9 +200,18 @@ static void gitWindowTests(QTemporaryDir& directory) {
     assert(QMetaObject::invokeMethod(tree, "itemClicked", Qt::DirectConnection, Q_ARG(QTreeWidgetItem*, row), Q_ARG(int, 0)));
     assert(waitFor([&] { return !panel->service()->busy() && window.findChild<GitDiffView*>(); }));
     auto* diff = window.findChild<GitDiffView*>(); assert(diff->isVisible()); assert(firstBindingChecked);
-    assert(waitFor([&] { return diff->findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().contains("+    return 42;"); }));
     auto* editor = window.findChild<EditorWidget*>(); assert(editor);
+    auto* patchPreview=diff->findChild<QPlainTextEdit*>("gitDiffText"); assert(patchPreview);
+    const auto diffPixel=[&](int row=1) {
+        const int height=editor->fontMetrics().height()+3;
+        return editor->viewport()->grab().toImage().pixelColor(editor->viewport()->width()-20,row*height+height/2);
+    };
+    const auto hasChange=[&](int row=1) {
+        const auto color=diffPixel(row); return color.green()>color.red()+10;
+    };
     assert(waitFor([&] { return !editor->isBusy(); }));
+    assert(waitFor([&] { return hasChange(); }));
+    assert(!patchPreview->isVisible() && patchPreview->toPlainText().isEmpty());
     const auto saveWithShortcut=[&] {
         window.activateWindow(); editor->setFocus(); QApplication::processEvents();
         QTest::keyClick(editor,Qt::Key_S,Qt::ControlModifier);
@@ -257,8 +266,7 @@ static void gitWindowTests(QTemporaryDir& directory) {
     QTest::keyClick(editor,Qt::Key_A,Qt::ControlModifier);
     assert(editor->selectedText()=="int main() {\n}\n");
     editor->documentUndo();
-    assert(waitFor([&] { return editor->visualRowForLine(1)==1 &&
-        diff->findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().contains("+    return 42;"); }));
+    assert(waitFor([&] { return editor->visualRowForLine(1)==1 && hasChange(); }));
     assert(!editor->isModified());
     // Hiding the comparison removes its spacers from the editor.
     replaceForAlignment("int main() {\n}\n");
@@ -266,15 +274,9 @@ static void gitWindowTests(QTemporaryDir& directory) {
     diff->hide(); assert(editor->visualRowForLine(1)==1);
     editor->documentUndo();
     assert(QMetaObject::invokeMethod(tree,"itemClicked",Qt::DirectConnection,Q_ARG(QTreeWidgetItem*,row),Q_ARG(int,0)));
-    assert(waitFor([&] { return diff->isVisible() && !panel->service()->busy() &&
-        diff->findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().contains("+    return 42;"); }));
+    assert(waitFor([&] { return diff->isVisible() && !panel->service()->busy() && hasChange(); }));
     // A quick save can complete between the diff's availability polls. Its
     // unchanged-content notification must preserve the actual painted ranges.
-    const auto diffPixel=[&] {
-        const int height=editor->fontMetrics().height()+3;
-        return editor->viewport()->grab().toImage().pixelColor(editor->viewport()->width()-20,height+height/2);
-    };
-    assert(waitFor([&] { const auto c=diffPixel(); return c.green()>c.red()+10; }));
     const auto beforeSave=diffPixel();
     for(int attempt=0;attempt<2;++attempt) {
         editor->setFocus(); saveWithShortcut(); assert(editor->isBusy());
@@ -286,26 +288,39 @@ static void gitWindowTests(QTemporaryDir& directory) {
     editor->setFocus(); editor->setNavigationPosition(2,12);
     QTest::keyClick(editor,Qt::Key_Delete); QTest::keyClick(editor,Qt::Key_Delete); QTest::keyClick(editor,Qt::Key_0);
     assert(editor->document()->buffer().text()=="int main() {\n    return 0;\n}\n");
-    assert(waitFor([&] { return diff->findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().isEmpty(); }));
-    assert(waitFor([&] { const auto c=diffPixel(); return c.green()<=c.red()+10; }));
+    assert(waitFor([&] { return !hasChange(); }));
     assert(original->viewport()->grab().toImage().pixelColor(original->viewport()->width()-10,
         original->rowRect(1).center().y())==ThemeManager::instance().color("editor.background"));
     assert(read(path)=="int main() {\n    return 42;\n}\n");
     editor->setNavigationPosition(2,12); QTest::keyClick(editor,Qt::Key_Delete);
     QTest::keyClick(editor,Qt::Key_4); QTest::keyClick(editor,Qt::Key_2);
     assert(editor->document()->buffer().text()=="int main() {\n    return 42;\n}\n");
-    assert(waitFor([&] { const auto c=diffPixel(); return c.green()>c.red()+10; }));
+    assert(waitFor([&] { return hasChange(); }));
     saveWithShortcut(); assert(waitFor([&] { return !editor->isBusy() && !editor->isModified(); }));
     editor->setFocus(); editor->setNavigationPosition(1,1); QTest::keyClick(editor,Qt::Key_Z);
     assert(editor->isModified()); assert(editor->document()->buffer().text().starts_with("zint"));
     assert(read(path)=="int main() {\n    return 42;\n}\n");
-    assert(waitFor([&] { return diff->findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().contains("+zint"); }));
+    assert(waitFor([&] { return hasChange(0); }));
     QTest::keyClick(editor,Qt::Key_Z,Qt::ControlModifier);
     assert(waitFor([&] { return !editor->isModified(); }));
+    assert(waitFor([&] { return !hasChange(0); }));
     editor->setNavigationPosition(1,1); QTest::keyClick(editor,Qt::Key_X); assert(editor->isModified());
-    assert(waitFor([&] { return diff->findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().contains("+xint"); }));
+    assert(waitFor([&] { return hasChange(0); }));
+    row=tree->topLevelItem(1)->child(0); assert(row); tree->scrollToItem(row);
+    const auto patchPoint=tree->visualItemRect(row).center();
+    assert(QMetaObject::invokeMethod(tree,"customContextMenuRequested",Qt::DirectConnection,Q_ARG(QPoint,patchPoint)));
+    auto* patchMenu=tree->findChild<QMenu*>("gitFileMenu"); assert(patchMenu && patchMenu->isVisible());
+    auto* openPatch=patchMenu->findChild<QAction*>("gitFilePatch"); assert(openPatch && openPatch->isEnabled());
+    openPatch->trigger(); patchMenu->close();
+    assert(waitFor([&] { return patchPreview->isVisible() && patchPreview->toPlainText().contains("+    return 42;"); }));
+    assert(!patchPreview->toPlainText().contains("+xint"));
+    assert(editor->isModified() && editor->document()->buffer().text().starts_with("xint"));
+    assert(QMetaObject::invokeMethod(tree,"itemClicked",Qt::DirectConnection,Q_ARG(QTreeWidgetItem*,row),Q_ARG(int,0)));
+    assert(waitFor([&] { return diff->nativeEditor()==editor && !patchPreview->isVisible() && hasChange(0); }));
+    assert(patchPreview->toPlainText().isEmpty());
     // File-tree Revert restores and saves the working file, preserves the index,
     // and remains undoable through the native editor.
+    editor->setFocus();
     QTest::keyClick(editor,Qt::Key_Z,Qt::ControlModifier);
     assert(!editor->isModified());
     diff->hide();
@@ -381,7 +396,7 @@ static void gitWindowTests(QTemporaryDir& directory) {
     const auto indexBeforeEdit=command({"show",":hello.cpp"});
     editor->setFocus(); editor->setNavigationPosition(1,1); QTest::keyClick(editor,Qt::Key_Z);
     assert(editor->isModified()); assert(editor->document()->buffer().text()=="z"+indexBeforeEdit.toStdString());
-    assert(waitFor([&] { return diff->findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().contains("+z"+QString::fromUtf8(indexBeforeEdit).section('\n',0,0)); }));
+    assert(waitFor([&] { return hasChange(0); }));
     assert(command({"show",":hello.cpp"})==indexBeforeEdit);
     QTest::keyClick(editor,Qt::Key_Z,Qt::ControlModifier);
     assert(waitFor([&] { return !editor->isModified(); }));

@@ -830,6 +830,7 @@
   "Stage all and commit": "Добавить всё в индекс и зафиксировать",
   "There are no staged changes. Stage all changes and commit?": "В индексе нет изменений. Добавить все изменения в индекс и создать фиксацию?",
   "Open changes": "Открыть изменения",
+  "Open Git patch": "Открыть патч Git",
   "Copy path": "Скопировать путь",
   "Copy relative path": "Скопировать относительный путь",
   "Cut": "Вырезать",

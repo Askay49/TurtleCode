@@ -35,7 +35,6 @@ struct GitDiffSnapshot {
     GitEntry entry;
     bool staged{false};
     QByteArray left, right, base, ours, theirs;
-    QString patch;
     QByteArray mode{"100644"};
     bool special{false};
 };
@@ -64,6 +63,7 @@ public:
     void unstage(const QStringList& paths);
     void commit(const QString& message);
     void diff(const GitEntry& entry, bool staged);
+    void requestPatch(const GitEntry& entry, bool staged);
     void applySelection(const QString& repository, const QString& path,
                         const QByteArray& expectedIndex, const QByteArray& patch, bool indexExists = true);
     bool busy() const { return busy_; }

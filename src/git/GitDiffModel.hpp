@@ -135,34 +135,6 @@ inline QByteArray patch(const QString& path, const QByteArray& oldText, const QB
     const auto append=[&](char sign,const QVector<QByteArray>& values) { for(const auto& line:values) { out+=sign; out+=line; if(!line.endsWith('\n')) out+="\n\\ No newline at end of file\n"; } };
     append('-',a); append('+',b); return out;
 }
-inline QByteArray unified(const Model& m, const QString& path) {
-    if(m.hunks.isEmpty()) return {};
-    QByteArray out="--- "+quote("a/"+path)+"\n+++ "+quote("b/"+path)+"\n";
-    const auto append=[&](char sign,const QByteArray& line) { out+=sign; out+=line; if(!line.endsWith('\n')) out+="\n\\ No newline at end of file\n"; };
-    constexpr int context = 3;
-    for (qsizetype first = 0; first < m.hunks.size();) {
-        const auto contextEnd = [&](const Hunk& h) { return std::min(m.rowCount, h.row + h.rows + context); };
-        const int start = std::max(0, m.hunks[first].row - context);
-        int end = contextEnd(m.hunks[first]);
-        qsizetype next = first + 1;
-        while (next < m.hunks.size() && m.hunks[next].row - context <= end)
-            end = contextEnd(m.hunks[next++]);
-        int oldLine = m.alignment.left.lineAtOrAfter(start);
-        const int newLine = m.alignment.right.lineAtOrAfter(start);
-        const int oldEnd = m.alignment.left.lineAtOrAfter(end);
-        const int oldCount = oldEnd - oldLine;
-        const int newCount = m.alignment.right.lineAtOrAfter(end) - newLine;
-        out+="@@ -"+QByteArray::number(oldLine+(oldCount?1:0))+","+QByteArray::number(oldCount)+" +"+QByteArray::number(newLine+(newCount?1:0))+","+QByteArray::number(newCount)+" @@\n";
-        for (; first < next; ++first) {
-            const auto& h = m.hunks[first];
-            while (oldLine < h.left) append(' ', m.left[oldLine++]);
-            while (oldLine < h.left + h.leftCount) append('-', m.left[oldLine++]);
-            for (int line = h.right; line < h.right + h.rightCount; ++line) append('+', m.right[line]);
-        }
-        while (oldLine < oldEnd) append(' ', m.left[oldLine++]);
-    }
-    return out;
-}
 inline QString displayText(const QByteArray& text) { auto s=QString::fromUtf8(text); s.replace("\r\n","\n"); return s; }
 inline QString displayLine(const QByteArray& bytes) {
     auto text = displayText(bytes);

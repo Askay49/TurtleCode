@@ -417,10 +417,7 @@ void MainWindow::createUi() {
     connect(gitPanel_->service(), &GitService::changed, this, [this] {
         if(gitPanel_->service()->repository().isEmpty()) pendingGitRevert_.clear();
     });
-    connect(gitPanel_->service(), &GitService::versionsReady, this, [this](const GitDiffSnapshot& snapshot) {
-        const QString path=snapshot.repository+"/"+snapshot.entry.path;
-        const bool revertFile=!snapshot.staged && pendingGitRevert_==path;
-        pendingGitRevert_.clear();
+    const auto ensureGitDiff = [this] {
         if (!gitDiff_) {
             gitDiff_ = new GitDiffView(editorArea_->centralWidget());
             connect(gitDiff_, &GitDiffView::visibilityChanged, this, [this, restoreOutline=false](bool visible) mutable {
@@ -437,7 +434,7 @@ void MainWindow::createUi() {
                 if(editor && editor->filePath()==path) saveEditor(editor);
             });
             connect(gitDiff_, &GitDiffView::refreshRequested, this, [this] {
-                if(!gitDiff_ || !gitDiff_->isVisible() || gitPanel_->service()->busy()) return;
+                if(!gitDiff_ || !gitDiff_->isVisible() || gitDiff_->textOnly() || gitPanel_->service()->busy()) return;
                 const auto repository=gitPanel_->service()->repository();
                 if(repository.isEmpty() || !gitDiff_->path().startsWith(repository+"/")) return;
                 const auto relative=gitDiff_->path().mid(repository.size()+1);
@@ -452,7 +449,20 @@ void MainWindow::createUi() {
                 if(!busy && wasWriting) { wasWriting=false; QTimer::singleShot(0,gitDiff_,&GitDiffView::refreshRequested); }
             });
         }
-        if(gitDiff_->isVisible() && gitDiff_->path()==path && gitDiff_->staged()==snapshot.staged) {
+    };
+    const auto diffEditorHost = [this] {
+        return paneWorkspace_->count() ? paneWorkspace_->activePane()->viewContainer() : static_cast<QWidget*>(tabs_);
+    };
+    connect(gitPanel_, &GitPanel::diffReady, this, [this, ensureGitDiff, diffEditorHost](const QString& path, bool staged, const QString& patch) {
+        ensureGitDiff();
+        gitDiff_->displayPatch(path, staged, patch, diffEditorHost());
+    });
+    connect(gitPanel_->service(), &GitService::versionsReady, this, [this, ensureGitDiff, diffEditorHost](const GitDiffSnapshot& snapshot) {
+        const QString path=snapshot.repository+"/"+snapshot.entry.path;
+        const bool revertFile=!snapshot.staged && pendingGitRevert_==path;
+        pendingGitRevert_.clear();
+        ensureGitDiff();
+        if(gitDiff_->isVisible() && !gitDiff_->textOnly() && gitDiff_->path()==path && gitDiff_->staged()==snapshot.staged) {
             gitDiff_->refreshVersions(snapshot); if(revertFile) gitDiff_->revertFile(); return;
         }
         GitDiffView::LiveDocument live;
@@ -526,8 +536,7 @@ void MainWindow::createUi() {
                 };
             }
         }
-        auto* editorHost=paneWorkspace_->count() ? paneWorkspace_->activePane()->viewContainer() : static_cast<QWidget*>(tabs_);
-        gitDiff_->displayVersions(snapshot,std::move(live),editorHost);
+        gitDiff_->displayVersions(snapshot,std::move(live),diffEditorHost());
         if(revertFile) gitDiff_->revertFile();
     });
     debugPanel_ = new DebugPanel(sidebarStack_); sidebarStack_->addWidget(debugPanel_);

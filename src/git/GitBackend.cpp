@@ -145,7 +145,7 @@ GitStatus GitBackend::status(const QString& repository) {
 }
 GitDiffSnapshot GitBackend::versions(GitDiffSnapshot snapshot) {
     Library library; Repository repo; open(repo,snapshot.repository);
-    Index index; check(git_repository_index(index.out(),repo)); Tree tree; headTree(tree,repo);
+    Index index; check(git_repository_index(index.out(),repo));
     const auto& e=snapshot.entry;
     if(e.conflict()) {
         snapshot.base=fromIndex(repo,index,e.path,1,snapshot,true);
@@ -153,7 +153,10 @@ GitDiffSnapshot GitBackend::versions(GitDiffSnapshot snapshot) {
         snapshot.theirs=fromIndex(repo,index,e.path,3,snapshot,true);
         snapshot.left=snapshot.ours;
     } else if(snapshot.staged) {
-        if(e.index!='A') snapshot.left=fromHead(repo,tree,e.originalPath.isEmpty()?e.path:e.originalPath,snapshot);
+        if(e.index!='A') {
+            Tree tree; headTree(tree,repo);
+            snapshot.left=fromHead(repo,tree,e.originalPath.isEmpty()?e.path:e.originalPath,snapshot);
+        }
         if(e.index!='D') snapshot.right=fromIndex(repo,index,e.path,0,snapshot,false);
     } else if(!e.untracked() && e.index!='D') snapshot.left=fromIndex(repo,index,e.path,0,snapshot,false);
     const QFileInfo info(snapshot.repository+"/"+e.path);
@@ -165,20 +168,27 @@ GitDiffSnapshot GitBackend::versions(GitDiffSnapshot snapshot) {
         else { snapshot.right=file.read(limit+1); if(snapshot.right.size()>limit) { snapshot.right.clear(); snapshot.special=true; } }
         if(e.untracked()) snapshot.mode=info.permission(QFile::ExeOwner)?"100755":"100644";
     }
-    // Preserve patch metadata (renames, modes, binary/submodule changes) as well
-    // as the bounded text versions, without launching a Git process.
+    return snapshot;
+}
+QString GitBackend::patch(const QString& repository, const GitEntry& entry, bool staged) {
+    Library library; Repository repo; open(repo,repository);
+    Index index; check(git_repository_index(index.out(),repo));
+    Tree tree;
+    // Use the repository diff for metadata such as renames, modes and gitlinks.
     git_diff_options options; check(git_diff_options_init(&options,GIT_DIFF_OPTIONS_VERSION));
     options.flags=GIT_DIFF_INCLUDE_UNTRACKED|GIT_DIFF_RECURSE_UNTRACKED_DIRS|GIT_DIFF_SHOW_UNTRACKED_CONTENT|GIT_DIFF_DISABLE_PATHSPEC_MATCH|GIT_DIFF_INCLUDE_TYPECHANGE;
     options.max_size=limit;
-    auto paths=e.paths(); QVector<QByteArray> encoded; for(const auto& path:paths) encoded<<QFile::encodeName(path);
+    const auto paths=entry.paths(); QVector<QByteArray> encoded; for(const auto& path:paths) encoded<<QFile::encodeName(path);
     QVector<char*> pointers; for(auto& path:encoded) pointers<<path.data();
     options.pathspec={pointers.data(),size_t(pointers.size())};
     Handle<git_diff,git_diff_free> diff;
-    if(snapshot.staged) check(git_diff_tree_to_index(diff.out(),repo,tree,index,&options));
-    else check(git_diff_index_to_workdir(diff.out(),repo,index,&options));
+    if(staged) {
+        headTree(tree,repo);
+        check(git_diff_tree_to_index(diff.out(),repo,tree,index,&options));
+    } else check(git_diff_index_to_workdir(diff.out(),repo,index,&options));
     git_diff_find_options find; check(git_diff_find_options_init(&find,GIT_DIFF_FIND_OPTIONS_VERSION)); find.flags=GIT_DIFF_FIND_RENAMES;
     check(git_diff_find_similar(diff,&find));
     QByteArray patch; const int code=git_diff_print(diff,GIT_DIFF_FORMAT_PATCH,printLine,&patch);
     if(code==GIT_EUSER) patch+="\n[Diff truncated at 8 MiB]\n"; else check(code);
-    snapshot.patch=QString::fromUtf8(patch); return snapshot;
+    return QString::fromUtf8(patch);
 }
