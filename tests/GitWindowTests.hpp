@@ -165,8 +165,13 @@ static void gitWindowTests(QTemporaryDir& directory) {
     if (QStandardPaths::findExecutable("git").isEmpty()) return;
     qputenv("GIT_CONFIG_GLOBAL", "/dev/null"); qputenv("GIT_CONFIG_NOSYSTEM", "1");
     const auto root = directory.filePath("repository"); assert(QDir().mkpath(root));
-    const auto command = [&](const QStringList& args) {
+    const auto command = [&](const QStringList& args, const QByteArray& input = {}) {
         QProcess process; process.setWorkingDirectory(root); process.start("git", args);
+        if (!input.isEmpty()) {
+            assert(process.waitForStarted());
+            process.write(input);
+            process.closeWriteChannel();
+        }
         assert(process.waitForFinished(10000)); assert(process.exitCode() == 0); return process.readAllStandardOutput();
     };
     command({"init", "-b", "main"}); command({"config", "user.name", "Git Window Test"});
@@ -363,6 +368,44 @@ static void gitWindowTests(QTemporaryDir& directory) {
     assert(waitFor([&] { return !editor->isBusy() && !panel->service()->busy() && !panel->service()->status().entries.isEmpty() && panel->service()->status().entries[0].staged(); }));
     save.stop(); assert(!editor->isModified());
     assert(command({"show", ":hello.cpp"}) == read(path));
+    // The same file appears in both groups with different bases and one working buffer.
+    const auto stagedText = read(path);
+    editor->setNavigationPosition(2,1);
+    QTest::keyClick(editor,Qt::Key_X);
+    saveWithShortcut();
+    assert(waitFor([&] {
+        const auto entries = panel->service()->status().entries;
+        return !editor->isBusy() && !panel->service()->busy() && entries.size() == 1 &&
+               entries[0].staged() && entries[0].unstaged();
+    }));
+    const auto workingText = read(path);
+    assert(workingText != stagedText);
+    const auto headText = command({"show", "HEAD:hello.cpp"});
+    const auto openFromGit = [&](int group, const QString& filename) {
+        auto* item = tree->topLevelItem(group)->child(0);
+        assert(item && item->text(0) == filename);
+        assert(QMetaObject::invokeMethod(tree, "itemClicked", Qt::DirectConnection,
+                                         Q_ARG(QTreeWidgetItem*, item), Q_ARG(int, 0)));
+    };
+    const auto readSource = [&] {
+        QTest::keyClick(original, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(original, Qt::Key_C, Qt::ControlModifier);
+        return QApplication::clipboard()->text();
+    };
+    for (const bool staged : {true, false}) {
+        openFromGit(staged ? 0 : 1, "hello.cpp");
+        assert(waitFor([&] {
+            return diff->isVisible() && diff->staged() == staged && diff->nativeEditor() == editor &&
+                   editor->verticalScrollBarPolicy() == Qt::ScrollBarAlwaysOff;
+        }));
+        assert(readSource() == QString::fromUtf8(staged ? headText : stagedText));
+        assert(editor->document()->buffer().text() == workingText.toStdString());
+        assert(command({"show", ":hello.cpp"}) == stagedText);
+    }
+    editor->documentUndo();
+    saveWithShortcut();
+    assert(waitFor([&] { return !editor->isBusy() && !editor->isModified() && !panel->service()->busy(); }));
+    assert(read(path) == stagedText);
     const auto onlyMain = root + "/main-only.txt"; write(onlyMain, "Only on main\n");
     panel->stagePaths(root, {"main-only.txt"}); assert(waitFor([&] { return !panel->service()->busy(); }));
     window.openPaths({onlyMain});
@@ -460,5 +503,29 @@ static void gitWindowTests(QTemporaryDir& directory) {
     QTest::mouseClick(sibling->editor()->viewport(),Qt::LeftButton,Qt::NoModifier,QPoint(55,12));
     assert(waitFor([&] { return diff->isHidden() && workspace->activePane()==sibling; }));
     assert(editorHost->parentWidget()==activePane && liveView->isVisible());
+
+    const auto conflictPath = root + "/conflict.txt";
+    const auto hash = [&](const QByteArray& value) { return command({"hash-object", "-w", "--stdin"}, value).trimmed(); };
+    const QByteArray ours = "ours\r\ncommon\r\n";
+    const QByteArray markers = "<<<<<<< HEAD\r\nours\r\n=======\r\ntheirs\r\n>>>>>>> side\r\ncommon\r\n";
+    command({"update-index", "--index-info"},
+            "100644 " + hash("base\r\ncommon\r\n") + " 1\tconflict.txt\n" +
+            "100644 " + hash(ours) + " 2\tconflict.txt\n" +
+            "100644 " + hash("theirs\r\ncommon\r\n") + " 3\tconflict.txt\n");
+    write(conflictPath, markers);
+    panel->service()->refresh();
+    assert(waitFor([&] {
+        return !panel->service()->busy() && !panel->service()->status().entries.isEmpty() &&
+               panel->service()->status().entries[0].conflict();
+    }));
+    openFromGit(3, "conflict.txt");
+    assert(waitFor([&] {
+        return diff->isVisible() && diff->path() == conflictPath && diff->nativeEditor() &&
+               original->lineAtRow(1) == 0 && original->lineAtRow(5) == 1;
+    }));
+    assert(readSource() == GitDiff::displayText(ours));
+    auto* conflictEditor = qobject_cast<EditorWidget*>(diff->nativeEditor());
+    assert(conflictEditor && conflictEditor->document()->buffer().text() == markers.toStdString());
+    assert(read(conflictPath) == markers);
     window.close(); assert(waitFor([&] { return !window.isVisible(); }));
 }

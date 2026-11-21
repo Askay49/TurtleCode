@@ -168,14 +168,20 @@ private slots:
         service.refresh(); QTRY_VERIFY(!service.busy()); QCOMPARE(errors.size(),0);
     }
     void unchangedDocumentDoesNotRead() {
-        GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="idle.cpp"; snapshot.left="old\n"; snapshot.right="new\n";
-        QByteArray bytes=snapshot.right,painted; int reads=0; bool ready=true; quint64 revision=0;
+        GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="idle.cpp"; snapshot.left="old\n"; snapshot.right="disk\n";
+        QByteArray bytes="new\n",painted; int reads=0; bool ready=false; quint64 revision=0;
         QPlainTextEdit editor; editor.show();
         GitDiffView::LiveDocument live; live.editor=&editor;
         live.read=[&] { ++reads; return bytes; }; live.available=[&] { return ready; };
         live.revision=[&] { return revision; };
         live.highlight=[&](const GitDiff::Model* model) { if(model) painted=GitDiff::join(model->right); };
-        GitDiffView view; view.displayVersions(snapshot,live); QTRY_COMPARE(painted,bytes);
+        GitDiffView view; view.displayVersions(snapshot,live);
+        auto* original = view.findChild<GitDiffSourcePane*>("gitDiffOld"); QVERIFY(original);
+        QTRY_COMPARE(original->lineAtRow(0),0);
+        QCOMPARE(reads,0);
+        ready=true; view.documentChanged();
+        QCOMPARE(reads,1);
+        QTRY_COMPARE(painted,bytes);
         const int initial=reads; QTest::qWait(650); QCOMPARE(reads,initial);
         bytes="edited\n"; ++revision; view.documentChanged(); QTRY_COMPARE(painted,bytes); QCOMPARE(reads,initial+1);
         ready=false; view.setOperationBusy(true); bytes="loaded\n"; ++revision; ready=true; view.setOperationBusy(false); QTRY_COMPARE(painted,bytes);

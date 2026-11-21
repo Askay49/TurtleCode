@@ -400,8 +400,10 @@ void GitDiffView::pollDocument() {
     if (ready || sourceRevision_) {
         const auto revision = live_.revision();
         if (sourceRevision_ != revision) {
+            const bool firstRevision = !sourceRevision_;
             sourceRevision_ = revision;
-            queueComparison(true);
+            // Compare the first loaded revision immediately.
+            queueComparison(!firstRevision);
         } else if (becameReady) {
             restoreEditorComparison();
         }
