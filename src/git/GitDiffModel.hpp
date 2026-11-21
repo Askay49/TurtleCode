@@ -1,5 +1,6 @@
 #pragma once
 #include "GitRuntime.hpp"
+#include "core/text/LineAlignment.hpp"
 #include <QByteArray>
 #include <QString>
 #include <QVector>
@@ -9,13 +10,23 @@
 
 // Raw lines include their terminators: EOF and CRLF are part of the comparison.
 namespace GitDiff {
-struct Row { int left{-1}, right{-1}; bool changed{false}; };
 struct Hunk { int row, rows, left, leftCount, right, rightCount; };
+struct Alignment {
+    LineAlignment left, right;
+
+    void append(int leftCount, int rightCount) {
+        const int rows = std::max(leftCount, rightCount);
+        left.appendLines(leftCount);
+        left.appendPadding(rows - leftCount);
+        right.appendLines(rightCount);
+        right.appendPadding(rows - rightCount);
+    }
+};
 struct Model {
     QVector<QByteArray> left, right;
-    QVector<Row> rows;
+    Alignment alignment;
     QVector<Hunk> hunks;
-    bool coarse{false};
+    int rowCount{0}; // Rows backed by raw lines, before the editor's final empty line.
 };
 inline QVector<QByteArray> lines(const QByteArray& text) {
     QVector<QByteArray> result;
@@ -42,48 +53,64 @@ inline Model compare(const QByteArray& a, const QByteArray& b, bool displayEol =
     git_diff_options_init(&options,GIT_DIFF_OPTIONS_VERSION);
     options.flags=GIT_DIFF_FORCE_TEXT;
     options.context_lines=0; options.interhunk_lines=0;
-    struct Changes { QVector<char> ops; int left=0,right=0; } changes;
-    const auto hunk=[](const git_diff_delta*,const git_diff_hunk* h,void* payload)->int {
-        auto& c=*static_cast<Changes*>(payload);
-        const int left=h->old_start-(h->old_lines?1:0);
-        const int right=h->new_start-(h->new_lines?1:0);
-        while(c.left<left && c.right<right) { c.ops.append(' '); ++c.left; ++c.right; }
-        return 0;
-    };
-    const auto line=[](const git_diff_delta*,const git_diff_hunk*,const git_diff_line* l,void* payload)->int {
-        auto& c=*static_cast<Changes*>(payload);
-        if(l->origin=='-') { c.ops.append('-'); ++c.left; }
-        else if(l->origin=='+') { c.ops.append('+'); ++c.right; }
-        else if(l->origin==' ') { c.ops.append(' '); ++c.left; ++c.right; }
+    const auto hunk = [](const git_diff_delta*, const git_diff_hunk* h, void* payload) -> int {
+        auto& hunks = *static_cast<QVector<Hunk>*>(payload);
+        // A zero-length range addresses the line before the insertion point.
+        const int left = h->old_start - (h->old_lines != 0);
+        const int right = h->new_start - (h->new_lines != 0);
+        if (!hunks.isEmpty()) {
+            auto& previous = hunks.last();
+            if (previous.left + previous.leftCount == left && previous.right + previous.rightCount == right) {
+                previous.leftCount += h->old_lines;
+                previous.rightCount += h->new_lines;
+                return 0;
+            }
+        }
+        hunks.append({0, 0, left, h->old_lines, right, h->new_lines});
         return 0;
     };
     if(git_diff_buffers(oldBytes.constData(),size_t(oldBytes.size()),"old",newBytes.constData(),size_t(newBytes.size()),"new",
-                        &options,nullptr,nullptr,hunk,line,&changes)<0)
+                        &options,nullptr,nullptr,hunk,nullptr,&m.hunks)<0)
         throw std::runtime_error("Cannot calculate diff with libgit2");
-    while(changes.left<m.left.size() && changes.right<m.right.size()) {
-        changes.ops.append(' '); ++changes.left; ++changes.right;
+    const auto appendUnchanged = [&](int leftEnd, int rightEnd) {
+        const int count = leftEnd - m.alignment.left.lineCount();
+        if (count < 0 || count != rightEnd - m.alignment.right.lineCount())
+            throw std::runtime_error("Invalid diff line ranges from libgit2");
+        m.alignment.append(count, count);
+    };
+    for (auto& h : m.hunks) {
+        appendUnchanged(h.left, h.right);
+        h.row = m.alignment.left.rowCount();
+        h.rows = std::max(h.leftCount, h.rightCount);
+        m.alignment.append(h.leftCount, h.rightCount);
     }
-    const auto& ops=changes.ops;
-    int i=0,j=0;
-    for(int p=0;p<ops.size();) {
-        if(ops[p]==' ') { m.rows.append({i++,j++,false}); ++p; continue; }
-        Hunk h{int(m.rows.size()),0,i,0,j,0};
-        while(p<ops.size() && ops[p]!=' ') { if(ops[p++]=='-') ++h.leftCount; else ++h.rightCount; }
-        h.rows=qMax(h.leftCount,h.rightCount);
-        for(int r=0;r<h.rows;++r) m.rows.append({r<h.leftCount?i+r:-1,r<h.rightCount?j+r:-1,true});
-        i+=h.leftCount; j+=h.rightCount; m.hunks.append(h);
-    }
+    appendUnchanged(int(m.left.size()), int(m.right.size()));
+    m.rowCount = m.alignment.left.rowCount();
+    m.alignment.append(a.isEmpty() || a.endsWith('\n'), b.isEmpty() || b.endsWith('\n'));
     return m;
 }
 // Apply selected changed rows to the old version. Paired rows are atomic replacements.
 inline QByteArray selected(const Model& m, int first, int last, bool reverse = false) {
+    const auto& base = reverse ? m.right : m.left;
+    const auto& other = reverse ? m.left : m.right;
     QByteArray result;
-    for(int r=0;r<m.rows.size();++r) {
-        const auto& row=m.rows[r]; const bool use=row.changed && r>=first && r<=last;
-        const int index = (use != reverse) ? row.right : row.left;
-        const auto& source = (use != reverse) ? m.right : m.left;
-        if(index>=0) result+=source[index];
+    int line = 0;
+    for (const auto& h : m.hunks) {
+        const int start = reverse ? h.right : h.left;
+        const int count = reverse ? h.rightCount : h.leftCount;
+        const int otherStart = reverse ? h.left : h.right;
+        const int otherCount = reverse ? h.leftCount : h.rightCount;
+        while (line < start) result += base[line++];
+        for (int offset = 0; offset < h.rows; ++offset) {
+            if (h.row + offset >= first && h.row + offset <= last) {
+                if (offset < otherCount) result += other[otherStart + offset];
+            } else if (offset < count) {
+                result += base[start + offset];
+            }
+        }
+        line = start + count;
     }
+    while (line < base.size()) result += base[line++];
     return result;
 }
 inline QByteArray quote(const QString& path) {
@@ -111,28 +138,28 @@ inline QByteArray patch(const QString& path, const QByteArray& oldText, const QB
 inline QByteArray unified(const Model& m, const QString& path) {
     if(m.hunks.isEmpty()) return {};
     QByteArray out="--- "+quote("a/"+path)+"\n+++ "+quote("b/"+path)+"\n";
-    QVector<QPair<int,int>> ranges;
-    for(const auto& h:m.hunks) {
-        const int start=qMax(0,h.row-3),end=qMin(int(m.rows.size()),h.row+h.rows+3);
-        if(!ranges.isEmpty() && start<=ranges.last().second) ranges.last().second=end;
-        else ranges.append({start,end});
-    }
-    int oldLine=0,newLine=0,position=0;
     const auto append=[&](char sign,const QByteArray& line) { out+=sign; out+=line; if(!line.endsWith('\n')) out+="\n\\ No newline at end of file\n"; };
-    for(const auto& range:ranges) {
-        while(position<range.first) { const auto& r=m.rows[position++]; oldLine+=r.left>=0; newLine+=r.right>=0; }
-        int oldCount=0,newCount=0;
-        for(int r=range.first;r<range.second;++r) { oldCount+=m.rows[r].left>=0; newCount+=m.rows[r].right>=0; }
+    constexpr int context = 3;
+    for (qsizetype first = 0; first < m.hunks.size();) {
+        const auto contextEnd = [&](const Hunk& h) { return std::min(m.rowCount, h.row + h.rows + context); };
+        const int start = std::max(0, m.hunks[first].row - context);
+        int end = contextEnd(m.hunks[first]);
+        qsizetype next = first + 1;
+        while (next < m.hunks.size() && m.hunks[next].row - context <= end)
+            end = contextEnd(m.hunks[next++]);
+        int oldLine = m.alignment.left.lineAtOrAfter(start);
+        const int newLine = m.alignment.right.lineAtOrAfter(start);
+        const int oldEnd = m.alignment.left.lineAtOrAfter(end);
+        const int oldCount = oldEnd - oldLine;
+        const int newCount = m.alignment.right.lineAtOrAfter(end) - newLine;
         out+="@@ -"+QByteArray::number(oldLine+(oldCount?1:0))+","+QByteArray::number(oldCount)+" +"+QByteArray::number(newLine+(newCount?1:0))+","+QByteArray::number(newCount)+" @@\n";
-        while(position<range.second) {
-            const auto& r=m.rows[position];
-            if(!r.changed) { append(' ',m.left[r.left]); ++position; continue; }
-            const int begin=position;
-            while(position<range.second && m.rows[position].changed) ++position;
-            for(int row=begin;row<position;++row) if(m.rows[row].left>=0) append('-',m.left[m.rows[row].left]);
-            for(int row=begin;row<position;++row) if(m.rows[row].right>=0) append('+',m.right[m.rows[row].right]);
+        for (; first < next; ++first) {
+            const auto& h = m.hunks[first];
+            while (oldLine < h.left) append(' ', m.left[oldLine++]);
+            while (oldLine < h.left + h.leftCount) append('-', m.left[oldLine++]);
+            for (int line = h.right; line < h.right + h.rightCount; ++line) append('+', m.right[line]);
         }
-        oldLine+=oldCount; newLine+=newCount;
+        while (oldLine < oldEnd) append(' ', m.left[oldLine++]);
     }
     return out;
 }

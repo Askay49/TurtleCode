@@ -7,7 +7,7 @@
 #include <algorithm>
 
 bool EditorWidget::screenLayoutActive() const {
-    return diffRows_.isEmpty() && vim_.enabled() &&
+    return diffAlignment_.isEmpty() && vim_.enabled() &&
            (vimWrap_ || (vimFoldEnabled_ && !vimFolds_.empty()));
 }
 
@@ -154,14 +154,14 @@ void EditorWidget::rebuildScreenLayout() const {
 }
 
 int EditorWidget::screenRowCount() const {
-    if (!diffRows_.isEmpty()) return int(diffRows_.size());
+    if (!diffAlignment_.isEmpty()) return diffAlignment_.rowCount();
     if (!screenLayoutActive()) return int(std::min<std::size_t>(buffer_.lineCount(), INT_MAX-1));
     rebuildScreenLayout();
     return screenRowCount_;
 }
 
 int EditorWidget::visualRowForLine(int line) const {
-    if (line >= 0 && line < diffLineRows_.size()) return diffLineRows_[line];
+    if (const int row = diffAlignment_.rowForLine(line); row >= 0) return row;
     if (!screenLayoutActive()) return line;
     rebuildScreenLayout();
     const auto span = std::lower_bound(screenSpans_.begin(),screenSpans_.end(),line,
@@ -173,12 +173,10 @@ int EditorWidget::visualRowForLine(int line) const {
 }
 
 int EditorWidget::documentLineForVisualRow(int row) const {
-    if (!diffRows_.isEmpty()) {
-        if (row >= diffRows_.size()) return int(std::min<std::size_t>(buffer_.lineCount(),INT_MAX-1));
-        row = std::max(0,row);
-        for (int i=row; i<diffRows_.size(); ++i) if (diffRows_[i]>=0) return diffRows_[i];
-        for (int i=row; i>=0; --i) if (diffRows_[i]>=0) return diffRows_[i];
-        return 0;
+    if (!diffAlignment_.isEmpty()) {
+        const int lines = diffAlignment_.lineCount();
+        if (row >= diffAlignment_.rowCount()) return lines;
+        return std::min(diffAlignment_.lineAtOrAfter(row), std::max(0, lines - 1));
     }
     if (!screenLayoutActive()) return row;
     rebuildScreenLayout();

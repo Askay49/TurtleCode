@@ -88,9 +88,11 @@ private slots:
             after+=(i==50 || i==3000 || i==6400)?QByteArray::number(i)+" changed\r\n":line;
         }
         const auto model=GitDiff::compare(before,after);
-        QVERIFY(!model.coarse); QCOMPARE(model.hunks.size(),3);
-        QCOMPARE(GitDiff::selected(model,0,model.rows.size()-1),after);
-        QCOMPARE(GitDiff::selected(model,0,model.rows.size()-1,true),before);
+        QCOMPARE(model.hunks.size(),3);
+        QCOMPARE(model.alignment.left.ranges().size(),1);
+        QCOMPARE(model.alignment.right.ranges().size(),1);
+        QCOMPARE(GitDiff::selected(model,0,model.rowCount-1),after);
+        QCOMPARE(GitDiff::selected(model,0,model.rowCount-1,true),before);
         const auto first=model.hunks.first();
         const auto partial=GitDiff::selected(model,first.row,first.row+first.rows-1);
         QVERIFY(partial.contains("50 changed")); QVERIFY(partial.contains("3000 original"));
@@ -99,10 +101,42 @@ private slots:
         const QList<QByteArray> values={"", "a", "a\n", "a\r\n", "b\na", "a\nb\n", "b\na\n", QByteArray("a\0b\n",4)};
         for(const auto& before:values) for(const auto& after:values) {
             const auto model=GitDiff::compare(before,after);
-            QCOMPARE(GitDiff::selected(model,0,model.rows.size()-1),after);
-            QCOMPARE(GitDiff::selected(model,0,model.rows.size()-1,true),before);
-            for(const auto& row:model.rows) if(!row.changed) QCOMPARE(model.left[row.left],model.right[row.right]);
+            QCOMPARE(GitDiff::selected(model,0,model.rowCount-1),after);
+            QCOMPARE(GitDiff::selected(model,0,model.rowCount-1,true),before);
+            const auto& [left, right] = model.alignment;
+            QCOMPARE(left.rowCount(),right.rowCount());
+            QCOMPARE(left.lineCount(),before.count('\n')+1);
+            QCOMPARE(right.lineCount(),after.count('\n')+1);
+            for (const auto* side : {&left, &right}) for (int line=0;line<side->lineCount();++line)
+                QCOMPARE(side->lineAt(side->rowForLine(line)),line);
+            int row=0;
+            for (const auto& h : model.hunks) {
+                for (;row<h.row;++row) QCOMPARE(model.left[left.lineAt(row)],model.right[right.lineAt(row)]);
+                row=h.row+h.rows;
+            }
+            for (;row<model.rowCount;++row) QCOMPARE(model.left[left.lineAt(row)],model.right[right.lineAt(row)]);
         }
+    }
+    void readOnlyDiffKeepsScrollAnchor() {
+        GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="scroll.txt"; snapshot.staged=true;
+        for (int i=0;i<180;++i) snapshot.right+="line "+QByteArray::number(i)+"\n";
+        const auto at=snapshot.right.indexOf("line 75\n");
+        snapshot.left=snapshot.right;
+        snapshot.left.insert(at,"deleted A\ndeleted B\n");
+        GitDiffView view; view.resize(600,400); view.displayVersions(snapshot);
+        auto* left=view.findChild<QTextEdit*>("gitDiffOld");
+        auto* right=view.findChild<QTextEdit*>("gitDiffNew");
+        QTRY_COMPARE(right->document()->blockCount(),183);
+        QCOMPARE(right->document()->findBlockByNumber(75).userState(),-1);
+        const int lineHeight=right->verticalScrollBar()->singleStep();
+        const int top=75*lineHeight+2;
+        right->verticalScrollBar()->setValue(top);
+        snapshot.left.prepend("removed earlier\n");
+        view.refreshVersions(snapshot);
+        QTRY_COMPARE(right->document()->blockCount(),184);
+        QCOMPARE(right->document()->findBlockByNumber(76).userState(),-1);
+        QCOMPARE(right->verticalScrollBar()->value(),top+lineHeight);
+        QCOMPARE(left->verticalScrollBar()->value(),right->verticalScrollBar()->value());
     }
     void readsWithoutGitExecutable() {
         QTemporaryDir dir; init(dir.path());

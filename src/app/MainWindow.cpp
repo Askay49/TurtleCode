@@ -495,20 +495,21 @@ void MainWindow::createUi() {
                     editor->applyWorkspaceEdits(std::move(changes)); return true;
                 };
                 live.editor=editor;
-                live.align=[editor](const QVector<int>& rows) { if(editor) editor->setDiffAlignment(rows); };
+                live.align=[editor](const LineAlignment& alignment) { if(editor) editor->setDiffAlignment(alignment); };
                 live.showOverview=[editor](bool visible) { if(editor) editor->setMiniMapSuppressed(visible); };
                 live.highlight=[editor](const GitDiff::Model* model) {
                     if(!editor) return;
                     QVector<EditorWidget::DiffHighlight> highlights;
-                    if(model) for(const auto& row:model->rows) if(row.changed && row.right>=0) {
-                        auto value=GitDiff::displayText(model->right[row.right]); if(value.endsWith('\n')) value.chop(1);
+                    if(model) for(const auto& hunk:model->hunks) for(int i=0;i<hunk.rightCount;++i) {
+                        const int line=hunk.right+i;
+                        auto value=GitDiff::displayText(model->right[line]); if(value.endsWith('\n')) value.chop(1);
                         int prefix=0,suffix=0;
-                        if(row.left>=0) {
-                            auto old=GitDiff::displayText(model->left[row.left]); if(old.endsWith('\n')) old.chop(1);
+                        if(i<hunk.leftCount) {
+                            auto old=GitDiff::displayText(model->left[hunk.left+i]); if(old.endsWith('\n')) old.chop(1);
                             while(prefix<old.size() && prefix<value.size() && old[prefix]==value[prefix]) ++prefix;
                             while(suffix<old.size()-prefix && suffix<value.size()-prefix && old[old.size()-1-suffix]==value[value.size()-1-suffix]) ++suffix;
                         }
-                        highlights.append({row.right,prefix,int(value.size())-prefix-suffix});
+                        highlights.append({line,prefix,int(value.size())-prefix-suffix});
                     }
                     editor->setDiffHighlights(highlights);
                 };

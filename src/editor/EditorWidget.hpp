@@ -18,6 +18,7 @@
 
 #include "core/text/PieceTreeBuffer.hpp"
 #include "core/text/EditHistory.hpp"
+#include "core/text/LineAlignment.hpp"
 #include "SyntaxHighlighter.hpp"
 #include "SmartEditing.hpp"
 #include "EditorConfig.hpp"
@@ -101,7 +102,7 @@ public:
         diffHighlights_.clear(); for(const auto& h:highlights) diffHighlights_.insert(h.line,{h.start,h.length}); viewport()->update();
     }
     // Visual-only alignment rows: -1 is a spacer, other values are document lines.
-    void setDiffAlignment(const QVector<int>& rows);
+    void setDiffAlignment(const LineAlignment& alignment);
     int visualRowForLine(int line) const;
     int documentLineForVisualRow(int row) const;
     QPoint selectedLineRange() const {
@@ -572,7 +573,7 @@ private:
     [[nodiscard]] bool hasSelection() const { return anchor_.has_value() && (*anchor_ != cursorPosition_ || (vim_.enabled() && vim_.mode()==VimController::Mode::Visual && cursorPosition_<buffer_.size())); }
     [[nodiscard]] std::pair<std::size_t, std::size_t> selectionRange() const;
 
-    QVector<int> diffRows_, diffLineRows_;
+    LineAlignment diffAlignment_;
     QHash<int,QPair<int,int>> diffHighlights_;
     DocumentPtr document_;
     PieceTreeBuffer& buffer_;

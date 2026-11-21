@@ -99,7 +99,7 @@ void VimDiffSession::clear() {
 
 void VimDiffSession::synchronizeScroll(EditorWidget* source, int row) {
     const int side = sideOf(source);
-    if (syncing_ || model_.rows.isEmpty() || side < 0 || !views_[1 - side]) return;
+    if (syncing_ || model_.alignment.left.isEmpty() || side < 0 || !views_[1 - side]) return;
     const QScopedValueRollback guard(syncing_, true);
     views_[1 - side]->verticalScrollBar()->setValue(row);
 }
@@ -120,22 +120,14 @@ QString VimDiffSession::refresh() {
         return QString::fromUtf8(error.what());
     }
     const QScopedValueRollback guard(syncing_, true);
-    QVector<int> alignment[2];
     QVector<EditorWidget::DiffHighlight> highlights[2];
-    for (const auto& row : model_.rows) {
-        alignment[0].append(row.left);
-        alignment[1].append(row.right);
-        if (row.changed && row.left >= 0) highlights[0].append({row.left, 0, -1});
-        if (row.changed && row.right >= 0) highlights[1].append({row.right, 0, -1});
+    for (const auto& hunk : model_.hunks) {
+        for (int i = 0; i < hunk.leftCount; ++i) highlights[0].append({hunk.left + i, 0, -1});
+        for (int i = 0; i < hunk.rightCount; ++i) highlights[1].append({hunk.right + i, 0, -1});
     }
-    const int realLines[] = {int(model_.left.size()), int(model_.right.size())};
-    const bool extra[] = {views_[0]->document()->buffer().lineCount() > std::size_t(realLines[0]),
-                          views_[1]->document()->buffer().lineCount() > std::size_t(realLines[1])};
-    for (int side = 0; side < 2; ++side) {
-        if (extra[0] || extra[1]) alignment[side].append(extra[side] ? realLines[side] : -1);
-        views_[side]->setDiffAlignment(alignment[side]);
-        views_[side]->setDiffHighlights(highlights[side]);
-    }
+    views_[0]->setDiffAlignment(model_.alignment.left);
+    views_[1]->setDiffAlignment(model_.alignment.right);
+    for (int side = 0; side < 2; ++side) views_[side]->setDiffHighlights(highlights[side]);
     if (views_[0]->hasFocus()) views_[1]->verticalScrollBar()->setValue(views_[0]->verticalScrollBar()->value());
     else views_[0]->verticalScrollBar()->setValue(views_[1]->verticalScrollBar()->value());
     return {};

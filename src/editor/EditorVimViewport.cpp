@@ -4,7 +4,7 @@
 #include <algorithm>
 
 void EditorWidget::createVimFold(int first, int last) {
-    if (!diffRows_.isEmpty() || first >= last || vimFolds_.size() >= 2048) return;
+    if (!diffAlignment_.isEmpty() || first >= last || vimFolds_.size() >= 2048) return;
     const int top = documentLineForVisualRow(verticalScrollBar()->value());
     // Crossing ranges cannot form a tree. Extend the new parent to contain
     // any range it intersects, retaining those folds as children.
@@ -38,7 +38,7 @@ void EditorWidget::createVimFold(int first, int last) {
 }
 
 void EditorWidget::editVimFolds(QChar command, int count) {
-    if (!diffRows_.isEmpty()) return;
+    if (!diffAlignment_.isEmpty()) return;
     const int row = int(currentLine());
     const int top = documentLineForVisualRow(verticalScrollBar()->value());
     std::vector<std::size_t> containing;
@@ -111,7 +111,7 @@ void EditorWidget::editVimFolds(QChar command, int count) {
 }
 
 void EditorWidget::moveToVimFold(QChar command,int count) {
-    if (!diffRows_.isEmpty()) return;
+    if (!diffAlignment_.isEmpty()) return;
     const bool forward = command == 'j' || command == ']';
     const bool boundary = command == '[' || command == ']';
     const int row = int(currentLine());

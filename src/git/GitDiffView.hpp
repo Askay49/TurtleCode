@@ -21,7 +21,7 @@ public:
         std::function<bool()> available;
         std::function<bool(const QByteArray&, const QByteArray&)> replace;
         std::function<void(const GitDiff::Model*)> highlight;
-        std::function<void(const QVector<int>&)> align;
+        std::function<void(const LineAlignment&)> align;
         std::function<void(bool)> showOverview;
     };
     explicit GitDiffView(QWidget* parent = nullptr);
@@ -44,7 +44,7 @@ protected:
 private:
     class Overview;
     void rebuild();
-    void render();
+    void render(GitDiff::Model model);
     void tryRevertFile();
     void pollDocument();
     void showPatch(const QString& patch);
@@ -62,7 +62,6 @@ private:
     GitDiffSnapshot snapshot_;
     LiveDocument live_;
     GitDiff::Model model_;
-    QVector<int> alignment_;
     QByteArray working_;
     QPlainTextEdit* text_;
     QTextEdit *original_, *current_;

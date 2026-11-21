@@ -27,11 +27,13 @@ static void diffScrollAlignmentTests() {
     GitDiffView::LiveDocument live; live.editor=editor; live.available=[] { return true; };
     live.read=[editor] { return QByteArray::fromStdString(editor->snapshotBuffer().text()); };
     int alignmentUpdates=0;
-    live.align=[editor,&alignmentUpdates](const QVector<int>& rows) { ++alignmentUpdates; editor->setDiffAlignment(rows); };
+    live.align=[editor,&alignmentUpdates](const LineAlignment& alignment) { ++alignmentUpdates; editor->setDiffAlignment(alignment); };
     live.highlight=[editor](const GitDiff::Model* model) {
         QVector<EditorWidget::DiffHighlight> highlights;
-        if (model) for (const auto& row : model->rows) if (row.changed && row.right>=0)
-            highlights.append({row.right,0,int(GitDiff::displayText(model->right[row.right]).size())});
+        if (model) for (const auto& hunk : model->hunks) for (int i=0;i<hunk.rightCount;++i) {
+            const int line=hunk.right+i;
+            highlights.append({line,0,int(GitDiff::displayText(model->right[line]).size())});
+        }
         editor->setDiffHighlights(highlights);
     };
     QObject::connect(editor,&EditorWidget::contentChanged,view,&GitDiffView::documentChanged);

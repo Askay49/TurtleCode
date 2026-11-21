@@ -163,7 +163,7 @@ protected:
             const int samples=std::min(count,height());
             for (int i=0;i<samples;++i) {
                 const int row=count>height()?int(qint64(i)*count/height()):i;
-                const int line=editor_->diffRows_.isEmpty()?editor_->documentLineForVisualRow(row):editor_->diffRows_[row];
+                const int line=editor_->diffAlignment_.isEmpty()?editor_->documentLineForVisualRow(row):editor_->diffAlignment_.lineAt(row);
                 if (line<0) continue;
                 const auto& buffer=editor_->buffer_;
                 const auto slice=editor_->screenSlice(row);
@@ -278,7 +278,7 @@ EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)
         normalizeVimCursor();
         // Ordinary edits project the alignment in invalidateSemanticLines().
         // Only bulk replacements without edit details need to discard the map.
-        if (!diffRows_.isEmpty() && std::size_t(diffLineRows_.size()) != buffer_.lineCount()) {
+        if (!diffAlignment_.isEmpty() && std::size_t(diffAlignment_.lineCount()) != buffer_.lineCount()) {
             diffHighlights_.clear();
             setDiffAlignment({});
         }
@@ -1116,27 +1116,21 @@ int EditorWidget::cursorPixelColumn() const {
     return textWidth(prefix);
 }
 
-void EditorWidget::setDiffAlignment(const QVector<int>& rows) {
-    if (rows == diffRows_) return;
+void EditorWidget::setDiffAlignment(const LineAlignment& alignment) {
+    if (alignment == diffAlignment_) return;
+    if (!alignment.isEmpty() && std::size_t(alignment.lineCount()) != buffer_.lineCount()) return;
     const int oldTop = verticalScrollBar()->value();
-    const int topLine = documentLineForVisualRow(oldTop);
+    const auto anchor = diffAlignment_.isEmpty()
+        ? LineAlignment::Anchor{documentLineForVisualRow(oldTop), 0} : diffAlignment_.anchorAt(oldTop);
     const int cursorLine = static_cast<int>(currentLine());
     const int cursorRow = visualRowForLine(cursorLine);
-    const bool anchorCursor = !diffRows_.isEmpty() && !rows.isEmpty()
+    const bool anchorCursor = !diffAlignment_.isEmpty() && !alignment.isEmpty()
         && cursorRow >= oldTop && cursorRow < oldTop + verticalScrollBar()->pageStep();
-    // Accept only a complete, ordered map for this exact document revision.
-    int next = 0;
-    for (int line : rows) {
-        if (line < -1 || (line >= 0 && line != next++)) return;
-    }
-    if (!rows.isEmpty() && std::size_t(next) != buffer_.lineCount()) return;
-    diffRows_ = rows;
+    diffAlignment_ = alignment;
     if (miniMap_) miniMap_->invalidate();
-    diffLineRows_.clear();
-    for (int row = 0; row < rows.size(); ++row) if (rows[row] >= 0) diffLineRows_.append(row);
     updateScrollBars();
-    verticalScrollBar()->setValue(anchorCursor
-        ? oldTop + visualRowForLine(cursorLine) - cursorRow : visualRowForLine(topLine));
+    const int top = alignment.isEmpty() ? visualRowForLine(anchor.line) : alignment.rowForAnchor(anchor);
+    verticalScrollBar()->setValue(anchorCursor ? oldTop + visualRowForLine(cursorLine) - cursorRow : top);
     viewport()->update();
     emit semanticViewportChanged();
 }
@@ -1179,26 +1173,12 @@ void EditorWidget::adjustDiffHighlights(const HighlightEdit& edit) {
 }
 
 void EditorWidget::adjustDiffAlignment(std::size_t firstLine, int removedLines, int insertedLines) {
-    if (diffRows_.isEmpty() || (!removedLines && !insertedLines)) return;
-    const int first = static_cast<int>(firstLine);
-    const int row = visualRowForLine(first);
-    if (first < 0 || first >= diffLineRows_.size()) { setDiffAlignment({}); return; }
-    // Keep the last comparison's spacers while a fresh diff is being computed.
-    // Deleted real lines become provisional spacers; inserted lines first use
-    // adjacent spacers, so typing never collapses the whole comparison.
-    for (int& line : diffRows_) {
-        if (line > first && line <= first + removedLines) line = -1;
-        else if (line > first + removedLines) line += insertedLines - removedLines;
+    if (diffAlignment_.isEmpty() || (!removedLines && !insertedLines)) return;
+    if (firstLine >= std::size_t(diffAlignment_.lineCount())) {
+        setDiffAlignment({});
+        return;
     }
-    const int at = row + 1;
-    int reusable = 0;
-    while (reusable < insertedLines && at + reusable < diffRows_.size() && diffRows_[at + reusable] < 0)
-        ++reusable;
-    if (insertedLines > reusable) diffRows_.insert(at, insertedLines - reusable, -1);
-    for (int i = 0; i < insertedLines; ++i) diffRows_[at + i] = first + i + 1;
-    diffLineRows_.clear();
-    for (int i = 0; i < diffRows_.size(); ++i)
-        if (diffRows_[i] >= 0) diffLineRows_.append(i);
+    diffAlignment_.projectEdit(int(firstLine), removedLines, insertedLines);
 }
 
 void EditorWidget::updateScrollBars() {
@@ -1209,7 +1189,7 @@ void EditorWidget::updateScrollBars() {
     const int verticalPage = std::max(1, viewport()->height() / lineHeight());
     verticalScrollBar()->setPageStep(verticalPage);
     const int naturalEnd = std::max(0,count-verticalPage);
-    const int padding = vim_.enabled() && diffRows_.isEmpty()
+    const int padding = vim_.enabled() && diffAlignment_.isEmpty()
         ? std::clamp(vimScrollPadding_,0,std::max(0,count-1-naturalEnd)) : 0;
     verticalScrollBar()->setRange(0,naturalEnd+padding);
     verticalScrollBar()->setSingleStep(1);
@@ -1417,7 +1397,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
     const int visualCount = screenRowCount();
     const int visibleEnd = static_cast<int>(std::min<long long>(visualCount, static_cast<long long>(firstLine) + visibleLines));
     for (int visualRow = firstLine; visualRow < visibleEnd; ++visualRow) {
-        const int lineIndex = diffRows_.isEmpty() ? documentLineForVisualRow(visualRow) : diffRows_[visualRow];
+        const int lineIndex = diffAlignment_.isEmpty() ? documentLineForVisualRow(visualRow) : diffAlignment_.lineAt(visualRow);
         const int debugY = (visualRow - firstLine) * lh;
         if (lineIndex < 0) {
             painter.fillRect(QRect(gutter, debugY, viewport()->width()-gutter, lh), QColor(128,128,128,22));
@@ -2712,7 +2692,7 @@ void EditorWidget::mousePressEvent(QMouseEvent* event) {
     if (busy_) { event->accept(); return; }
     if (event->button() == Qt::LeftButton && event->position().x()<15) {
         const int row=verticalScrollBar()->value()+std::max(0,event->position().toPoint().y())/lineHeight();
-        if (!diffRows_.isEmpty() && row < diffRows_.size() && diffRows_[row] < 0) { event->accept(); return; }
+        if (!diffAlignment_.isEmpty() && row < diffAlignment_.rowCount() && diffAlignment_.lineAt(row) < 0) { event->accept(); return; }
         const int line=lineAtY(event->position().toPoint().y());
         if(line>=0 && static_cast<std::size_t>(line)<buffer_.lineCount()) emit breakpointToggled(line+1);
         event->accept(); return;

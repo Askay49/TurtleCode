@@ -222,9 +222,9 @@ int main(int argc, char** argv) {
         Q_ASSERT(editor.selectedText()=="needle");
         editor.revealMatch(80,1,6); checkCentered(80);
         // Diff spacer rows must be included in the centering calculation.
-        QVector<int> rows;
-        for(int i=0;i<300;++i){rows.append(-1);rows.append(i);}
-        editor.setDiffAlignment(rows);
+        LineAlignment alignment;
+        for(int i=0;i<300;++i){alignment.appendPadding(1);alignment.appendLines(1);}
+        editor.setDiffAlignment(alignment);
         editor.revealMatch(220,1,6); checkCentered(220);
         editor.setDiffAlignment({});
         editor.goToLine(1);
@@ -308,7 +308,10 @@ int main(int argc, char** argv) {
     {
         EditorWidget editor; load(editor,"alpha\nbeta\ngamma\n");
         const auto bytes=editor.document()->buffer().text();
-        editor.setDiffAlignment({-1,0,-1,-1,1,2,3,-1});
+        LineAlignment alignment;
+        alignment.appendPadding(1); alignment.appendLines(1); alignment.appendPadding(2);
+        alignment.appendLines(3); alignment.appendPadding(1);
+        editor.setDiffAlignment(alignment);
         assert(editor.visualRowForLine(0)==1 && editor.visualRowForLine(1)==4);
         assert(editor.documentLineForVisualRow(2)==1);
         const int height=editor.fontMetrics().height()+3;
@@ -346,7 +349,7 @@ int main(int argc, char** argv) {
         checkMap(); editor.documentUndo(); checkMap();
         assert(editor.document()->buffer().text()==bytes);
         editor.documentUndo(true); checkMap(); editor.documentUndo();
-        editor.setDiffAlignment({0,-1,1,2,3}); editor.setDiffAlignment({});
+        editor.setDiffAlignment(alignment); editor.setDiffAlignment({});
         assert(editor.visualRowForLine(1)==1);
     }
     {
