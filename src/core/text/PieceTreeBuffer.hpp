@@ -40,6 +40,8 @@ public:
     void erase(std::size_t byteOffset, std::size_t byteLength);
 
     [[nodiscard]] std::size_t size() const noexcept;
+    // Monotonic for this buffer instance, including replacement by move.
+    [[nodiscard]] std::uint64_t contentRevision() const noexcept;
     // Backing string capacities, excluding nodes. Useful for resource budgets.
     [[nodiscard]] std::size_t storageBytes() const noexcept;
     [[nodiscard]] std::size_t lineCount() const noexcept;
@@ -105,6 +107,7 @@ private:
     std::string add_;
     NodePtr root_;
     std::uint32_t randomState_{0x9e3779b9u};
+    std::uint64_t contentRevision_{0};
     std::shared_ptr<std::recursive_mutex> mutex_{std::make_shared<std::recursive_mutex>()};
 };
 

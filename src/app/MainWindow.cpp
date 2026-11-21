@@ -479,8 +479,21 @@ void MainWindow::createUi() {
             if(editor) {
                 editor = activateEditor(editor, true);
                 removeVimDiffView(editor);
-                live.available=[editor,path] { return editor && editor->filePath()==path && !editor->isBusy() && editor->byteSize()<=8*1024*1024; };
-                live.read=[editor] { if(!editor || editor->byteSize()>8*1024*1024) return QByteArray{}; return QByteArray::fromStdString(editor->snapshotBuffer().text()); };
+                live.available=[editor,path] { return editor && editor->filePath()==path && !editor->isBusy(); };
+                live.revision=[editor] { return editor ? editor->document()->buffer().contentRevision() : 0; };
+                live.read=[editor]() -> std::optional<QByteArray> {
+                    if (!editor) return std::nullopt;
+                    const auto& buffer = editor->document()->buffer();
+                    const auto size = buffer.size();
+                    if (size > 8 * 1024 * 1024) return std::nullopt;
+                    QByteArray bytes;
+                    bytes.reserve(qsizetype(size));
+                    buffer.forEachChunk([&bytes](std::string_view chunk) {
+                        bytes.append(chunk.data(), qsizetype(chunk.size()));
+                        return true;
+                    });
+                    return bytes;
+                };
                 live.replace=[editor,path](const QByteArray& before,const QByteArray& after) {
                     if(!editor || editor->filePath()!=path || editor->isBusy()) return false;
                     if(before==after) return true;
@@ -497,18 +510,16 @@ void MainWindow::createUi() {
                 live.editor=editor;
                 live.align=[editor](const LineAlignment& alignment) { if(editor) editor->setDiffAlignment(alignment); };
                 live.showOverview=[editor](bool visible) { if(editor) editor->setMiniMapSuppressed(visible); };
+                live.tabSize=[editor] { return editor ? editor->tabSize() : 4; };
                 live.highlight=[editor](const GitDiff::Model* model) {
                     if(!editor) return;
                     QVector<EditorWidget::DiffHighlight> highlights;
                     if(model) for(const auto& hunk:model->hunks) for(int i=0;i<hunk.rightCount;++i) {
                         const int line=hunk.right+i;
-                        auto value=GitDiff::displayText(model->right[line]); if(value.endsWith('\n')) value.chop(1);
-                        int prefix=0,suffix=0;
-                        if(i<hunk.leftCount) {
-                            auto old=GitDiff::displayText(model->left[hunk.left+i]); if(old.endsWith('\n')) old.chop(1);
-                            while(prefix<old.size() && prefix<value.size() && old[prefix]==value[prefix]) ++prefix;
-                            while(suffix<old.size()-prefix && suffix<value.size()-prefix && old[old.size()-1-suffix]==value[value.size()-1-suffix]) ++suffix;
-                        }
+                        const auto value=GitDiff::displayLine(model->right[line]);
+                        const auto [prefix,suffix]=i<hunk.leftCount
+                            ? GitDiff::commonColumns(GitDiff::displayLine(model->left[hunk.left+i]),value)
+                            : std::pair{0,0};
                         highlights.append({line,prefix,int(value.size())-prefix-suffix});
                     }
                     editor->setDiffHighlights(highlights);
@@ -2648,16 +2659,16 @@ void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool p
     connect(completionTimer, &QTimer::timeout, this, [this, editor] {
         if (activeEditor() == editor) requestCompletion(editor, true);
     });
-    if (!primary) {
-        connect(editor, &EditorWidget::contentChanged, this, [this, editor] {
-            if (gitDiff_ && gitDiff_->nativeEditor() == editor) gitDiff_->documentChanged();
-        });
-        return;
-    }
+    connect(editor, &EditorWidget::contentChanged, this, [this, editor] {
+        if (gitDiff_ && gitDiff_->nativeEditor() == editor) gitDiff_->documentChanged();
+    });
+    connect(editor, &EditorWidget::diffRowsInserted, this, [this, editor](int row, int count) {
+        if (gitDiff_ && gitDiff_->nativeEditor() == editor) gitDiff_->insertPadding(row, count);
+    });
+    if (!primary) return;
     editor->setProperty("recoveryId",QUuid::createUuid().toString(QUuid::WithoutBraces));
     connect(editor,&EditorWidget::contentChanged,this,[this,editor] {
         if(documentChangeTimer_) documentChangeTimer_->start();
-        if(gitDiff_ && gitDiff_->nativeEditor()==editor) gitDiff_->documentChanged();
         if(!QSettings().value("editor/recoveryEnabled",true).toBool())return;
         if(recoveryTimer_)recoveryTimer_->start();
         if(recoveryDeadline_ && !recoveryDeadline_->isActive())recoveryDeadline_->start();

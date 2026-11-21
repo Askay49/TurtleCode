@@ -30,6 +30,8 @@ PieceTreeBuffer& PieceTreeBuffer::operator=(PieceTreeBuffer&& other) noexcept {
     other.originalId_=nextStorageId_++;other.addId_=nextStorageId_++;other.diskId_=nextStorageId_++;
     backing_=std::move(other.backing_);addedBacking_=std::move(other.addedBacking_);
     original_=std::move(other.original_);add_=std::move(other.add_);root_=std::move(other.root_);randomState_=other.randomState_;
+    ++contentRevision_;
+    ++other.contentRevision_;
     return *this;
 }
 
@@ -132,6 +134,7 @@ void PieceTreeBuffer::buildOriginalPieces() {
 
 void PieceTreeBuffer::clear() {
     std::lock_guard lock(*mutex_);
+    ++contentRevision_;
     root_.reset(); backing_.reset();addedBacking_.reset();
     originalId_=nextStorageId_++;addId_=nextStorageId_++;diskId_=nextStorageId_++;
     std::string{}.swap(original_);
@@ -164,6 +167,7 @@ void PieceTreeBuffer::insert(std::size_t offset, std::string_view value) {
         inserted = merge(std::move(inserted), std::move(piece));
     }
     root_ = merge(merge(std::move(parts.first), std::move(inserted)), std::move(parts.second));
+    ++contentRevision_;
 }
 
 void PieceTreeBuffer::erase(std::size_t offset, std::size_t length) {
@@ -175,12 +179,17 @@ void PieceTreeBuffer::erase(std::size_t offset, std::size_t length) {
     auto first = split(std::move(root_), offset);
     auto second = split(std::move(first.second), length);
     root_ = merge(std::move(first.first), std::move(second.second));
+    ++contentRevision_;
     compactIfWasteful();
 }
 
 std::size_t PieceTreeBuffer::size() const noexcept {
     std::lock_guard lock(*mutex_);
     return bytes(root_);
+}
+std::uint64_t PieceTreeBuffer::contentRevision() const noexcept {
+    std::lock_guard lock(*mutex_);
+    return contentRevision_;
 }
 std::size_t PieceTreeBuffer::lineCount() const noexcept {
     std::lock_guard lock(*mutex_);

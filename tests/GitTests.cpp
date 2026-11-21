@@ -1,5 +1,6 @@
 #include "git/GitService.hpp"
 #include "git/GitPanel.hpp"
+#include "git/GitDiffSourcePane.hpp"
 #include "git/GitDiffView.hpp"
 #include <QApplication>
 #include <QFile>
@@ -16,9 +17,12 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QLabel>
+#include <QScopeGuard>
+#include <QSemaphore>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThreadPool>
 #include <QTreeWidget>
 #include <QtTest>
 
@@ -71,14 +75,19 @@ private slots:
         QVERIFY(!GitDiff::compare("x\n","x",true).hunks.isEmpty());
         QVERIFY(!GitDiff::compare("x \r\n","x\n",true).hunks.isEmpty());
         GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="eol.c"; snapshot.left=before; snapshot.right=after;
-        QByteArray bytes=after; int changes=-1;
+        QByteArray bytes=after; int changes=-1; quint64 revision=0;
         QPlainTextEdit editor; editor.show();
         GitDiffView::LiveDocument live; live.editor=&editor; live.read=[&] { return bytes; }; live.available=[] { return true; };
+        live.revision=[&] { return revision; };
         live.highlight=[&](const GitDiff::Model* model) { changes=model?model->hunks.size():-1; };
         GitDiffView view; view.displayVersions(snapshot,live); QTRY_COMPARE(changes,0);
-        auto* old=view.findChild<QTextEdit*>("gitDiffOld"); QVERIFY(old->extraSelections().isEmpty());
-        bytes="value = 2;\nnext\r\n"; view.documentChanged(); QTRY_COMPARE(changes,1); QVERIFY(!old->extraSelections().isEmpty());
-        bytes=after; view.documentChanged(); QTRY_COMPARE(changes,0); QVERIFY(old->extraSelections().isEmpty());
+        auto* old=view.findChild<GitDiffSourcePane*>("gitDiffOld"); QVERIFY(old);
+        const auto rowColor = [&] {
+            return old->viewport()->grab().toImage().pixelColor(old->viewport()->width() - 4, old->rowRect(0).center().y());
+        };
+        const auto unchanged = rowColor();
+        bytes="value = 2;\nnext\r\n"; ++revision; view.documentChanged(); QTRY_COMPARE(changes,1); QVERIFY(rowColor() != unchanged);
+        bytes=after; ++revision; view.documentChanged(); QTRY_COMPARE(changes,0); QCOMPARE(rowColor(), unchanged);
         QVERIFY(view.findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().isEmpty());
     }
     void separatedLargeDiff() {
@@ -124,7 +133,7 @@ private slots:
         snapshot.left=snapshot.right;
         snapshot.left.insert(at,"deleted A\ndeleted B\n");
         GitDiffView view; view.resize(600,400); view.displayVersions(snapshot);
-        auto* left=view.findChild<QTextEdit*>("gitDiffOld");
+        auto* left=view.findChild<GitDiffSourcePane*>("gitDiffOld");
         auto* right=view.findChild<QTextEdit*>("gitDiffNew");
         QTRY_COMPARE(right->document()->blockCount(),183);
         QCOMPARE(right->document()->findBlockByNumber(75).userState(),-1);
@@ -160,16 +169,79 @@ private slots:
     }
     void unchangedDocumentDoesNotRead() {
         GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="idle.cpp"; snapshot.left="old\n"; snapshot.right="new\n";
-        QByteArray bytes=snapshot.right,painted; int reads=0; bool ready=true;
+        QByteArray bytes=snapshot.right,painted; int reads=0; bool ready=true; quint64 revision=0;
         QPlainTextEdit editor; editor.show();
         GitDiffView::LiveDocument live; live.editor=&editor;
         live.read=[&] { ++reads; return bytes; }; live.available=[&] { return ready; };
+        live.revision=[&] { return revision; };
         live.highlight=[&](const GitDiff::Model* model) { if(model) painted=GitDiff::join(model->right); };
         GitDiffView view; view.displayVersions(snapshot,live); QTRY_COMPARE(painted,bytes);
         const int initial=reads; QTest::qWait(650); QCOMPARE(reads,initial);
-        bytes="edited\n"; view.documentChanged(); QTRY_COMPARE(painted,bytes); QCOMPARE(reads,initial+1);
-        ready=false; view.setOperationBusy(true); bytes="loaded\n"; ready=true; view.setOperationBusy(false); QTRY_COMPARE(painted,bytes);
+        bytes="edited\n"; ++revision; view.documentChanged(); QTRY_COMPARE(painted,bytes); QCOMPARE(reads,initial+1);
+        ready=false; view.setOperationBusy(true); bytes="loaded\n"; ++revision; ready=true; view.setOperationBusy(false); QTRY_COMPARE(painted,bytes);
         QCOMPARE(reads,initial+2);
+    }
+    void comparisonKeepsOnlyLatestRevision() {
+        auto* pool = QThreadPool::globalInstance();
+        const int threads = pool->maxThreadCount();
+        pool->setMaxThreadCount(1);
+        QSemaphore entered, release;
+        const auto cleanup = qScopeGuard([&] {
+            release.release();
+            pool->waitForDone();
+            pool->setMaxThreadCount(threads);
+        });
+        const auto occupyWorker = [&] {
+            pool->start([&] { entered.release(); release.acquire(); });
+            return entered.tryAcquire(1, 5000);
+        };
+
+        GitDiffSnapshot snapshot;
+        snapshot.repository = "/tmp";
+        snapshot.entry.path = "first.txt";
+        snapshot.left = "base\n";
+        QByteArray bytes = "first\n";
+        quint64 revision = 0;
+        QList<QByteArray> reads, rendered;
+        QPlainTextEdit editor;
+        GitDiffView::LiveDocument live;
+        live.editor = &editor;
+        live.available = [] { return true; };
+        live.revision = [&] { return revision; };
+        live.read = [&] { reads.append(bytes); return bytes; };
+        live.highlight = [&](const GitDiff::Model* model) { if (model) rendered.append(GitDiff::join(model->right)); };
+        GitDiffView view;
+        const auto edit = [&](const QByteArray& next) {
+            bytes = next;
+            ++revision;
+            view.documentChanged();
+            QTest::qWait(160);
+        };
+
+        QVERIFY(occupyWorker());
+        view.displayVersions(snapshot, live);
+        edit("intermediate\n");
+        edit("latest\n");
+        QCOMPARE(reads, QList<QByteArray>{"first\n"});
+        release.release();
+        QTRY_COMPARE(rendered, QList<QByteArray>{"latest\n"});
+        QCOMPARE(reads.size(), 2);
+
+        QVERIFY(occupyWorker());
+        edit("closing\n");
+        edit("pending from closed file\n");
+        QCOMPARE(reads.size(), 3);
+        view.hide();
+        snapshot.entry.path = "second.txt";
+        bytes = "second file\n";
+        view.displayVersions(snapshot, live);
+        edit("second file edited\n");
+        QCOMPARE(reads.size(), 3);
+        release.release();
+        QTRY_COMPARE(rendered.size(), 2);
+        QCOMPARE(rendered.last(), bytes);
+        QCOMPARE(reads.size(), 4);
+        QCOMPARE(reads.last(), bytes);
     }
     void conflictStages() {
         QTemporaryDir dir; init(dir.path());
@@ -255,12 +327,11 @@ private slots:
         GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="example.cpp";
         snapshot.left="a\nb\nc\n"; snapshot.right="A\nb\nextra\nc\n";
         GitDiffView view; view.resize(600,500); view.displayVersions(snapshot);
-        auto* original=view.findChild<QTextEdit*>("gitDiffOld"); auto* current=view.findChild<QTextEdit*>("gitDiffNew");
-        QTRY_COMPARE(original->toPlainText(),QString("a\nb\n\nc\n"));
-        QCOMPARE(original->document()->findBlockByNumber(2).userState(),-1);
-        QCOMPARE(original->document()->findBlockByNumber(3).userState(),2);
+        auto* original=view.findChild<GitDiffSourcePane*>("gitDiffOld"); auto* current=view.findChild<QTextEdit*>("gitDiffNew");
+        QTRY_COMPARE(original->lineAtRow(3),2);
+        QCOMPARE(original->lineAtRow(2),-1);
         QCOMPARE(current->toPlainText(),QString::fromUtf8(snapshot.right));
-        QVERIFY(original->isReadOnly() && current->isReadOnly()); QVERIFY(original->isVisible() && current->isVisible());
+        QVERIFY(current->isReadOnly()); QVERIFY(original->isVisible() && current->isVisible());
         QVERIFY(!view.findChild<QPushButton*>("gitDiffSave")); QVERIFY(!view.findChild<QPushButton*>("gitDiffRevert"));
         QVERIFY(!view.findChild<QPushButton*>("gitDiffOpen")); QVERIFY(!view.findChild<QPushButton*>("gitDiffStage"));
         QVERIFY(!view.findChild<QComboBox*>("gitDiffMode")); QVERIFY(!view.findChild<QCheckBox*>("gitDiffFold"));
@@ -273,41 +344,86 @@ private slots:
         QVERIFY(!view.findChild<QScrollBar*>("gitDiffScroll")->isVisible());
     }
     void alignedPaddingAndCopy() {
-        struct Case { QByteArray before,after; QString oldView,newView; };
+        struct Case { QByteArray before,after; QVector<int> oldRows; QString newView; };
         const QVector<Case> cases={
-            {"a\nb\n","start\na\nb\nend\n","\na\nb\n\n","start\na\nb\nend\n"},
-            {"start\na\nb\nend\n","a\nb\n","start\na\nb\nend\n","\na\nb\n\n"},
-            {"a\nremove\nb","a\nb","a\nremove\nb","a\n\nb"},
-            {"","new\n","\n","new\n"},
-            {"gone\n","","gone\n","\n"}
+            {"a\nb\n","start\na\nb\nend\n",{-1,0,1,-1,2},"start\na\nb\nend\n"},
+            {"start\na\nb\nend\n","a\nb\n",{0,1,2,3,4},"\na\nb\n\n"},
+            {"a\nremove\nb","a\nb",{0,1,2},"a\n\nb"},
+            {"","new\n",{-1,0},"new\n"},
+            {"gone\n","",{0,1},"\n"},
+            {"a\r\nb\r\nc","a\nnew\nb\nc",{0,-1,1,2},"a\nnew\nb\nc"}
         };
         for(const auto& test:cases) {
             GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="alignment.txt";
             snapshot.left=test.before; snapshot.right=test.after;
             GitDiffView view; view.resize(600,400); view.displayVersions(snapshot);
-            auto* old=view.findChild<QTextEdit*>("gitDiffOld");
+            auto* old=view.findChild<GitDiffSourcePane*>("gitDiffOld");
             auto* current=view.findChild<QTextEdit*>("gitDiffNew");
-            QTRY_COMPARE(old->toPlainText(),test.oldView);
-            QCOMPARE(current->toPlainText(),test.newView);
-            QCOMPARE(old->document()->blockCount(),current->document()->blockCount());
-            for(auto* edit:{old,current}) {
-                edit->selectAll(); edit->copy();
-                QCOMPARE(QApplication::clipboard()->text(),GitDiff::displayText(edit==old?test.before:test.after));
-            }
+            QTRY_COMPARE(current->toPlainText(),test.newView);
+            QCOMPARE(current->document()->blockCount(),test.oldRows.size());
+            for(int row=0; row<test.oldRows.size(); ++row) QCOMPARE(old->lineAtRow(row),test.oldRows[row]);
+            QApplication::clipboard()->clear();
+            QTest::keyClick(old, Qt::Key_A, Qt::ControlModifier);
+            QTest::keyClick(old, Qt::Key_C, Qt::ControlModifier);
+            QCOMPARE(QApplication::clipboard()->text(),GitDiff::displayText(test.before));
+            current->selectAll(); current->copy();
+            QCOMPARE(QApplication::clipboard()->text(),GitDiff::displayText(test.after));
         }
+    }
+    void sourceMouseSelectionSurvivesAlignmentChanges() {
+        GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="selection.txt";
+        snapshot.left="alpha\r\nomega"; snapshot.right="alpha\ninserted\nomega";
+        GitDiffView view; view.resize(600,400); view.displayVersions(snapshot);
+        auto* old=view.findChild<GitDiffSourcePane*>("gitDiffOld");
+        QTRY_COMPARE(old->lineAtRow(2),1);
+        const auto metrics=old->fontMetrics();
+        const int textX=metrics.horizontalAdvance('2')+24+4;
+        const QPoint start(textX+metrics.horizontalAdvance("al"),old->rowRect(0).center().y());
+        const QPoint end(textX+metrics.horizontalAdvance("om"),old->rowRect(2).center().y());
+        QTest::mousePress(old->viewport(),Qt::LeftButton,Qt::NoModifier,start);
+        QTest::mouseMove(old->viewport(),end);
+        QTest::mouseRelease(old->viewport(),Qt::LeftButton,Qt::NoModifier,end);
+        QTest::keyClick(old,Qt::Key_C,Qt::ControlModifier);
+        QCOMPARE(QApplication::clipboard()->text(),QString("pha\nom"));
+        snapshot.right="alpha\nomega"; view.refreshVersions(snapshot);
+        QTRY_COMPARE(old->lineAtRow(1),1);
+        QApplication::clipboard()->clear();
+        QTest::keyClick(old,Qt::Key_C,Qt::ControlModifier);
+        QCOMPARE(QApplication::clipboard()->text(),QString("pha\nom"));
+        snapshot.left="new base\r\n"; view.refreshVersions(snapshot);
+        QTRY_COMPARE(old->lineAtRow(1),-1);
+        QTest::keyClick(old,Qt::Key_A,Qt::ControlModifier);
+        QTest::keyClick(old,Qt::Key_C,Qt::ControlModifier);
+        QCOMPARE(QApplication::clipboard()->text(),QString("new base\n"));
+    }
+    void longSourceLineScrollAndCopy() {
+        GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="long.txt";
+        snapshot.left=QByteArray(70000,'x')+QByteArray::fromHex("f09f90a2");
+        snapshot.right="shorter\n";
+        GitDiffView view; view.resize(600,400); view.displayVersions(snapshot);
+        auto* old=view.findChild<GitDiffSourcePane*>("gitDiffOld");
+        auto* right=view.findChild<QTextEdit*>("gitDiffNew");
+        QTRY_VERIFY(old->horizontalScrollBar()->maximum()>0);
+        QTest::keyClick(old,Qt::Key_End);
+        QCOMPARE(old->horizontalScrollBar()->value(),old->horizontalScrollBar()->maximum());
+        QCOMPARE(right->horizontalScrollBar()->value(),0);
+        QTest::keyClick(old,Qt::Key_Left,Qt::ShiftModifier);
+        QTest::keyClick(old,Qt::Key_C,Qt::ControlModifier);
+        QCOMPARE(QApplication::clipboard()->text(),QString::fromUtf8(QByteArray::fromHex("f09f90a2")));
     }
     void nativeEditorBinding() {
         GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="unicode.cpp";
         snapshot.left=QByteArray::fromHex("61c2a0620a"); snapshot.right=QByteArray("X")+snapshot.left;
         QByteArray bytes=snapshot.right; QPlainTextEdit editor; editor.setPlainText(QString::fromUtf8(bytes)); editor.show();
-        int changes=-1;
+        int changes=-1; quint64 revision=0;
         GitDiffView::LiveDocument live; live.editor=&editor; live.read=[&] { return bytes; }; live.available=[] { return true; };
+        live.revision=[&] { return revision; };
         live.replace=[&](const QByteArray& before,const QByteArray& after) { if(before!=bytes) return false; bytes=after; editor.setPlainText(QString::fromUtf8(bytes)); return true; };
         live.highlight=[&](const GitDiff::Model* model) { changes=model?model->hunks.size():0; };
-        QObject::connect(&editor,&QPlainTextEdit::textChanged,[&] { auto text=editor.document()->toRawText(); text.replace(QChar(0x2029),'\n'); bytes=text.toUtf8(); });
+        QObject::connect(&editor,&QPlainTextEdit::textChanged,[&] { auto text=editor.document()->toRawText(); text.replace(QChar(0x2029),'\n'); bytes=text.toUtf8(); ++revision; });
         GitDiffView view; view.displayVersions(snapshot,live);
         QTRY_COMPARE(changes,1);
-        QVERIFY(view.findChild<QTextEdit*>("gitDiffNew")->isHidden()); QVERIFY(view.findChild<QTextEdit*>("gitDiffOld")->isVisible());
+        QVERIFY(view.findChild<QTextEdit*>("gitDiffNew")->isHidden()); QVERIFY(view.findChild<GitDiffSourcePane*>("gitDiffOld")->isVisible());
         editor.setFocus(); auto cursor=editor.textCursor(); cursor.setPosition(0); editor.setTextCursor(cursor); QTest::keyClick(&editor,Qt::Key_Y);
         view.documentChanged(); QTRY_VERIFY(view.findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().contains("+yX"));
         QVERIFY(bytes.contains(QByteArray::fromHex("c2a0")));
@@ -317,9 +433,10 @@ private slots:
     void saveNotificationsAndRefresh() {
         GitDiffSnapshot snapshot; snapshot.repository="/tmp"; snapshot.entry.path="save.cpp";
         snapshot.left="base\n"; snapshot.right="live unsaved\n";
-        QByteArray bytes=snapshot.right,painted; bool ready=true; int renders=0;
+        QByteArray bytes=snapshot.right,painted; bool ready=true; int renders=0; quint64 revision=0;
         QPlainTextEdit editor; editor.show();
         GitDiffView::LiveDocument live; live.editor=&editor; live.read=[&] { return bytes; }; live.available=[&] { return ready; };
+        live.revision=[&] { return revision; };
         live.highlight=[&](const GitDiff::Model* model) { if(model) { painted=GitDiff::join(model->right); ++renders; } else painted.clear(); };
         GitDiffView view; view.displayVersions(snapshot,live); QTRY_COMPARE(painted,bytes);
         const int initial=renders;
@@ -335,7 +452,7 @@ private slots:
         ready=true; view.setOperationBusy(false); QCOMPARE(painted,bytes);
         QTest::qWait(180); QCOMPARE(renders,beforeReady+1);
         // A cached model must never be restored onto newly edited bytes.
-        bytes="new edit\n"; painted.clear(); view.documentChanged(); QVERIFY(painted.isEmpty());
+        bytes="new edit\n"; ++revision; painted.clear(); view.documentChanged(); QVERIFY(painted.isEmpty());
         QTRY_COMPARE(painted,bytes);
     }
     void parser() {

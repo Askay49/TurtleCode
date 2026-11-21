@@ -1,8 +1,10 @@
 #include "GitDiffView.hpp"
+#include "GitDiffSourcePane.hpp"
 #include "app/Codicons.hpp"
 #include "app/FontSettings.hpp"
 #include "app/I18n.hpp"
 #include "app/ThemeManager.hpp"
+#include "editor/EditorLineRendering.hpp"
 #include <QAbstractTextDocumentLayout>
 #include <QApplication>
 #include <QFileInfo>
@@ -20,7 +22,6 @@
 #include <QStackedWidget>
 #include <QTextBlock>
 #include <QTextEdit>
-#include <QTextFrame>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -131,6 +132,9 @@ QString limited(const QString& text) {
     for(int i=0;i<30000;++i) { const auto end=text.indexOf('\n',offset); if(end<0) return text; offset=end+1; }
     return text.left(offset)+"\n"+I18n::text("Diff preview limited to 30000 lines.");
 }
+bool canSplit(const QByteArray& bytes) {
+    return bytes.size() <= 8 * 1024 * 1024 && bytes.count('\n') <= 30000 && GitDiff::textual(bytes);
+}
 }
 class GitDiffView::Overview final : public QWidget {
 public:
@@ -154,6 +158,14 @@ public:
     void setPageRows(int rows) {
         if(pageRows_==rows) return;
         pageRows_=rows;
+        update();
+    }
+    void insertRows(int row, int count) {
+        rowCount_ += count;
+        for (auto& mark : marks_) {
+            if (mark.begin >= row) mark.begin += count;
+            if (mark.end > row) mark.end += count;
+        }
         update();
     }
 protected:
@@ -198,7 +210,7 @@ GitDiffView::GitDiffView(QWidget* parent) : QWidget(parent),home_(parent) {
     auto* left=new QWidget(split);
     auto* leftLayout=column(left);
     leftLayout->addWidget(heading(left,leftTitle_));
-    original_=pane(left,"gitDiffOld");
+    original_=new GitDiffSourcePane(left);
     leftLayout->addWidget(original_,1);
 
     auto* right=new QWidget(split);
@@ -242,8 +254,8 @@ GitDiffView::GitDiffView(QWidget* parent) : QWidget(parent),home_(parent) {
         scrollSource()->setValue(live_.editor ? editorLineForRow(qRound(qreal(value)/lineHeight_)) : value);
         syncScroll();
     });
-    connect(original_->verticalScrollBar(),&QScrollBar::rangeChanged,this,[this] { syncScroll(); });
-    debounce_=new QTimer(this); debounce_->setSingleShot(true); debounce_->setInterval(100); connect(debounce_,&QTimer::timeout,this,&GitDiffView::rebuild);
+    debounce_=new QTimer(this); debounce_->setSingleShot(true); debounce_->setInterval(100);
+    connect(debounce_, &QTimer::timeout, this, &GitDiffView::startComparison);
     auto* poll=new QTimer(this); poll->setInterval(200); connect(poll,&QTimer::timeout,this,&GitDiffView::pollDocument); poll->start();
     auto* refresh=new QTimer(this); refresh->setInterval(2500); connect(refresh,&QTimer::timeout,this,[this] { if(!legacy_ && isVisible() && !busy_ && isActiveWindow()) emit refreshRequested(); }); refresh->start();
     connect(&ThemeManager::instance(),&ThemeManager::themeChanged,overview_,qOverload<>(&QWidget::update));
@@ -271,8 +283,13 @@ void GitDiffView::setVisible(bool visible) {
     QWidget::setVisible(false);
     revertPending_=false;
     ++revision_;
+    comparisonPending_=false;
     debounce_->stop();
     clearBinding();
+    sourceReady_=false;
+    sourceRevision_.reset();
+    model_={};
+    original_->clear();
     if(host) {
         editorHost_.clear();
         auto* layout=parentWidget()->layout();
@@ -310,16 +327,14 @@ void GitDiffView::displayVersions(const GitDiffSnapshot& snapshot,LiveDocument l
     updateTitles();
     for(auto* title:{leftTitle_,rightTitle_,patchTitle_}) title->setToolTip(path_);
     patchTitle_->setText(I18n::text("Git diff")+" — "+snapshot.entry.path);
-    sourceReady_=live_.available && live_.available();
-    documentDirty_=!sourceReady_;
-    working_=live_.read && sourceReady_ ? live_.read() : snapshot.right;
-    original_->clear();
+    sourceReady_=live_.read && live_.revision && live_.available && live_.available();
+    if (sourceReady_) sourceRevision_=live_.revision();
     current_->clear();
     text_->clear();
     overview_->setAlignment({});
     stack_->setCurrentWidget(comparison_);
     show();
-    rebuild();
+    queueComparison();
     if(previewOnly_) text_->setFocus();
     else if(live_.editor && editorHost_) live_.editor->setFocus();
 }
@@ -342,68 +357,110 @@ void GitDiffView::showPatch(const QString& patch) {
 void GitDiffView::refreshVersions(const GitDiffSnapshot& snapshot) {
     if(legacy_ || snapshot.repository+"/"+snapshot.entry.path!=path_ || snapshot.staged!=staged_) return;
     const bool conflictChanged=snapshot_.entry.conflict()!=snapshot.entry.conflict();
-    const bool changed=snapshot_.left!=snapshot.left || snapshot_.special!=snapshot.special ||
-        conflictChanged || (previewOnly_ && snapshot_.patch!=snapshot.patch);
+    const bool sourceChanged=snapshot_.left!=snapshot.left;
+    const bool baseChanged=sourceChanged || snapshot_.special!=snapshot.special;
+    const bool changed=baseChanged || conflictChanged || (previewOnly_ && snapshot_.patch!=snapshot.patch);
+    const bool rightChanged=!live_.read && snapshot_.right!=snapshot.right;
+    auto base=sourceChanged ? snapshot.left : snapshot_.left;
     snapshot_=snapshot;
+    snapshot_.left=std::move(base);
     if(conflictChanged) updateTitles();
     // A temporarily busy live editor still owns the working version. A saved
     // disk snapshot must not replace its pending/unsaved contents.
-    bool rightChanged=false;
-    if(!live_.read || !live_.editor) { rightChanged=working_!=snapshot.right; working_=snapshot.right; }
-    if(changed || rightChanged) rebuild();
+    if(changed || rightChanged) queueComparison();
 }
 void GitDiffView::setOperationBusy(bool busy) { busy_=busy; pollDocument(); }
 void GitDiffView::documentChanged() {
-    documentDirty_=true;
+    const bool wasReady = sourceReady_;
     pollDocument();
-    // Saving also emits contentChanged. Reapply only a comparison for this
-    // exact revision; edits keep projected colors until the new diff is ready.
-    if(!legacy_ && isVisible() && !previewOnly_ && modelRevision_==revision_ &&
-       live_.highlight && live_.available && live_.available()) {
-        if(live_.align) live_.align(model_.alignment.right);
-        live_.highlight(&model_);
-    }
+    if (wasReady) restoreEditorComparison();
+}
+void GitDiffView::restoreEditorComparison() {
+    // Saves and completion of loading can reset the editor overlay.
+    if (!sourceReady_ || previewOnly_ || modelRevision_ != revision_) return;
+    if (live_.align) live_.align(model_.alignment.right);
+    if (live_.highlight) live_.highlight(&model_);
+}
+void GitDiffView::insertPadding(int row, int count) {
+    if (!sharedScrolling_ || !isVisible()) return;
+    original_->insertPadding(row, count);
+    overview_->insertRows(row, count);
 }
 void GitDiffView::pollDocument() {
-    if(legacy_ || !isVisible()) return;
-    const bool ready=live_.available && live_.available();
-    const bool becameReady=ready && !sourceReady_; sourceReady_=ready;
-    tryRevertFile();
-    if(live_.read && ready && (documentDirty_ || becameReady)) {
-        documentDirty_=false;
-        const auto bytes=live_.read();
-        if(bytes!=working_) { working_=bytes; ++revision_; debounce_->start(); }
-        else if(becameReady && !previewOnly_ && modelRevision_==revision_ && live_.highlight) {
-            if(live_.align) live_.align(model_.alignment.right);
-            live_.highlight(&model_);
+    if (legacy_ || !isVisible()) return;
+    const bool ready = live_.read && live_.revision && live_.available && live_.available();
+    const bool becameReady = ready && !sourceReady_;
+    sourceReady_ = ready;
+    if (ready || sourceRevision_) {
+        const auto revision = live_.revision();
+        if (sourceRevision_ != revision) {
+            sourceRevision_ = revision;
+            queueComparison(true);
+        } else if (becameReady) {
+            restoreEditorComparison();
         }
     }
+    tryRevertFile();
+    startComparison();
 }
-void GitDiffView::rebuild() {
-    if(legacy_) return;
-    const auto revision=++revision_; const auto left=snapshot_.left,right=working_;
-    if(snapshot_.special || !GitDiff::textual(left) || !GitDiff::textual(right) || left.count('\n')>30000 || right.count('\n')>30000 || right.size()>8*1024*1024) {
+void GitDiffView::queueComparison(bool debounce) {
+    // A request supersedes previous results immediately. Capture its bytes
+    // only when the debounce has expired and the worker slot is free.
+    ++revision_;
+    comparisonPending_ = true;
+    if (debounce) debounce_->start();
+    else startComparison();
+}
+void GitDiffView::startComparison() {
+    if (!comparisonPending_ || debounce_->isActive() || runningRevision_ || !isVisible()) return;
+    // Once the editor supplies a version, wait for it through saves and reloads.
+    if (sourceRevision_ && !sourceReady_) return;
+    comparisonPending_ = false;
+    if (snapshot_.special) {
         showPatch(snapshot_.patch);
         return;
     }
-    previewOnly_=false;
-    auto* watcher=new QFutureWatcher<GitDiff::Model>(this);
-    connect(watcher,&QFutureWatcher<GitDiff::Model>::finished,this,[this,watcher,revision] {
-        watcher->deleteLater(); if(revision!=revision_ || legacy_) return;
-        GitDiff::Model model;
-        try { model=watcher->result(); }
-        catch(...) { showPatch(snapshot_.patch); return; }
-        modelRevision_=revision; render(std::move(model));
-    });
-    watcher->setFuture(QtConcurrent::run([left,right] { return GitDiff::compare(left,right,true); }));
+    const auto right = sourceReady_ ? live_.read() : std::optional{snapshot_.right};
+    if (!right) {
+        showPatch(snapshot_.patch);
+        return;
+    }
+    runningRevision_ = revision_;
+    auto* watcher = new QFutureWatcher<std::optional<Comparison>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] { finishComparison(watcher); });
+    watcher->setFuture(QtConcurrent::run([left = snapshot_.left, right = *right, path = snapshot_.entry.path]
+            () -> std::optional<Comparison> {
+        if (!canSplit(left) || !canSplit(right)) return std::nullopt;
+        auto model = GitDiff::compare(left, right, true);
+        auto patch = QString::fromUtf8(GitDiff::unified(model, path));
+        return Comparison{std::move(model), std::move(patch)};
+    }));
 }
-void GitDiffView::render(GitDiff::Model model) {
+void GitDiffView::finishComparison(QFutureWatcher<std::optional<Comparison>>* watcher) {
+    watcher->deleteLater();
+    pollDocument();
+    const auto finished = std::exchange(runningRevision_, std::nullopt);
+    if (finished == revision_ && isVisible()) {
+        std::optional<Comparison> comparison;
+        try { comparison = watcher->result(); }
+        catch (...) { /* The repository patch remains available on diff failure. */ }
+        if (comparison) {
+            modelRevision_ = revision_;
+            render(std::move(*comparison));
+        } else {
+            showPatch(snapshot_.patch);
+        }
+    }
+    startComparison();
+}
+void GitDiffView::render(Comparison comparison) {
     updating_=true;
+    previewOnly_=false;
     const bool restoreScroll = sharedScrolling_ && !live_.editor;
     const int oldScroll = current_->verticalScrollBar()->value();
     const auto anchor = model_.alignment.right.anchorAt(oldScroll / lineHeight_);
     const int pixelOffset = oldScroll % lineHeight_;
-    model_ = std::move(model);
+    model_ = std::move(comparison.model);
     const auto fill=[](QTextEdit* edit,const QVector<QByteArray>& lines,const LineAlignment& alignment) {
         const auto visitRows = [&](auto visit) {
             int row = 0;
@@ -417,9 +474,7 @@ void GitDiffView::render(GitDiff::Model model) {
         visitRows([&](int row, int line) {
             if (row != 0) text += '\n';
             if (line < 0 || line >= lines.size()) return;
-            auto value = GitDiff::displayText(lines[line]);
-            if (value.endsWith('\n')) value.chop(1);
-            text += value;
+            text += GitDiff::displayLine(lines[line]);
         });
         if (documentText(edit) != text) edit->setPlainText(text);
         auto block=edit->document()->begin();
@@ -433,28 +488,27 @@ void GitDiffView::render(GitDiff::Model model) {
         });
     };
     const auto& alignment = model_.alignment;
-    fill(original_, model_.left, alignment.left);
+    original_->setComparison(snapshot_.left, model_);
     if (!live_.editor) fill(current_, model_.right, alignment.right);
     stack_->setCurrentWidget(comparison_);
     setSharedScrolling(true);
-    if(live_.align && isVisible()) live_.align(alignment.right);
+    if(live_.align && sourceReady_) live_.align(alignment.right);
     updatePaneMetrics();
     if (restoreScroll)
         current_->verticalScrollBar()->setValue(alignment.right.rowForAnchor(anchor) * lineHeight_ + std::min(pixelOffset, lineHeight_ - 1));
     overview_->setAlignment(model_);
-    for(auto* edit:{original_,current_}) {
-        if(edit==current_ && live_.editor) continue;
-        const bool old=edit==original_; QList<QTextEdit::ExtraSelection> highlights;
-        const auto& side = old ? alignment.left : alignment.right;
+    if (!live_.editor) {
+        QList<QTextEdit::ExtraSelection> highlights;
+        const auto& side = alignment.right;
         const auto pad = [&](int from, int to) {
             if (from == to) return;
-            auto block = edit->document()->findBlockByNumber(from);
+            auto block = current_->document()->findBlockByNumber(from);
             for (int row = from; row < to; ++row, block = block.next()) {
-                QTextEdit::ExtraSelection h;
-                h.cursor = QTextCursor(block);
-                h.format.setBackground(QColor(128,128,128,22));
-                h.format.setProperty(QTextFormat::FullWidthSelection,true);
-                highlights.append(h);
+                QTextEdit::ExtraSelection highlight;
+                highlight.cursor = QTextCursor(block);
+                highlight.format.setBackground(EditorLineRendering::alignmentGap());
+                highlight.format.setProperty(QTextFormat::FullWidthSelection, true);
+                highlights.append(highlight);
             }
         };
         int row = 0;
@@ -464,27 +518,30 @@ void GitDiffView::render(GitDiff::Model model) {
         }
         pad(row, side.rowCount());
         for (const auto& change : model_.hunks) {
-            const int count = old ? change.leftCount : change.rightCount;
-            const int paired = std::min(change.leftCount, change.rightCount);
-            auto block = edit->document()->findBlockByNumber(change.row);
-            for (int offset = 0; offset < count; ++offset, block = block.next()) {
-                QTextEdit::ExtraSelection h; h.cursor=QTextCursor(block);
-                h.format.setBackground(old?QColor(190,55,65,50):QColor(40,170,90,50)); h.format.setProperty(QTextFormat::FullWidthSelection,true); highlights.append(h);
-                if (offset >= paired) continue;
-                auto a=GitDiff::displayText(model_.left[change.left + offset]),b=GitDiff::displayText(model_.right[change.right + offset]);
-                if(a.endsWith('\n')) a.chop(1);
-                if(b.endsWith('\n')) b.chop(1);
-                int prefix=0,suffix=0; while(prefix<a.size() && prefix<b.size() && a[prefix]==b[prefix]) ++prefix;
-                while(suffix<a.size()-prefix && suffix<b.size()-prefix && a[a.size()-suffix-1]==b[b.size()-suffix-1]) ++suffix;
-                const int length=(old?a.size():b.size())-prefix-suffix;
-                if(length>0) { h.format.setProperty(QTextFormat::FullWidthSelection,false); h.format.setBackground(old?QColor(220,55,65,110):QColor(40,190,90,110)); h.cursor.setPosition(h.cursor.position()+prefix); h.cursor.movePosition(QTextCursor::NextCharacter,QTextCursor::KeepAnchor,length); highlights.append(h); }
+            auto block = current_->document()->findBlockByNumber(change.row);
+            for (int offset = 0; offset < change.rightCount; ++offset, block = block.next()) {
+                QTextEdit::ExtraSelection highlight;
+                highlight.cursor = QTextCursor(block);
+                highlight.format.setBackground(QColor(40, 170, 90, 50));
+                highlight.format.setProperty(QTextFormat::FullWidthSelection, true);
+                highlights.append(highlight);
+                if (offset >= change.leftCount) continue;
+                const auto left = GitDiff::displayLine(model_.left[change.left + offset]);
+                const auto right = GitDiff::displayLine(model_.right[change.right + offset]);
+                const auto [prefix, suffix] = GitDiff::commonColumns(left, right);
+                const int length = int(right.size()) - prefix - suffix;
+                if (length <= 0) continue;
+                highlight.format.setProperty(QTextFormat::FullWidthSelection, false);
+                highlight.format.setBackground(QColor(40, 190, 90, 110));
+                highlight.cursor.setPosition(block.position() + prefix);
+                highlight.cursor.setPosition(block.position() + prefix + length, QTextCursor::KeepAnchor);
+                highlights.append(highlight);
             }
         }
-        edit->setExtraSelections(highlights);
+        current_->setExtraSelections(highlights);
     }
-    const auto patch=QString::fromUtf8(GitDiff::unified(model_,snapshot_.entry.path));
-    if(text_->toPlainText()!=patch) text_->setPlainText(patch);
-    if(isVisible() && live_.highlight) live_.highlight(&model_);
+    if(text_->toPlainText()!=comparison.patch) text_->setPlainText(comparison.patch);
+    if(sourceReady_ && live_.highlight) live_.highlight(&model_);
     updating_=false;
     syncScroll();
 }
@@ -530,38 +587,30 @@ void GitDiffView::updatePaneMetrics() {
     const auto font=live_.editor ? live_.editor->font() : FontSettings::font(FontSettings::Area::Editor);
     const QFontMetrics metrics(font);
     const auto* plain=qobject_cast<QPlainTextEdit*>(live_.editor.data());
-    lineHeight_=plain ? metrics.lineSpacing() : metrics.height()+3;
-    for(auto* edit:{original_,current_}) {
-        if(edit==current_ && live_.editor) continue;
-        edit->setFont(font);
-        edit->verticalScrollBar()->setSingleStep(lineHeight_);
-        static_cast<NumberedEdit*>(edit)->setLineCount(edit==original_ ? model_.left.size() : model_.right.size());
-        auto* frame=edit->document()->rootFrame();
-        auto format=frame->frameFormat();
-        format.setTopMargin(4);
-        format.setBottomMargin(4);
-        format.setLeftMargin(4);
-        if(live_.editor) {
-            const int offset=live_.editor->viewport()->mapToGlobal(QPoint{}).y()-edit->viewport()->mapToGlobal(QPoint{}).y();
-            const int margin=qMax(0,offset+(plain ? int(plain->document()->documentMargin()) : 0));
-            format.setTopMargin(margin);
-            // The native editor scrolls whole rows, even when the last row is partly visible.
-            format.setBottomMargin(lineHeight_-1);
-            format.setLeftMargin(12);
-        }
-        if(frame->frameFormat()!=format) frame->setFrameFormat(format);
-        // Defer layout until all rows have their fixed height.
-        QTextCursor blockCursor(edit->document());
-        blockCursor.beginEditBlock();
-        for(auto block=edit->document()->begin();block.isValid();block=block.next()) {
-            auto blockFormat=block.blockFormat();
-            if(blockFormat.lineHeight()==lineHeight_ && blockFormat.lineHeightType()==QTextBlockFormat::FixedHeight) continue;
-            blockFormat.setLineHeight(lineHeight_,QTextBlockFormat::FixedHeight);
-            blockCursor.setPosition(block.position());
-            blockCursor.setBlockFormat(blockFormat);
-        }
-        blockCursor.endEditBlock();
+    lineHeight_=plain ? metrics.lineSpacing() : EditorLineRendering::rowHeight(metrics);
+    original_->setFont(font);
+    const int offset=live_.editor
+        ? live_.editor->viewport()->mapToGlobal(QPoint{}).y()-original_->viewport()->mapToGlobal(QPoint{}).y()
+        : 0;
+    const int margin=live_.editor ? qMax(0,offset+(plain ? int(plain->document()->documentMargin()) : 0)) : 4;
+    original_->setRowMetrics(lineHeight_,margin,live_.editor ? EditorLineRendering::textInset : 4,
+        live_.tabSize ? live_.tabSize() : 4);
+    if(live_.editor) return;
+
+    current_->setFont(font);
+    current_->verticalScrollBar()->setSingleStep(lineHeight_);
+    static_cast<NumberedEdit*>(current_)->setLineCount(model_.right.size());
+    // Defer layout until all rows have their fixed height.
+    QTextCursor blockCursor(current_->document());
+    blockCursor.beginEditBlock();
+    for(auto block=current_->document()->begin();block.isValid();block=block.next()) {
+        auto blockFormat=block.blockFormat();
+        if(blockFormat.lineHeight()==lineHeight_ && blockFormat.lineHeightType()==QTextBlockFormat::FixedHeight) continue;
+        blockFormat.setLineHeight(lineHeight_,QTextBlockFormat::FixedHeight);
+        blockCursor.setPosition(block.position());
+        blockCursor.setBlockFormat(blockFormat);
     }
+    blockCursor.endEditBlock();
 }
 QScrollBar* GitDiffView::scrollSource() const {
     return (live_.editor ? live_.editor.data() : current_)->verticalScrollBar();
@@ -585,15 +634,19 @@ void GitDiffView::syncScroll() {
     scroll_->setSingleStep(live_.editor ? source->singleStep() : lineHeight_);
     scroll_->setValue(source->value());
     overview_->setPageRows(qMax(1,live_.editor ? source->pageStep() : source->pageStep()/lineHeight_));
-    int y=source->value();
-    if(live_.editor) {
+    const auto pixels = [&](int value) {
+        if (!live_.editor) return value;
+        if (live_.align) return value * lineHeight_;
         const auto& right = model_.alignment.right;
         const int last = std::max(0, right.rowCount() - 1);
-        int row = live_.align ? y : right.rowForLine(y);
-        row = row < 0 ? last : std::min(row, last);
-        y=row*lineHeight_;
-    }
-    original_->verticalScrollBar()->setValue(y);
+        const int row = right.rowForLine(value);
+        return (row < 0 ? last : std::min(row, last)) * lineHeight_;
+    };
+    auto* left = original_->verticalScrollBar();
+    left->setRange(0, pixels(source->maximum()));
+    left->setPageStep(live_.editor ? source->pageStep() * lineHeight_ : source->pageStep());
+    left->setSingleStep(lineHeight_);
+    left->setValue(pixels(source->value()));
 }
 void GitDiffView::revertFile() {
     if(legacy_ || staged_ || snapshot_.special || snapshot_.entry.conflict() ||
@@ -604,9 +657,9 @@ void GitDiffView::tryRevertFile() {
     if(!revertPending_ || busy_ || !live_.available || !live_.available()) return;
     revertPending_=false;
     const auto before=live_.read();
-    if(!GitDiff::textual(before)) return;
-    if(live_.replace(before,snapshot_.left)) {
-        documentDirty_=true; pollDocument();
+    if(!before || !GitDiff::textual(*before)) return;
+    if(live_.replace(*before,snapshot_.left)) {
+        pollDocument();
         emit fileReverted(path_);
     }
 }

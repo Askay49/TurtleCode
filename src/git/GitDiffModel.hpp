@@ -164,6 +164,20 @@ inline QByteArray unified(const Model& m, const QString& path) {
     return out;
 }
 inline QString displayText(const QByteArray& text) { auto s=QString::fromUtf8(text); s.replace("\r\n","\n"); return s; }
+inline QString displayLine(const QByteArray& bytes) {
+    auto text = displayText(bytes);
+    if (text.endsWith('\n')) text.chop(1);
+    return text;
+}
+inline std::pair<int, int> commonColumns(QStringView left, QStringView right) {
+    int prefix = 0, suffix = 0;
+    const auto length = std::min(left.size(), right.size());
+    while (prefix < length && left[prefix] == right[prefix]) ++prefix;
+    while (suffix < length - prefix && left[left.size() - suffix - 1] == right[right.size() - suffix - 1]) ++suffix;
+    if (prefix > 0 && left[prefix - 1].isHighSurrogate()) --prefix;
+    if (suffix > 0 && left[left.size() - suffix].isLowSurrogate()) --suffix;
+    return {prefix, suffix};
+}
 inline bool textual(const QByteArray& text) {
     auto shown=displayText(text);
     return !text.contains('\0') && QString::fromUtf8(text).toUtf8()==text && !shown.contains('\r') &&

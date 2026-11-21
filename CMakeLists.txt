@@ -185,6 +185,8 @@ if(TURTLE_CODE_BUILD_APP)
         src/git/GitPanel.hpp
         src/git/GitDiffView.cpp
         src/git/GitDiffView.hpp
+        src/git/GitDiffSourcePane.cpp
+        src/git/GitDiffSourcePane.hpp
         src/editor/EditorWidget.cpp
         src/editor/EditorWidget.hpp
         src/editor/UnicodeNavigation.cpp
@@ -449,9 +451,9 @@ if(BUILD_TESTING)
         add_test(NAME project-search COMMAND turtle-code-project-search-tests)
 
         add_executable(turtle-code-git-tests EXCLUDE_FROM_ALL tests/GitTests.cpp
-            src/git/GitService.cpp src/git/GitPanel.cpp src/git/GitDiffView.cpp)
+            src/git/GitService.cpp src/git/GitPanel.cpp src/git/GitDiffView.cpp src/git/GitDiffSourcePane.cpp)
         target_include_directories(turtle-code-git-tests PRIVATE src)
-        target_link_libraries(turtle-code-git-tests PRIVATE turtle-code-git-backend turtle-code-icons turtle-code-i18n turtle-code-themes Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent Qt6::Test)
+        target_link_libraries(turtle-code-git-tests PRIVATE turtle-code-git-backend turtle-code-text-core turtle-code-icons turtle-code-i18n turtle-code-themes Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent Qt6::Test)
         target_compile_options(turtle-code-git-tests PRIVATE -UNDEBUG)
         add_test(NAME git COMMAND turtle-code-git-tests)
         set_tests_properties(git PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)

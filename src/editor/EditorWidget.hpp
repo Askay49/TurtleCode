@@ -180,6 +180,7 @@ signals:
     void vimCompletionRequested();
     void debugAnchorsMoved(const QMap<int,int>& anchors);
     void debugLinesEdited(int row,int column,int removed,int inserted);
+    void diffRowsInserted(int row, int count);
     void breakpointToggled(int oneBasedLine);
     void gutterWidthChanged();
     void semanticViewportChanged();

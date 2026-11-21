@@ -13,6 +13,7 @@ public:
         bool operator==(const Range&) const = default;
     };
     struct Anchor { int line, offset; };
+    struct Insertion { int row, count; };
 
     bool isEmpty() const { return rows_ == 0; }
     int rowCount() const { return rows_; }
@@ -65,7 +66,7 @@ public:
         return std::clamp(row + anchor.offset, before, after);
     }
 
-    void projectEdit(int firstLine, int removedLines, int insertedLines) {
+    Insertion projectEdit(int firstLine, int removedLines, int insertedLines) {
         const int prefixEnd = rowForLine(firstLine) + 1;
         const int suffixLine = firstLine + removedLines + 1;
         const int suffixBegin = suffixLine < lines_ ? rowForLine(suffixLine) : rows_;
@@ -76,6 +77,16 @@ public:
         updated.appendLines(insertedLines);
         updated.appendPadding(std::max(0, suffixBegin - prefixEnd - insertedLines));
         updated.appendRows(*this, suffixBegin, rows_);
+        const Insertion extra{suffixBegin, updated.rows_ - rows_};
+        *this = std::move(updated);
+        return extra;
+    }
+
+    void insertPadding(int row, int count) {
+        LineAlignment updated;
+        updated.appendRows(*this, 0, row);
+        updated.appendPadding(count);
+        updated.appendRows(*this, row, rows_);
         *this = std::move(updated);
     }
 

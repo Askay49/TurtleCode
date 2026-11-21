@@ -8,6 +8,7 @@
 #include "app/ShortcutManager.hpp"
 #include "app/ThemeManager.hpp"
 #include "EditorWidget.hpp"
+#include "EditorLineRendering.hpp"
 #include "StoredClipboard.hpp"
 #include "core/text/LineAnchor.hpp"
 #include <map>
@@ -1078,7 +1079,7 @@ void EditorWidget::rebuildHitTestCache(int line) const {
     }
 }
 
-int EditorWidget::lineHeight() const { return fontMetrics().height() + 3; }
+int EditorWidget::lineHeight() const { return EditorLineRendering::rowHeight(fontMetrics()); }
 QString EditorWidget::expandedTabs(const QString& text,int& column) const {
     QString result;
     result.reserve(text.size());
@@ -1098,7 +1099,7 @@ int EditorWidget::textWidth(const QString& text) const {
     return qRound(QFontMetricsF(font()).horizontalAdvance(expandedTabs(text,column)));
 }
 int EditorWidget::gutterWidth() const {
-    return fontMetrics().horizontalAdvance(QString::number(buffer_.lineCount())) + 24;
+    return EditorLineRendering::gutterWidth(fontMetrics(), buffer_.lineCount());
 }
 int EditorWidget::textAreaWidth() const {
     return std::max(1, viewport()->width() - gutterWidth() - 16);
@@ -1178,7 +1179,8 @@ void EditorWidget::adjustDiffAlignment(std::size_t firstLine, int removedLines, 
         setDiffAlignment({});
         return;
     }
-    diffAlignment_.projectEdit(int(firstLine), removedLines, insertedLines);
+    const auto [row, count] = diffAlignment_.projectEdit(int(firstLine), removedLines, insertedLines);
+    if (count > 0) emit diffRowsInserted(row, count);
 }
 
 void EditorWidget::updateScrollBars() {
@@ -1400,7 +1402,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         const int lineIndex = diffAlignment_.isEmpty() ? documentLineForVisualRow(visualRow) : diffAlignment_.lineAt(visualRow);
         const int debugY = (visualRow - firstLine) * lh;
         if (lineIndex < 0) {
-            painter.fillRect(QRect(gutter, debugY, viewport()->width()-gutter, lh), QColor(128,128,128,22));
+            painter.fillRect(QRect(gutter, debugY, viewport()->width()-gutter, lh), EditorLineRendering::alignmentGap());
             continue;
         }
         const auto lineNo = static_cast<std::size_t>(lineIndex);
@@ -1425,7 +1427,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             if (hasSelection() && selEnd>start && selBegin<buffer_.lineEnd(foldEnd))
                 painter.fillRect(QRect(gutter,debugY,viewport()->width()-gutter,lh),ThemeManager::instance().color("editor.selection"));
             painter.setPen(gutterText);
-            painter.drawText(QRect(8,debugY,gutter-14,lh),Qt::AlignVCenter|Qt::AlignRight,QString::number(lineIndex+1));
+            EditorLineRendering::drawLineNumber(painter, gutter, debugY, lh, lineIndex);
             const auto prefix=buffer_.slice(start,std::min<std::size_t>(256,end-start));
             int column=0;
             const auto title=expandedTabs(QString::fromUtf8(prefix.data(),prefix.size()),column);
@@ -1435,11 +1437,11 @@ void EditorWidget::paintEvent(QPaintEvent*) {
                              fontMetrics().elidedText(summary,Qt::ElideRight,textAreaWidth()));
             continue;
         }
-        if(end-start>64u*1024u) {
+        if(end-start>EditorLineRendering::longLineBytes) {
             const int y=(visualRow-firstLine)*lh,cell=std::max(1,fontMetrics().horizontalAdvance('M'));
             if(lineNo==activeLine && debugLine_!=lineIndex+1)painter.fillRect(QRect(gutter,y,viewport()->width()-gutter,lh),currentLineBackground);
             painter.setPen(gutterText);
-            painter.drawText(QRect(8,y,gutter-14,lh),Qt::AlignVCenter|Qt::AlignRight,QString::number(lineIndex+1));
+            EditorLineRendering::drawLineNumber(painter, gutter, y, lh, lineIndex);
             const auto base=buffer_.codePointsBefore(start);
             const auto firstColumn=static_cast<std::size_t>(horizontalOffset/cell);
             const auto first=std::min(end,buffer_.byteAtCodePoint(base+firstColumn));
@@ -1459,7 +1461,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
                 if(!vimVisualBlock_ && hasSelection() && selBegin<last && selEnd>first && static_cast<std::size_t>(i)>=selectedFirst && static_cast<std::size_t>(i)<selectedLast)
                     painter.fillRect(QRect(x,y,cell,lh),ThemeManager::instance().color("editor.selection"));
                 painter.setPen(ThemeManager::instance().color("text.primary"));
-                painter.drawText(QPoint(x,y+(lh-fontMetrics().height())/2+fontMetrics().ascent()),QString::fromUcs4(reinterpret_cast<const char32_t*>(&chars[i]),1));x+=cell;
+                painter.drawText(QPoint(x,y+EditorLineRendering::baseline(fontMetrics(), lh)),QString::fromUcs4(reinterpret_cast<const char32_t*>(&chars[i]),1));x+=cell;
             }
             painter.restore();continue;
         }
@@ -1481,9 +1483,7 @@ void EditorWidget::paintEvent(QPaintEvent*) {
         // overload treats y as the baseline, which clipped row zero and made
         // the cursor's top-relative geometry disagree with the glyphs.
         painter.setPen(gutterText);
-        if (slice.begin==start) painter.drawText(QRect(8, y, gutter - 14, lh),
-                         Qt::AlignVCenter | Qt::AlignRight,
-                         QString::number(lineIndex + 1));
+        if (slice.begin==start) EditorLineRendering::drawLineNumber(painter, gutter, y, lh, lineIndex);
 
         painter.save();
         const int clipStart = slice.begin==start ? gutter : gutter+12;
@@ -1585,8 +1585,8 @@ void EditorWidget::paintEvent(QPaintEvent*) {
             painter.setPen(ThemeManager::instance().color("syntax.variable"));
             painter.drawLine(preeditX, y + lh - 2, preeditX + preeditWidth, y + lh - 2);
         }
-        const int textX = gutter + 12 - horizontalOffset;
-        const int baseline = y + (lh - fontMetrics().height()) / 2 + fontMetrics().ascent();
+        const int textX = gutter + EditorLineRendering::textInset - horizontalOffset;
+        const int baseline = y + EditorLineRendering::baseline(fontMetrics(), lh);
         if (!preeditText_.isEmpty() && lineNo == activeLine) {
             painter.setPen(ThemeManager::instance().color("text.primary"));
             int column=0;

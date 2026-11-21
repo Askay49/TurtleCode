@@ -2,10 +2,10 @@
 #include "git/GitPanel.hpp"
 #include "app/ShortcutManager.hpp"
 #include "git/GitDiffView.hpp"
+#include "git/GitDiffSourcePane.hpp"
 #include <QToolButton>
 #include <QPlainTextEdit>
 #include <QTextEdit>
-#include <QTextBlock>
 #include <QClipboard>
 #include <QHBoxLayout>
 #include <QProcess>
@@ -25,6 +25,7 @@ static void diffScrollAlignmentTests() {
     }
     editor->loadBuffer(PieceTreeBuffer(snapshot.right.toStdString()),"/tmp/scroll.txt");
     GitDiffView::LiveDocument live; live.editor=editor; live.available=[] { return true; };
+    live.revision=[editor] { return editor->document()->buffer().contentRevision(); };
     live.read=[editor] { return QByteArray::fromStdString(editor->snapshotBuffer().text()); };
     int alignmentUpdates=0;
     live.align=[editor,&alignmentUpdates](const LineAlignment& alignment) { ++alignmentUpdates; editor->setDiffAlignment(alignment); };
@@ -37,8 +38,9 @@ static void diffScrollAlignmentTests() {
         editor->setDiffHighlights(highlights);
     };
     QObject::connect(editor,&EditorWidget::contentChanged,view,&GitDiffView::documentChanged);
+    QObject::connect(editor,&EditorWidget::diffRowsInserted,view,&GitDiffView::insertPadding);
     view->displayVersions(snapshot,live,editor);
-    auto* old=view->findChild<QTextEdit*>("gitDiffOld");
+    auto* old=view->findChild<GitDiffSourcePane*>("gitDiffOld");
     auto* shared=view->findChild<QScrollBar*>("gitDiffScroll");
     auto* overview=view->findChild<QWidget*>("gitDiffOverview");
     assert(waitFor([&] { return editor->visualRowForLine(21)==41; }));
@@ -46,8 +48,9 @@ static void diffScrollAlignmentTests() {
     assert(old->viewport()->mapToGlobal(QPoint{}).y()==editor->viewport()->mapToGlobal(QPoint{}).y());
     assert(!old->verticalScrollBar()->isVisible() && !editor->verticalScrollBar()->isVisible() && shared->isVisible());
     assert(shared->mapToGlobal(QPoint{}).x()>editor->mapToGlobal(QPoint(editor->width()-1,0)).x());
-    const auto blockTop=[&](int row) { return old->cursorRect(QTextCursor(old->document()->findBlockByNumber(row))).top(); };
-    const int firstTextTop=blockTop(0)+old->verticalScrollBar()->value();
+    const auto rowTop=[&](int row) { return old->rowRect(row).top(); };
+    const int firstTextTop=rowTop(0)+old->verticalScrollBar()->value();
+    assert(firstTextTop==0);
     const auto marks=overview->grab().toImage();
     const auto markerColor=[&](int row) { return marks.pixelColor(marks.width()-2,qRound(row*marks.height()/122.0)); };
     const auto& theme=ThemeManager::instance();
@@ -59,10 +62,10 @@ static void diffScrollAlignmentTests() {
     shared->setValue(shared->maximum());
     const int bottom=editor->verticalScrollBar()->value();
     assert(bottom==shared->maximum());
-    assert(blockTop(bottom)==firstTextTop);
+    assert(rowTop(bottom)==firstTextTop);
     editor->verticalScrollBar()->setValue(25); QApplication::processEvents();
     assert(shared->value()==25);
-    assert(blockTop(25)==firstTextTop);
+    assert(rowTop(25)==firstTextTop);
     const QPoint wheelPos(60,50);
     QWheelEvent wheel(wheelPos,old->viewport()->mapToGlobal(wheelPos),{},QPoint(0,-120),
                       Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
@@ -74,7 +77,7 @@ static void diffScrollAlignmentTests() {
     QApplication::sendEvent(editor->viewport(),&nativeWheel);
     assert(shared->value()>afterOldWheel && shared->value()==editor->verticalScrollBar()->value());
     const int target=50;
-    const int y=blockTop(target)+old->verticalScrollBar()->value()-firstTextTop;
+    const int y=rowTop(target)+old->verticalScrollBar()->value()-firstTextTop;
     old->verticalScrollBar()->setValue(y); QApplication::processEvents();
     assert(editor->verticalScrollBar()->value()==target);
     editor->goToLine(22); QApplication::processEvents();
@@ -131,11 +134,29 @@ static void diffScrollAlignmentTests() {
     editor->documentUndo(true); const int redoY=caretY();
     waitComparison(previous); assert(caretY()==redoY);
     QObject::disconnect(connection);
+    // A new row before the first pair shifts both maps before the worker runs.
+    editor->setNavigationPosition(1,1);
+    previous=alignmentUpdates;
+    QTest::keyClick(editor,Qt::Key_Return);
+    assert(alignmentUpdates==previous);
+    assert(old->lineAtRow(0)==-1 && old->lineAtRow(1)==-1 && old->lineAtRow(2)==0);
+    assert(editor->visualRowForLine(2)==2);
+    waitComparison(previous);
+    assert(old->lineAtRow(2)==0);
+    previous=alignmentUpdates;
+    editor->documentUndo();
+    assert(alignmentUpdates==previous);
+    assert(old->lineAtRow(2)==0 && editor->visualRowForLine(1)==2);
+    waitComparison(previous);
+    assert(old->lineAtRow(1)==0 && editor->visualRowForLine(1)==1);
     // Cursor reveal and bottom scrolling use visual rows as well.
     editor->goToLine(100); QApplication::processEvents();
     const int cursorY=editor->viewport()->mapFromGlobal(editor->cursorScreenPosition()).y();
     assert(cursorY>=0 && cursorY<=editor->viewport()->height());
+    QTest::mouseClick(old->viewport(),Qt::LeftButton,Qt::NoModifier,QPoint(60,50));
+    assert(old->hasFocus());
     view->hide(); assert(editor->visualRowForLine(21)==21);
+    assert(editor->hasFocus());
     assert(editor->parentWidget()==&host && editor->verticalScrollBarPolicy()==Qt::ScrollBarAsNeeded);
 }
 static void gitWindowTests(QTemporaryDir& directory) {
@@ -207,7 +228,7 @@ static void gitWindowTests(QTemporaryDir& directory) {
     assert(waitFor([&] { return !panel->service()->busy() && diff->isVisible(); }));
     assert(diff->nativeEditor()==editor);
     assert(window.findChildren<EditorWidget*>().size()==1);
-    auto* original=diff->findChild<QTextEdit*>("gitDiffOld"); assert(original && original->isReadOnly());
+    auto* original=diff->findChild<GitDiffSourcePane*>("gitDiffOld"); assert(original);
     assert(diff->findChild<QTextEdit*>("gitDiffNew")->isHidden());
     assert(!diff->findChild<QPushButton*>("gitDiffOpen")); assert(!diff->findChild<QPushButton*>("gitDiffStage"));
     assert(!diff->findChild<QComboBox*>("gitDiffMode"));
@@ -218,16 +239,14 @@ static void gitWindowTests(QTemporaryDir& directory) {
         QApplication::clipboard()->setText(text); editor->pasteClipboard();
     };
     replaceForAlignment("// new line\nint main() {\n    return 42;\n}\n");
-    assert(waitFor([&] { return original->document()->firstBlock().userState()==-1 &&
-                                original->document()->findBlockByNumber(1).text()=="int main() {"; }));
-    assert(original->document()->findBlockByNumber(1).userState()==0);
+    assert(waitFor([&] { return original->lineAtRow(0)==-1 && original->lineAtRow(1)==0; }));
     assert(editor->visualRowForLine(1)==1);
     assert(read(path)=="int main() {\n    return 42;\n}\n");
     if(qEnvironmentVariableIsSet("TURTLE_CODE_GIT_ALIGNMENT_PREVIEW")) {
         QApplication::processEvents(); assert(window.grab().save(qEnvironmentVariable("TURTLE_CODE_GIT_ALIGNMENT_PREVIEW")));
     }
     editor->documentUndo();
-    assert(waitFor([&] { return original->document()->firstBlock().userState()==0; }));
+    assert(waitFor([&] { return original->lineAtRow(0)==0; }));
     replaceForAlignment("int main() {\n}\n");
     assert(waitFor([&] { return editor->visualRowForLine(1)==2; }));
     assert(editor->document()->buffer().text()=="int main() {\n}\n");
@@ -269,7 +288,8 @@ static void gitWindowTests(QTemporaryDir& directory) {
     assert(editor->document()->buffer().text()=="int main() {\n    return 0;\n}\n");
     assert(waitFor([&] { return diff->findChild<QPlainTextEdit*>("gitDiffText")->toPlainText().isEmpty(); }));
     assert(waitFor([&] { const auto c=diffPixel(); return c.green()<=c.red()+10; }));
-    assert(original->extraSelections().isEmpty());
+    assert(original->viewport()->grab().toImage().pixelColor(original->viewport()->width()-10,
+        original->rowRect(1).center().y())==ThemeManager::instance().color("editor.background"));
     assert(read(path)=="int main() {\n    return 42;\n}\n");
     editor->setNavigationPosition(2,12); QTest::keyClick(editor,Qt::Key_Delete);
     QTest::keyClick(editor,Qt::Key_4); QTest::keyClick(editor,Qt::Key_2);
