@@ -38,7 +38,7 @@ while True:
             event('turtle-test-environment', {'value': os.environ['TURTLE_ADAPTER_TEST']})
         event('turtle-test-initialize', req['arguments'])
         value_mode = os.environ.get('TURTLE_VALUE_TEST', '')
-        body = dict(supportsConfigurationDoneRequest=True)
+        body = dict(supportsConfigurationDoneRequest=True, supportsEvaluateForHovers=True)
         if value_mode:
             body.update(supportsSetVariable=value_mode != 'none', supportsSetExpression=value_mode == 'all',
                         supportsValueFormattingOptions=value_mode not in ('none', 'cortex'))
@@ -87,12 +87,15 @@ while True:
                     body['variables'] = [dict(name='leaf', value=formatted, evaluateName='record.inner.leaf', variablesReference=0)]
             event('turtle-test-values', dict(command=cmd, arguments=req['arguments']))
     elif cmd == 'evaluate':
+        if value_mode:
+            event('turtle-test-values', dict(command=cmd, arguments=req['arguments']))
+        if req['arguments'].get('context') == 'hover' and req['arguments']['expression'] == 'unavailable':
+            send(dict(type='response', request_seq=req['seq'], command=cmd, success=False, message='Unknown symbol'))
+            continue
         formatted = hex(int(current_value)) if value_mode and (cortex_hex or req['arguments'].get('format', {}).get('hex')) else current_value
         body = dict(result=formatted, variablesReference=0)
         if os.environ.get('TURTLE_TREE_TEST') and req['arguments']['expression'] == 'record':
             body = dict(result='{...}', variablesReference=30)
-        if value_mode:
-            event('turtle-test-values', dict(command=cmd, arguments=req['arguments']))
     elif cmd == 'set-var-format':
         cortex_hex = req['arguments']['hex']
         event('turtle-test-values', dict(command=cmd, arguments=req['arguments']))

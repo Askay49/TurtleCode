@@ -12,10 +12,12 @@ class DapClient final : public QObject {
     Q_OBJECT
 public:
     using Reply = std::function<void(const QJsonObject&)>;
+    enum class FailureMode { Report, Ignore };
     explicit DapClient(QObject* parent=nullptr);
     ~DapClient() override;
     void start(const QString& command, const QStringList& arguments, const QString& workingDirectory = {}, const QProcessEnvironment& environment = QProcessEnvironment::systemEnvironment());
-    int request(const QString& command, const QJsonObject& arguments={}, Reply reply={});
+    int request(const QString& command, const QJsonObject& arguments={}, Reply reply={},
+                FailureMode failureMode=FailureMode::Report);
     void respond(const QJsonObject& request,bool success,const QJsonObject& body={},const QString& message={});
     void stop();
     bool active() const { return process_.state()!=QProcess::NotRunning; }
@@ -33,7 +35,7 @@ private:
     QByteArray input_;
     int sequence_{0};
     quint64 generation_{0};
-    struct Pending { Reply reply; qint64 deadline; QString command; };
+    struct Pending { Reply reply; qint64 deadline; QString command; FailureMode failureMode; };
     QHash<int,Pending> pending_;
     QTimer timer_;
 };

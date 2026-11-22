@@ -815,7 +815,7 @@ int main(int argc,char**argv) {
     QSettings().setValue("lsp/enabled",false); QSettings().setValue("lsp/autoCompletion",false);
     LanguageRegistry::setEnabled("cpp",false);
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--debug-native"){debugNativeWindowTests();return 0;}
-    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--debug"){debugWindowTests(directory);return 0;}
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--debug"){debugWindowTests(directory);debugValueHoverTests();return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--lsp"){lspWindowTests(directory);symbolSearchWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--terminal"){
         terminalWindowTests(directory);

@@ -97,6 +97,8 @@ public:
     [[nodiscard]] int lineNumberAreaWidth() const { return gutterWidth(); }
     void setDebugBreakpoints(const QSet<int>& lines,const QSet<int>& disabled={}) { debugDisabledBreakpoints_=disabled; debugBreakpoints_=lines; viewport()->update(); }
     void setDebugLine(int line) { debugLine_=line; viewport()->update(); }
+    struct HoverExpression { QString text; QRect area; };
+    std::optional<HoverExpression> debugHoverExpression(const QPoint& point);
     struct DiffHighlight { int line, start, length; };
     void setDiffHighlights(const QVector<DiffHighlight>& highlights) {
         diffHighlights_.clear(); for(const auto& h:highlights) diffHighlights_.insert(h.line,{h.start,h.length}); viewport()->update();
@@ -188,7 +190,7 @@ signals:
     void modifiedChanged();
     void contentChanged();
     void codeContextMenuRequested(const QPoint& globalPosition);
-    void hoverRequested(int line, int utf16Column, const QPoint& globalPosition);
+    void hoverRequested(int line, int utf16Column, const QPoint& globalPosition, bool hasDiagnostic);
 
 protected:
     bool event(QEvent* event) override;

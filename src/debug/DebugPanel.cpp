@@ -563,6 +563,18 @@ void DebugPanel::evaluate(const QString& expression) {
     });
 }
 
+bool DebugPanel::evaluateHover(const QString& expression,std::function<void(QString)> completed) {
+    if(!session_.stopped || session_.ending || session_.frame<0 ||
+       !session_.capabilities.value("supportsEvaluateForHovers").toBool()) return false;
+
+    const auto epoch=session_.epoch;
+    const auto arguments=formatArguments({{"expression",expression},{"frameId",session_.frame},{"context","hover"}});
+    return client_->request("evaluate",arguments,[this,epoch,completed=std::move(completed)](const QJsonObject& response) {
+        if(epoch!=session_.epoch || !session_.stopped || session_.ending) return;
+        completed(response.value("success").toBool()?response.value("body").toObject().value("result").toString():QString{});
+    },DapClient::FailureMode::Ignore)>=0;
+}
+
 void DebugPanel::renameSource(const QString& oldPath,const QString& newPath) {
     const auto files=state_.points.keys();
     for(const auto& path:files) if(path==oldPath || path.startsWith(oldPath+QDir::separator())) {

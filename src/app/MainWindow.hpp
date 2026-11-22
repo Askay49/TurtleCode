@@ -218,6 +218,7 @@ private:
     bool ensureManualLsp(EditorWidget* editor,std::function<void()> retry);
     void requestSemanticHighlighting(EditorWidget* editor, bool force = false);
     void requestCompletion(EditorWidget* editor, bool automatic);
+    void requestEditorHover(EditorWidget* editor, int line, int column, const QPoint& global, bool hasDiagnostic);
     void showCodeHelp(bool signature);
     void showLspProblems();
     QHash<QString, QJsonArray> lspProblems_;
@@ -231,6 +232,8 @@ private:
     QToolButton* debugActivity_{nullptr};
     QString debugPath_;
     int debugLine_{0};
+    quint64 editorHoverGeneration_{0};
+    QString debugHoverTip_;
     QPointer<GitDiffView> gitDiff_;
     QString pendingGitRevert_;
     QMainWindow* editorArea_{nullptr};

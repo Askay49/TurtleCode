@@ -2668,6 +2668,68 @@ std::size_t EditorWidget::byteColumnAtX(int x, int lineNo) const {
     const int leftDistance = target - hitTestColumns_[index - 1];
     return std::min(hitTestOffsets_[rightDistance < leftDistance ? index : index - 1],end-start);
 }
+
+std::optional<EditorWidget::HoverExpression> EditorWidget::debugHoverExpression(const QPoint& point) {
+    const int textLeft = gutterWidth() + EditorLineRendering::textInset;
+    if (busy_ || !viewport()->rect().contains(point) || point.x() < textLeft) return {};
+    const int line = lineAtY(point.y());
+    if (line < 0 || std::size_t(line) >= buffer_.lineCount()) return {};
+    const auto start = buffer_.lineStart(line);
+    if (buffer_.lineEnd(line) - start > EditorLineRendering::longLineBytes) return {};
+
+    const int row = verticalScrollBar()->value() + point.y() / lineHeight();
+    if (!diffAlignment_.isEmpty() && diffAlignment_.lineAt(row) < 0) return {};
+    const auto slice = screenSlice(row);
+    const int origin = textLeft - (slice.left || slice.right >= 0 ? slice.left : horizontalScrollBar()->value());
+    const auto& text = cachedLine(line);
+    const auto startUtf16 = buffer_.utf16Before(start);
+    const auto position = positionAtPoint(point.x(), point.y(), line);
+    auto column = qsizetype(buffer_.utf16Before(position) - startUtf16);
+    const auto pixelAt = [&](qsizetype index) { return origin + textWidth(text.left(index)); };
+    // The hit test finds a caret boundary. Use the character under the mouse.
+    if (point.x() < pixelAt(column)) --column;
+    if (!OccurrenceMatching::isWord(text, column)) return {};
+
+    const auto wordStart = [&](qsizetype end) {
+        while (OccurrenceMatching::isWord(text, end - 1)) --end;
+        return end;
+    };
+    const auto isIdentifierStart = [&](qsizetype index) {
+        const auto ch = text.at(index);
+        const auto code = ch.isHighSurrogate() && index + 1 < text.size() && text.at(index + 1).isLowSurrogate()
+            ? QChar::surrogateToUcs4(ch, text.at(index + 1)) : char32_t(ch.unicode());
+        return code == U'_' || QChar::isLetter(code) || QChar::category(code) == QChar::Number_Letter;
+    };
+    const auto first = wordStart(column);
+    if (!isIdentifierStart(first)) return {};
+    auto last = column + 1;
+    while (OccurrenceMatching::isWord(text, last)) ++last;
+
+    const auto context = codeContext_.at(buffer_, buffer_.byteAtUtf16(startUtf16 + first), editingRules());
+    if (context && context->mode != CodeContext::Mode::Code) return {};
+
+    const auto beforeSpaces = [&](qsizetype index) {
+        while (index > 0 && text.at(index - 1).isSpace()) --index;
+        return index;
+    };
+    auto expressionStart = first;
+    while (true) {
+        const auto prefix = QStringView(text).left(beforeSpaces(expressionStart));
+        const int operatorSize = prefix.endsWith(u"->") || prefix.endsWith(u"::") ? 2 : prefix.endsWith(u'.') ? 1 : 0;
+        if (!operatorSize) break;
+        const auto baseEnd = beforeSpaces(prefix.size() - operatorSize);
+        expressionStart = wordStart(baseEnd);
+        if (expressionStart == baseEnd || !isIdentifierStart(expressionStart)) return {};
+    }
+    if (last - expressionStart > 4096) return {};
+
+    const int left = std::max(textLeft, pixelAt(first));
+    const int right = slice.right >= 0 ? std::min(origin + slice.right, pixelAt(last)) : pixelAt(last);
+    const QRect area(left, point.y() / lineHeight() * lineHeight(), right - left, lineHeight());
+    if (!area.contains(point)) return {};
+    return HoverExpression{text.mid(expressionStart, last - expressionStart), area};
+}
+
 void EditorWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (busy_) { event->accept(); return; }
     hideCompletions();
@@ -2876,13 +2938,14 @@ bool EditorWidget::eventFilter(QObject* watched, QEvent* event) {
             const auto diagnostics = diagnostics_.constFind(line);
             if (diagnostics != diagnostics_.cend() && !diagnostics.value().isEmpty()) {
                 QToolTip::showText(help->globalPos(), diagnostics.value().first().message, viewport());
+                if (!busy_) emit hoverRequested(line, 0, help->globalPos(), true);
                 return true;
             }
             if (!busy_ && line >= 0 && static_cast<std::size_t>(line) < buffer_.lineCount()) {
                 const auto column = positionAtPoint(help->pos().x(),help->pos().y(),line)-buffer_.lineStart(line);
                 const auto start=buffer_.lineStart(line);
                 const int utf16=static_cast<int>(std::min<std::size_t>(INT_MAX,buffer_.utf16Before(start+column)-buffer_.utf16Before(start)));
-                emit hoverRequested(line, utf16, help->globalPos());
+                emit hoverRequested(line, utf16, help->globalPos(), false);
                 return true;
             }
             break;

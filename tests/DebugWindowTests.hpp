@@ -1,6 +1,10 @@
 #include "debug/DebugPanel.hpp"
+#include "debug/DapClient.hpp"
 #include <QClipboard>
+#include <QHelpEvent>
 #include <QPushButton>
+#include <QSignalSpy>
+#include <QToolTip>
 static void debugWindowTests(QTemporaryDir& directory) {
     if(!qEnvironmentVariableIsEmpty("TURTLE_DEBUG_SIDEBAR_BACKGROUND")) {
         QSettings().setValue("appearance/backgroundImage",qEnvironmentVariable("TURTLE_DEBUG_SIDEBAR_BACKGROUND"));
@@ -89,5 +93,64 @@ static void debugNativeWindowTests() {
     auto* io=terminal->findChild<TerminalWidget*>("debugProgramTerminal"); assert(io);
     assert(waitFor([&]{return io->screenText().contains("Bonus");})); emit io->input("4\n");
     assert(waitFor([&]{return io->screenText().contains("Result: 20");})); assert(waitFor([&]{return !panel->active();}));
+    closeDiscard(window);
+}
+
+static void debugValueHoverTests() {
+    QTemporaryDir project;
+    assert(project.isValid() && QDir(project.path()).mkdir(".turtle"));
+    const auto path = project.filePath("main.c");
+    QFile source(path);
+    assert(source.open(QIODevice::WriteOnly));
+    source.write("void sample(void) {\n    int unavailable;\n    int input = GPIOA->IDR;\n}\n");
+    source.close();
+
+    const auto adapter = QFileInfo(QString::fromUtf8(__FILE__)).absoluteDir().filePath("debug/fake_adapter.py");
+    QFile configuration(DebugConfiguration::legacyPath(project.path()));
+    assert(configuration.open(QIODevice::WriteOnly));
+    const QJsonObject launch{{"version",1},{"type","dap"},{"adapterID","fixture"},
+        {"adapter",QStandardPaths::findExecutable("python3")},{"adapterArgs",QJsonArray{adapter}},
+        {"program",path},{"env",QJsonObject{{"TURTLE_VALUE_TEST","all"}}}};
+    configuration.write(QJsonDocument(launch).toJson());
+    configuration.close();
+
+    MainWindow window;
+    window.resize(1280, 900);
+    window.show();
+    window.openPaths({project.path(), path});
+    auto* editor = window.findChild<EditorWidget*>();
+    auto* panel = window.findChild<DebugPanel*>();
+    assert(editor && panel && waitFor([&]{ return !editor->isBusy(); }));
+    QSignalSpy events(panel->findChild<DapClient*>(), &DapClient::eventReceived);
+    emit panel->startRequested();
+    auto* variables = panel->findChild<QTreeWidget*>("debugVariables");
+    assert(waitFor([&]{ return variables->topLevelItemCount() > 0; }));
+
+    const auto hover = [&](int line, int column) {
+        editor->setNavigationPosition(line, column);
+        const auto global = editor->cursorScreenPosition() + QPoint(2, -3);
+        QCursor::setPos(global);
+        auto* viewport = editor->viewport();
+        QHelpEvent event(QEvent::ToolTip, viewport->mapFromGlobal(global), global);
+        QApplication::sendEvent(viewport, &event);
+    };
+    hover(3, 25);
+    assert(waitFor([]{ return QToolTip::isVisible() && QToolTip::text().contains("GPIOA-&gt;IDR = 42"); }));
+
+    hover(2, 11);
+    assert(waitFor([&]{
+        return std::any_of(events.cbegin(), events.cend(), [](const QList<QVariant>& event) {
+            if (event[0].toString() != "turtle-test-values") return false;
+            const auto arguments = event[1].toJsonObject().value("arguments").toObject();
+            return arguments.value("context") == "hover" && arguments.value("expression") == "unavailable" &&
+                   arguments.value("frameId").toInt() == 10;
+        });
+    }));
+    hover(3, 10);
+    assert(waitFor([]{ return QToolTip::isVisible() && QToolTip::text().contains("input = 42"); }));
+    auto* output = panel->console()->findChild<QPlainTextEdit*>("debugOutput");
+    assert(output && !output->toPlainText().contains("Unknown symbol"));
+    panel->perform("start");
+    assert(waitFor([&]{ return !panel->active() && !QToolTip::isVisible(); }));
     closeDiscard(window);
 }

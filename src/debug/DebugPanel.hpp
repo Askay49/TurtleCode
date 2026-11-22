@@ -42,6 +42,7 @@ public:
     QSet<int> breakpoints(const QString& path) const { return state_.points.value(path); }
     bool active() const;
     bool commandAvailable(const QString& command) const;
+    bool evaluateHover(const QString& expression,std::function<void(QString)> completed);
 signals:
     void configurationRequested(const QString& path);
     void consoleRequested();

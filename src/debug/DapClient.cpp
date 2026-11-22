@@ -16,7 +16,17 @@ DapClient::DapClient(QObject* parent):QObject(parent) {
     timer_.setInterval(500);
     connect(&timer_,&QTimer::timeout,this,[this]{
         const auto now=QDateTime::currentMSecsSinceEpoch();
-        for(auto it=pending_.cbegin();it!=pending_.cend();++it) if(it->deadline<now) { fail(tr("Debug request timed out: %1").arg(it->command)); return; }
+        QList<Reply> expired;
+        for(auto it=pending_.begin();it!=pending_.end();) {
+            if(it->deadline>=now) { ++it; continue; }
+            if(it->failureMode==FailureMode::Report) {
+                fail(tr("Debug request timed out: %1").arg(it->command));
+                return;
+            }
+            if(it->reply) expired.append(std::move(it->reply));
+            it=pending_.erase(it);
+        }
+        for(const auto& reply:expired) reply({});
     });
 }
 DapClient::~DapClient() {
@@ -33,11 +43,12 @@ void DapClient::start(const QString& command,const QStringList& arguments,const 
     process_.setWorkingDirectory(workingDirectory);process_.setProcessEnvironment(environment);
     process_.start(command,arguments); timer_.start();
 }
-int DapClient::request(const QString& command,const QJsonObject& arguments,Reply reply) {
+int DapClient::request(const QString& command,const QJsonObject& arguments,Reply reply,FailureMode failureMode) {
     if(!active()) return -1;
     const int seq=++sequence_;
     const auto data=QJsonDocument(QJsonObject{{"seq",seq},{"type","request"},{"command",command},{"arguments",arguments}}).toJson(QJsonDocument::Compact);
-    pending_.insert(seq,{std::move(reply),QDateTime::currentMSecsSinceEpoch()+30000,command});
+    const int timeout=failureMode==FailureMode::Ignore?2000:30000;
+    pending_.insert(seq,{std::move(reply),QDateTime::currentMSecsSinceEpoch()+timeout,command,failureMode});
     process_.write("Content-Length: "+QByteArray::number(data.size())+"\r\n\r\n"+data);
     return seq;
 }
@@ -75,18 +86,19 @@ void DapClient::read() {
         if(type=="response") {
             auto it=pending_.find(obj.value("request_seq").toInt());
             if(it==pending_.end()) continue;
-            auto callback=std::move(it->reply); const auto command=it->command; pending_.erase(it);
-            if(!obj.value("success").toBool()) {
+            auto pending=std::move(it.value()); pending_.erase(it);
+            if(!obj.value("success").toBool() && pending.failureMode==FailureMode::Report) {
                 QString message=obj.value("message").toString();
                 const auto detail=obj.value("body").toObject().value("error").toObject();
                 QString formatted=detail.value("format").toString(); const auto variables=detail.value("variables").toObject();
                 for(auto var=variables.begin();var!=variables.end();++var) formatted.replace("{"+var.key()+"}",var.value().toString());
                 if(!formatted.isEmpty()) message=formatted;
                 obj["message"]=message;
+                const auto& command=pending.command;
                 if(command=="initialize" || command=="launch" || command=="attach" || command=="configurationDone") emit fatalError(command+": "+message);
                 emit error(command+": "+message);
             }
-            if(callback) callback(obj);
+            if(pending.reply) pending.reply(obj);
         } else if(type=="event") emit eventReceived(obj.value("event").toString(),obj.value("body").toObject());
         else if(type=="request") {
             if(obj.value("command").toString()=="runInTerminal" && isSignalConnected(QMetaMethod::fromSignal(&DapClient::reverseRequest))) emit reverseRequest(obj);

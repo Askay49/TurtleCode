@@ -558,9 +558,11 @@ void MainWindow::createUi() {
     });
     connect(debugPanel_, &DebugPanel::sourceActivated, this, [this](const QString& path,int line) { if(QFileInfo(path).isFile()) openFile(path,line); });
     connect(debugPanel_, &DebugPanel::locationChanged, this, [this](const QString& path,int line) {
-        debugPath_=path; debugLine_=line;
+        if (!debugHoverTip_.isEmpty() && QToolTip::text() == debugHoverTip_) QToolTip::hideText();
+        debugHoverTip_.clear();
+        debugPath_=path.isEmpty()?QString{}:QDir::cleanPath(QFileInfo(path).absoluteFilePath()); debugLine_=line;
         if(!path.isEmpty() && line>0 && QFileInfo(path).isFile()) openFile(path,line);
-        for(auto* e:findChildren<EditorWidget*>()) e->setDebugLine(e->filePath()==path?line:0);
+        for(auto* e:findChildren<EditorWidget*>()) e->setDebugLine(e->filePath()==debugPath_?line:0);
     });
     sidebarLayout->addWidget(sidebarStack_, 1);
 
@@ -2469,6 +2471,50 @@ void MainWindow::requestCompletion(EditorWidget* editor, bool automatic) {
         if (items.isEmpty() && !automatic) statusBar()->showMessage(I18n::text("No completions"), 2000);
     });
 }
+void MainWindow::requestEditorHover(EditorWidget* editor, int line, int column, const QPoint& global, bool hasDiagnostic) {
+    const auto generation = ++editorHoverGeneration_;
+    const auto path = editor->filePath();
+    const auto revision = editor->lspRevision();
+    const QPointer<EditorWidget> guard(editor);
+    const auto isCurrent = [this, guard, path, revision, generation] {
+        return guard && guard->isVisible() && !guard->isBusy() && activeEditor() == guard &&
+               guard->filePath() == path && guard->lspRevision() == revision && generation == editorHoverGeneration_;
+    };
+    const auto showLanguageHover = [this, guard, path, line, column, global, hasDiagnostic, isCurrent] {
+        if (hasDiagnostic || !isCurrent() || !lsp_ || !lsp_->ready(path) || !guard->lspEligible() || !lsp_->supports(path) ||
+            !guard->lspPolicy().automaticFeatures(guard->byteSize(), QDateTime::currentMSecsSinceEpoch())) return;
+        lsp_->change(path, guard->lspText());
+        lsp_->hover(path, line, column, [guard, global, isCurrent](QJsonValue value) {
+            if (!isCurrent() || (QCursor::pos() - global).manhattanLength() > 12) return;
+            const auto contents = value.toObject().value("contents");
+            const auto plain = [](QJsonValue item) { return item.isString() ? item.toString() : item.toObject().value("value").toString(); };
+            QString text;
+            if (contents.isArray()) for (const auto& item : contents.toArray()) text += plain(item) + '\n';
+            else text = plain(contents);
+            if (!text.trimmed().isEmpty()) QToolTip::showText(global, "<pre>" + text.left(8000).toHtmlEscaped() + "</pre>", guard);
+        });
+    };
+
+    if (!path.isEmpty() && path == debugPath_ && isCurrent()) {
+        const auto target = editor->debugHoverExpression(editor->viewport()->mapFromGlobal(global));
+        if (target && debugPanel_->evaluateHover(target->text, [this, guard, target=*target, isCurrent, showLanguageHover](const QString& value) {
+            if (!isCurrent()) return;
+            auto* viewport = guard->viewport();
+            const auto cursor = QCursor::pos();
+            if (!target.area.contains(viewport->mapFromGlobal(cursor))) return;
+            const auto hovered = guard->debugHoverExpression(viewport->mapFromGlobal(cursor));
+            if (!hovered || hovered->text != target.text || hovered->area != target.area) return;
+            if (value.isEmpty()) {
+                showLanguageHover();
+                return;
+            }
+            debugHoverTip_ = "<pre>" + target.text.toHtmlEscaped() + " = " + value.left(2000).toHtmlEscaped() + "</pre>";
+            QToolTip::showText(cursor, debugHoverTip_, viewport, target.area);
+        })) return;
+    }
+    showLanguageHover();
+}
+
 void MainWindow::showCodeHelp(bool signature) {
     auto* editor = activeEditor();
     if (!editor) return;
@@ -2616,19 +2662,8 @@ void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool p
             if (auto* action = findChild<QAction*>(id)) menu->addAction(action);
         menu->popup(global);
     });
-    connect(editor, &EditorWidget::hoverRequested, this, [this, editor](int line, int column, const QPoint& global) {
-        if (!lsp_ || !lsp_->ready(editor->filePath()) || !editor->lspEligible() || !lsp_->supports(editor->filePath())
-            || !editor->lspPolicy().automaticFeatures(editor->byteSize(),QDateTime::currentMSecsSinceEpoch())) return;
-        const auto path = editor->filePath(); const auto revision = editor->lspRevision();
-        lsp_->change(path, editor->lspText()); QPointer<EditorWidget> guard(editor);
-        lsp_->hover(path, line, column, [this, guard, path, revision, global](QJsonValue value) {
-            if (!guard || activeEditor()!=guard || guard->filePath()!=path || guard->lspRevision()!=revision || (QCursor::pos()-global).manhattanLength()>12) return;
-            const auto contents=value.toObject().value("contents"); QString text;
-            auto plain=[](QJsonValue item) { return item.isString()?item.toString():item.toObject().value("value").toString(); };
-            if (contents.isArray()) for (const auto& item:contents.toArray()) text+=plain(item)+"\n";
-            else text=plain(contents);
-            if (!text.trimmed().isEmpty()) QToolTip::showText(global, "<pre>"+text.left(8000).toHtmlEscaped()+"</pre>", guard);
-        });
+    connect(editor, &EditorWidget::hoverRequested, this, [this, editor](int line, int column, const QPoint& global, bool hasDiagnostic) {
+        requestEditorHover(editor, line, column, global, hasDiagnostic);
     });
     connect(editor,&EditorWidget::highlightingStatusChanged,this,[this,editor](const QString& message) {
         if(activeEditor()==editor) statusBar()->showMessage(message,8000);
