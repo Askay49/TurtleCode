@@ -19,6 +19,9 @@ int main(int argc, char** argv) {
     qputenv("XDG_CONFIG_HOME", directory.path().toUtf8());
     QApplication app(argc, argv); app.setOrganizationName("TurtleCodeTests"); app.setApplicationName("ShortcutTests");
     QSettings().setValue("shortcuts/file.open", "Ctrl+'");
+    QSettings().setValue("shortcuts/navigation.commands", "Ctrl+Alt+P");
+    QSettings().setValue("shortcuts/code.problems", "Ctrl+Shift+O");
+    QSettings().setValue("shortcuts/view.terminal", "Ctrl+T");
     auto& manager = ShortcutManager::instance();
     QMap<QString, QKeySequence> defaults;
     for (const auto& command : manager.commands()) defaults[command.id] = command.standard;
@@ -27,6 +30,11 @@ int main(int argc, char** argv) {
     const auto prefix = ShortcutManager::navigationPrefixId;
     assert(defaults.value(prefix) == QKeySequence("Ctrl+'"));
     assert(manager.sequence("file.open") == QKeySequence("Ctrl+'") && manager.sequence(prefix).isEmpty());
+    assert(manager.sequence("navigation.commands") == QKeySequence("Ctrl+Alt+P"));
+    assert(manager.sequence("code.problems") == QKeySequence("Ctrl+Shift+O"));
+    assert(manager.sequence("view.terminal") == QKeySequence("Ctrl+T"));
+    assert(manager.sequence("navigation.documentSymbols").isEmpty());
+    assert(manager.sequence("navigation.projectSymbols").isEmpty());
     QString error;
     assert(manager.save(defaults, &error));
     auto values = defaults;

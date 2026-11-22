@@ -10,4 +10,5 @@ namespace Codicons {
 [[nodiscard]] QIcon icon(const QString& name, const QColor& color = {});
 [[nodiscard]] QIcon folderIcon();
 [[nodiscard]] QIcon completionIcon(int lspKind);
+[[nodiscard]] QIcon symbolIcon(int lspKind, const QColor& color = {});
 }

@@ -92,25 +92,6 @@ protected:
         QDockWidget::closeEvent(event);
     }
 private:
-    static const char* icon(int kind) {
-        switch(kind) {
-        case 2: case 3: case 4: return "symbol-namespace";
-        case 5: return "symbol-class";
-        case 6: return "symbol-method";
-        case 7: return "symbol-property";
-        case 8: return "symbol-field";
-        case 9: return "symbol-constructor";
-        case 10: return "symbol-enum";
-        case 11: return "symbol-interface";
-        case 12: return "symbol-method";
-        case 14: return "symbol-constant";
-        case 22: return "symbol-enum-member";
-        case 23: return "symbol-struct";
-        case 24: return "symbol-event";
-        case 26: return "symbol-type-parameter";
-        default: return "symbol-variable";
-        }
-    }
     void append(const QJsonArray& symbols,QTreeWidgetItem* parent,const QString& path,int depth,int& budget) {
         if(depth>64) return;
         for(const auto& value:symbols) {
@@ -141,7 +122,7 @@ private:
             :(kind==5 || kind==10 || kind==11 || kind==23 || kind==26)?"syntax.type"
             :kind==14?"syntax.constant":"syntax.variable";
         const auto color=ThemeManager::instance().color(role);
-        item->setForeground(0,color); item->setIcon(0,Codicons::icon(icon(kind),color));
+        item->setForeground(0,color); item->setIcon(0,Codicons::symbolIcon(kind,color));
         for(int i=0;i<item->childCount();++i) styleItem(item->child(i));
     }
     void activate(QTreeWidgetItem* item) {

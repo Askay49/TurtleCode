@@ -236,3 +236,30 @@ void LspManager::documentSymbols(const QString& path,Callback callback) {
     if(auto* client=existing(path)) client->documentSymbols(path,std::move(callback));
     else if(callback) callback(QJsonValue(QJsonValue::Undefined));
 }
+QVector<QPointer<LspClient>> LspManager::startWorkspaceSymbolClients(const QString& root) {
+    QVector<QPointer<LspClient>> result;
+    if (!enabled_ || root.isEmpty()) return result;
+    const auto boundProfiles = configuration_.bindings.values();
+    for (const auto& profile : configuration_.profiles) {
+        if (!profile.enabled || profile.server.command.trimmed().isEmpty() || !boundProfiles.contains(profile.id)) continue;
+        LspClient* client = nullptr;
+        for (auto& instance : instances_) {
+            if (instance.profile != profile.id || instance.root != root) continue;
+            client = instance.client;
+            break;
+        }
+        if (!client) {
+            for (auto& instance : instances_) {
+                if (instance.profile != profile.id || !instance.root.isEmpty()) continue;
+                instance.root = root;
+                client = instance.client;
+                client->setRoot(root);
+                break;
+            }
+        }
+        if (!client) client = createClient(profile, root);
+        result.append(client);
+        client->startWorkspace();
+    }
+    return result;
+}

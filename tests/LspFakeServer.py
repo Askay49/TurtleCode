@@ -16,6 +16,7 @@ semantic_methods = []
 language_ids = {}
 configuration_result = None
 initialization = {}
+project_extension = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--project-symbols=')), None)
 
 def send(message, delayed=False):
     payload = json.dumps(message, ensure_ascii=False).encode()
@@ -64,7 +65,7 @@ while True:
         if '--init-error' in sys.argv:
             send({'jsonrpc': '2.0', 'id': identifier, 'error': {'code': -32603, 'message': 'test initialization error'}})
             continue
-        response(identifier, {'capabilities': {'positionEncoding': 'utf-16', 'textDocumentSync': {'openClose': True, 'change': 2, 'save': {'includeText': True}}, 'documentSymbolProvider': '--no-outline' not in sys.argv, 'documentFormattingProvider': False if '--no-format' in sys.argv else {}, 'completionProvider': {}, 'hoverProvider': True, 'definitionProvider': True, 'signatureHelpProvider': {}, 'renameProvider': {'prepareProvider': True}, 'semanticTokensProvider': {'legend': {'tokenTypes': ['variable', 'parameter', 'type'], 'tokenModifiers': ['declaration', 'static']}, 'full': '--range-only' not in sys.argv, 'range': '--semantic-range' in sys.argv or '--range-only' in sys.argv}}})
+        response(identifier, {'capabilities': {'positionEncoding': 'utf-16', 'textDocumentSync': {'openClose': True, 'change': 2, 'save': {'includeText': True}}, 'documentSymbolProvider': '--no-outline' not in sys.argv, 'workspaceSymbolProvider': project_extension is not None, 'documentFormattingProvider': False if '--no-format' in sys.argv else {}, 'completionProvider': {}, 'hoverProvider': True, 'definitionProvider': True, 'signatureHelpProvider': {}, 'renameProvider': {'prepareProvider': True}, 'semanticTokensProvider': {'legend': {'tokenTypes': ['variable', 'parameter', 'type'], 'tokenModifiers': ['declaration', 'static']}, 'full': '--range-only' not in sys.argv, 'range': '--semantic-range' in sys.argv or '--range-only' in sys.argv}}})
     elif method == 'initialized':
         send({'jsonrpc': '2.0', 'id': 'config-request', 'method': 'workspace/configuration', 'params': {'items': ([{'section': 'custom'}, {'section': 'custom.nested'}, {}, {'section': 'missing'}] if '--any-language' in sys.argv else [{'section': 'custom'}])}})
     elif identifier == 'config-request':
@@ -105,12 +106,26 @@ while True:
             response(identifier, [])
         elif 'outline_error' in text:
             send({'jsonrpc': '2.0', 'id': identifier, 'error': {'code': -32603, 'message': 'test outline error'}})
+        elif 'fresh_symbol' in text:
+            start = {'line': 1, 'character': 4}
+            response(identifier, [{'name': 'fresh_symbol', 'kind': 13, 'range': {'start': start, 'end': start}}], delayed=True)
         elif uri.endswith('.py'):
             response(identifier, [{'name': 'python_value', 'kind': 13, 'location': {'uri': uri, 'range': rng}}], delayed=True)
         else:
             response(identifier, [{'name': 'Sample', 'detail': 'class', 'kind': 5, 'range': rng,
                 'selectionRange': {'start': {'line': 0, 'character': 0}, 'end': start},
                 'children': [{'name': 'value', 'detail': 'int', 'kind': 8, 'range': rng, 'selectionRange': rng}]}], delayed=True)
+    elif method == 'workspace/symbol':
+        assert project_extension
+        assert initialization['capabilities']['workspace']['symbol']['dynamicRegistration'] is False
+        query = params['query']
+        root = Path(unquote(urlparse(initialization['rootUri']).path))
+        position = {'line': 1, 'character': 4}
+        def project_symbol(path):
+            return {'name': query, 'kind': 12, 'containerName': 'Example',
+                    'location': {'uri': path.as_uri(), 'range': {'start': position, 'end': position}}}
+        result = [project_symbol(path) for path in sorted(root.glob('*' + project_extension))]
+        response(identifier, result + result[:1] + [project_symbol(root.parent / 'outside.cpp')], delayed=True)
     elif method == 'textDocument/formatting':
         expected_options = {'tabSize': 8, 'insertSpaces': False} if '--format-tabs' in sys.argv else {'tabSize': 4, 'insertSpaces': True}
         assert params['options'] == expected_options

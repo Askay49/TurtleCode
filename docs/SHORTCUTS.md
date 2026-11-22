@@ -24,6 +24,12 @@ Import/export use a Turtle Code JSON file, for example:
 
 Import merges the listed commands into the current draft and validates before accepting it. Export writes the complete draft. Unknown commands, reserved keys and conflicts are rejected. Imported settings take effect after **Save**.
 
+**Ctrl+Shift+O** opens symbol search for the current file. **Ctrl+Alt+P** opens
+the same dialog for project symbols. Both commands are available from the
+**Go** menu and the command palette. Switch scope in the dialog, select a result
+with the arrow keys, press Enter to jump, or press Escape to close.
+An existing shortcut assignment takes priority over either new default.
+
 Each editor pane shows its current document in a header. The active pane has
 an accent line. Click the title to choose another open buffer for that pane.
 The header provides split and close actions, and a top tab bar appears when

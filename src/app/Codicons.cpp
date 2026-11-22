@@ -63,3 +63,13 @@ QIcon Codicons::completionIcon(int kind) {
         "symbol-type-parameter"};
     return icon(QString::fromLatin1(names[kind >= 1 && kind <= 25 ? kind - 1 : 0]));
 }
+
+QIcon Codicons::symbolIcon(int kind, const QColor& color) {
+    // LSP SymbolKind has a separate numbering from CompletionItemKind.
+    static const char* const names[] = {"symbol-variable", "symbol-namespace", "symbol-namespace", "symbol-namespace",
+        "symbol-class", "symbol-method", "symbol-property", "symbol-field", "symbol-constructor", "symbol-enum",
+        "symbol-interface", "symbol-method", "symbol-variable", "symbol-constant", "symbol-variable",
+        "symbol-variable", "symbol-variable", "symbol-variable", "symbol-variable", "symbol-variable",
+        "symbol-variable", "symbol-enum-member", "symbol-struct", "symbol-event", "symbol-variable", "symbol-type-parameter"};
+    return icon(QString::fromLatin1(kind >= 1 && kind <= 26 ? names[kind - 1] : "symbol-variable"), color);
+}

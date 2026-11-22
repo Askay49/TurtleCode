@@ -935,6 +935,14 @@ void MainWindow::createMenus() {
     auto* quickOpenAction = goMenu->addAction(Codicons::icon("go-to-file"), I18n::text("Quick Open..."));
     ShortcutManager::instance().bind("navigation.quickOpen", quickOpenAction);
     connect(quickOpenAction, &QAction::triggered, this, &MainWindow::quickOpen);
+    for (const bool project : {false, true}) {
+        const auto id = project ? "navigation.projectSymbols" : "navigation.documentSymbols";
+        auto* action = goMenu->addAction(Codicons::icon("symbol-method"),
+            I18n::text(project ? "Go to Symbol in Project" : "Go to Symbol in File"));
+        action->setObjectName(id);
+        ShortcutManager::instance().bind(id, action);
+        connect(action, &QAction::triggered, this, [this, project] { searchSymbols(project); });
+    }
     auto* goToLineAction = goMenu->addAction(Codicons::icon("list-ordered"), I18n::text("Go to Line..."));
     ShortcutManager::instance().bind("navigation.line", goToLineAction);
     connect(goToLineAction, &QAction::triggered, this, &MainWindow::goToLine);

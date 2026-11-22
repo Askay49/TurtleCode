@@ -59,6 +59,11 @@ public:
     void semanticTokens(const QString& path,std::function<void(QJsonValue)> callback,const QJsonObject& range = {});
     bool documentSymbolsAvailable() const;
     void documentSymbols(const QString& path, std::function<void(QJsonValue)> callback);
+    bool workspaceSymbolsAvailable() const;
+    void startWorkspace();
+    bool starting() const;
+    int workspaceSymbols(const QString& query, std::function<void(QJsonValue)> callback);
+    void cancelWorkspaceSymbols(int requestId);
     bool canFormat() const;
     void formatDocument(const QString& path, int tabSize, bool insertSpaces, std::function<void(QJsonValue)> callback);
     bool canRename() const;
@@ -91,7 +96,7 @@ private:
     void positionRequest(const QString& method, const QString& path, int line, int character, std::function<void(QJsonValue)> callback);
     void send(QJsonObject message);
     void notify(const QString& method, QJsonObject params);
-    void request(const QString& method, QJsonObject params, std::function<void(QJsonValue)> callback, const QString& path = {});
+    int request(const QString& method, QJsonObject params, std::function<void(QJsonValue)> callback, const QString& path = {});
     void readMessages();
     void dispatch(const QJsonObject& message);
     QJsonObject documentId(const QString& path) const;

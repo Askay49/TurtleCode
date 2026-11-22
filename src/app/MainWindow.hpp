@@ -119,6 +119,7 @@ private:
     void openFile();
     WorkspaceIndex* workspaceIndex_{nullptr};
     void quickOpen();
+    void searchSymbols(bool project);
     void commandPalette();
     void goToLine();
     void rememberRecentFile(const QString& path);

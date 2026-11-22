@@ -147,3 +147,105 @@ static void lspWindowTests(QTemporaryDir& directory) {
     }
     closeDiscard(window);
 }
+
+static void symbolSearchWindowTests(QTemporaryDir& directory) {
+    auto configuration = LspConfiguration::load();
+    for (auto& profile : configuration.profiles) {
+        const auto extension = profile.id == "clangd" ? ".cpp" : ".py";
+        profile.server.arguments = {LSP_FAKE_SERVER, "--any-language", QString("--project-symbols=") + extension};
+        profile.server.logLevel = 2;
+    }
+    configuration.save();
+    QSettings().setValue("view/outline", false);
+    ShortcutManager::instance().applySettings({{"view.terminal", QKeySequence("Ctrl+T")}});
+    const auto project = directory.filePath("symbol-project");
+    assert(QDir().mkpath(project));
+    const auto cpp = QDir(project).filePath("alpha.cpp");
+    const auto py = QDir(project).filePath("beta.py");
+    const QByteArray original = "// first line\nint value = 1;\n";
+    for (const auto& path : {cpp, py}) {
+        QFile file(path);
+        assert(file.open(QIODevice::WriteOnly));
+        assert(file.write(original) == original.size());
+    }
+
+    MainWindow window;
+    window.show();
+    window.openPaths({project});
+    auto* manager = window.findChild<LspManager*>();
+    assert(manager && !manager->ready(cpp) && !manager->ready(py));
+    assert(window.findChild<QAction*>("view.terminal")->shortcut() == QKeySequence("Ctrl+T"));
+    const auto runSearch = [&](QWidget* target, const char* actionId, const char* keys,
+                               const std::function<void(QDialog*, QLineEdit*, QListWidget*)>& check) {
+        auto* action = window.findChild<QAction*>(actionId);
+        assert(action && action->shortcut() == QKeySequence(keys));
+        window.activateWindow();
+        target->setFocus();
+        QTest::qWait(30);
+        bool visited = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            assert(dialog && dialog->objectName() == "symbolSearch");
+            auto* input = dialog->findChild<QLineEdit*>("symbolQuery");
+            auto* results = dialog->findChild<QListWidget*>("symbolResults");
+            assert(input && results);
+            visited = true;
+            check(dialog, input, results);
+        });
+        QTest::keySequence(target, action->shortcut());
+        assert(visited);
+    };
+    runSearch(&window, "navigation.projectSymbols", "Ctrl+Alt+P", [&](auto* dialog, auto* input, auto* results) {
+        assert(dialog->template findChild<QComboBox*>("symbolScope")->currentIndex() == 1);
+        input->setText("staleSearch");
+        assert(waitFor([&] { return manager->log("clangd").contains("\"query\":\"staleSearch\""); }));
+        input->setText("SharedLookup");
+        assert(results->count() == 0 && waitFor([&] { return results->count() == 2; }));
+        assert(manager->log("clangd").contains("Cancel workspace/symbol"));
+        assert(results->item(0)->text().contains("SharedLookup  ·  Example  ·  alpha.cpp"));
+        assert(results->item(1)->text().contains("SharedLookup  ·  Example  ·  beta.py"));
+        QTest::keyClick(input, Qt::Key_Down);
+        assert(results->currentRow() == 1);
+        const auto row = results->visualItemRect(results->currentItem());
+        assert(row.isValid() && results->viewport()->rect().contains(row.center()));
+        QTest::mouseClick(results->viewport(), Qt::LeftButton, Qt::NoModifier, row.center());
+        QTest::mouseDClick(results->viewport(), Qt::LeftButton, Qt::NoModifier, row.center());
+    });
+    assert(waitFor([&] {
+        auto* editor = window.findChild<EditorWidget*>();
+        return editor && editor->filePath() == py && editor->lspPosition() == QPoint(1, 4);
+    }));
+
+    window.openPaths({cpp});
+    EditorWidget* editor = nullptr;
+    assert(waitFor([&] {
+        for (auto* item : window.findChildren<EditorWidget*>())
+            if (item->filePath() == cpp && !item->isBusy() && manager->ready(cpp)) { editor = item; return true; }
+        return false;
+    }));
+    assert(!window.findChild<QDockWidget*>("outlinePanel")->isVisible());
+    editor->setNavigationPosition(2, 5);
+    QTest::keyClicks(editor, "fresh_symbol");
+    assert(editor->isModified());
+    runSearch(editor, "navigation.documentSymbols", "Ctrl+Shift+O", [&](auto* dialog, auto* input, auto* results) {
+        auto* scope = dialog->template findChild<QComboBox*>("symbolScope");
+        assert(scope->currentIndex() == 0);
+        input->setText("fresh");
+        assert(waitFor([&] { return results->count() == 1 && results->item(0)->text() == "fresh_symbol"; }));
+        scope->setCurrentIndex(1);
+        assert(waitFor([&] { return results->count() == 2; }));
+        scope->setCurrentIndex(0);
+        assert(waitFor([&] { return results->count() == 1 && results->item(0)->text() == "fresh_symbol"; }));
+        QTest::keyClick(input, Qt::Key_Return);
+    });
+    assert(editor->lspPosition() == QPoint(1, 4));
+    assert(waitFor([&] { return editor->hasFocus(); }));
+    QFile file(cpp);
+    assert(file.open(QIODevice::ReadOnly) && file.readAll() == original);
+    runSearch(editor, "navigation.documentSymbols", "Ctrl+Shift+O", [&](auto*, auto* input, auto*) {
+        QTest::keyClick(input, Qt::Key_Escape);
+    });
+    assert(editor->lspPosition() == QPoint(1, 4));
+    assert(waitFor([&] { return editor->hasFocus(); }));
+    closeDiscard(window);
+}

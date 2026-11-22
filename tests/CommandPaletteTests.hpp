@@ -72,6 +72,7 @@ static void commandPaletteTests(QTemporaryDir& directory) {
     QMap<QString, QKeySequence> shortcuts;
     auto& manager = ShortcutManager::instance();
     for (const auto& command : manager.commands()) shortcuts[command.id] = manager.sequence(command.id);
+    shortcuts["navigation.projectSymbols"] = {};
     shortcuts["navigation.commands"] = QKeySequence("Ctrl+Alt+P");
     QString error; assert(manager.save(shortcuts, &error));
     assert(action->shortcut() == QKeySequence("Ctrl+Alt+P"));

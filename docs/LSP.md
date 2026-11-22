@@ -98,12 +98,22 @@ These defaults can be changed under **Settings… → Keyboard shortcuts**:
 | --- | --- |
 | Complete manually | Ctrl+Space |
 | Go to definition | F12 |
+| Go to symbol in file | Ctrl+Shift+O |
+| Go to symbol in project | Ctrl+Alt+P |
 | Rename symbol | F2 |
 | Symbol information | F1 |
 | Function parameters | Ctrl+Shift+Space |
 | Errors and warnings | Ctrl+Shift+M |
 
 Completions appear beside the cursor. Choose with arrow keys and Enter, dismiss with Escape, or click an item. The server's replacement range and additional text edits are applied together as one Undo operation. Overlapping or invalid UTF-16 edits are rejected. Snippet placeholders are not supported and are explicitly disabled in client capabilities. Symbol information also appears on hover; diagnostic messages take precedence. Double-click an entry in Problems to navigate to it.
+
+File symbol search uses the same `textDocument/documentSymbol` request as
+Outline and includes the current unsaved buffer. The project scope sends
+`workspace/symbol` to the configured language servers for the open folder.
+The available results depend on each server's indexing and support for symbol
+search. Project results include the relative file path and symbol container
+when supplied by the server.
+For clangd, open a C or C++ source file to start background indexing.
 
 ## Protocol and architecture
 

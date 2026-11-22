@@ -49,6 +49,7 @@ public:
     int documentVersionForServer(const QString& source, const QString& target) const;
     bool documentSymbolsAvailable(const QString& path) const;
     void documentSymbols(const QString& path, std::function<void(QJsonValue)> callback);
+    QVector<QPointer<LspClient>> startWorkspaceSymbolClients(const QString& root);
     bool canFormat(const QString& path) const;
     bool canRename(const QString& path) const;
     bool semanticTokensAvailable(const QString& path) const;

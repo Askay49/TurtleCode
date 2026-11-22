@@ -161,6 +161,7 @@ if(TURTLE_CODE_BUILD_APP)
         src/document/Document.hpp
         src/app/MainWindow.cpp
         src/app/MainWindowSettings.cpp
+        src/app/MainWindowSymbols.cpp
         src/app/MainWindowVim.cpp
         src/app/MainWindowWorkspace.cpp
         src/editor/EditorPaneWorkspace.cpp

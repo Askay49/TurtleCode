@@ -816,7 +816,7 @@ int main(int argc,char**argv) {
     LanguageRegistry::setEnabled("cpp",false);
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--debug-native"){debugNativeWindowTests();return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--debug"){debugWindowTests(directory);return 0;}
-    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--lsp"){lspWindowTests(directory);return 0;}
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--lsp"){lspWindowTests(directory);symbolSearchWindowTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--terminal"){
         terminalWindowTests(directory);
         if (qEnvironmentVariableIsEmpty("TURTLE_CODE_TERMINAL_SCREENSHOT")) explorerTerminalTests(directory);

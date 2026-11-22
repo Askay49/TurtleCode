@@ -117,6 +117,8 @@ ShortcutManager::ShortcutManager() {
     add("code.references", "Find All References", "Code", "Shift+F12");
     add("code.definition", "Go to definition", "Code", "F12");
     add("navigation.quickOpen", "Quick open", "Navigation", "Ctrl+P");
+    add("navigation.documentSymbols", "Go to Symbol in File", "Navigation", "Ctrl+Shift+O");
+    add("navigation.projectSymbols", "Go to Symbol in Project", "Navigation", "Ctrl+Alt+P");
     add(navigationPrefixId, "Focus navigation prefix", "Navigation", "Ctrl+'");
     add("navigation.line", "Go to line", "Navigation", "Ctrl+G");
     add("navigation.tabNext", "Next recent tab", "Navigation", "Ctrl+Tab");
@@ -166,12 +168,13 @@ ShortcutManager::ShortcutManager() {
     QSettings settings; settings.beginGroup("shortcuts");
     for (const auto& command : commands_) if (settings.contains(command.id))
         overrides_[command.id] = QKeySequence(settings.value(command.id).toString(), QKeySequence::PortableText);
-    // Keep a shortcut assigned before the default navigation prefix was added.
-    if (!overrides_.contains(navigationPrefixId)) {
-        const auto prefix = sequence(navigationPrefixId);
+    // Keep shortcuts assigned before these navigation defaults were added.
+    for (const auto id : {navigationPrefixId, "navigation.documentSymbols", "navigation.projectSymbols"}) {
+        if (overrides_.contains(id)) continue;
+        const auto key = sequence(id);
         if (std::any_of(overrides_.cbegin(), overrides_.cend(),
-                        [&prefix](const QKeySequence& key) { return overlaps(prefix, key); }))
-            overrides_.insert(navigationPrefixId, {});
+                        [&key](const QKeySequence& assigned) { return overlaps(key, assigned); }))
+            overrides_.insert(id, {});
     }
     // Invalid settings must never break normal editing or introduce ambiguous shortcuts.
     QMap<QString, QKeySequence> values;

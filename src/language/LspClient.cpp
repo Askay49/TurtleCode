@@ -28,6 +28,11 @@ QJsonObject incrementalChange(const QString& before, const QString& after) {
     return {{"range", QJsonObject{{"start", position(before, prefix)}, {"end", position(before, before.size()-suffix)}}},
             {"text", after.mid(prefix, after.size()-prefix-suffix)}};
 }
+QJsonValue requestFailure(const QString& method) {
+    if (method == "textDocument/formatting" || method == "textDocument/documentSymbol" || method == "workspace/symbol")
+        return QJsonValue::Undefined;
+    return {};
+}
 }
 LspServerConfig LspServerConfig::clangd() {
     LspServerConfig config;
@@ -69,7 +74,7 @@ LspClient::LspClient(const LspServerConfig& config, QObject* parent) : QObject(p
         for (int id : ids) if (callbacks_.contains(id) && callbacks_[id].deadline < now) {
             auto pending = callbacks_.take(id);
             notify("$/cancelRequest", {{"id", id}});
-            if (pending.callback) pending.callback((pending.method=="textDocument/formatting" || pending.method=="textDocument/documentSymbol") ? QJsonValue(QJsonValue::Undefined) : QJsonValue{});
+            if (pending.callback) pending.callback(requestFailure(pending.method));
             emit error(config_.name + I18n::text(": request timed out (") + pending.method + ")");
             if (pending.method == "initialize") { stop(); setStatus(I18n::text("Initialization timed out")); }
         }
@@ -163,7 +168,7 @@ void LspClient::start() {
 void LspClient::initialize() {
     QJsonObject capabilities{
         {"general", QJsonObject{{"positionEncodings", QJsonArray{"utf-16"}}}},
-        {"workspace", QJsonObject{{"configuration", true}, {"workspaceFolders", true}, {"workspaceEdit", QJsonObject{{"documentChanges", true}}}, {"semanticTokens", QJsonObject{{"refreshSupport", true}}}}},
+        {"workspace", QJsonObject{{"configuration", true}, {"workspaceFolders", true}, {"workspaceEdit", QJsonObject{{"documentChanges", true}}}, {"semanticTokens", QJsonObject{{"refreshSupport", true}}}, {"symbol", QJsonObject{{"dynamicRegistration", false}}}}},
         {"textDocument", QJsonObject{
             {"completion", QJsonObject{{"completionItem", QJsonObject{{"snippetSupport", false}, {"insertReplaceSupport", true}}}}},
             {"semanticTokens", QJsonObject{
@@ -273,8 +278,39 @@ bool LspClient::documentSymbolsAvailable() const {
 }
 void LspClient::documentSymbols(const QString& path,std::function<void(QJsonValue)> callback) {
     if(!documentSymbolsAvailable() || !opened_.contains(path)) { if(callback) callback(QJsonValue(QJsonValue::Undefined)); return; }
-    cancel(path,"textDocument/documentSymbol");
+    // The outline and the symbol picker can request the same document revision.
+    for (auto& pending : callbacks_) {
+        if (pending.path != path || pending.method != "textDocument/documentSymbol") continue;
+        pending.callback = [first=std::move(pending.callback), second=std::move(callback)](QJsonValue result) {
+            if (first) first(result);
+            if (second) second(result);
+        };
+        return;
+    }
     request("textDocument/documentSymbol",{{"textDocument",documentId(path)}},std::move(callback),path);
+}
+bool LspClient::workspaceSymbolsAvailable() const {
+    const auto provider = capabilities_.value("workspaceSymbolProvider");
+    return initialized_ && (provider.toBool() || provider.isObject());
+}
+void LspClient::startWorkspace() {
+    if (process_.state() != QProcess::NotRunning) return;
+    checking_ = true;
+    start();
+}
+bool LspClient::starting() const {
+    return !initialized_ && !stopping_ && process_.state() != QProcess::NotRunning;
+}
+int LspClient::workspaceSymbols(const QString& query, std::function<void(QJsonValue)> callback) {
+    if (!workspaceSymbolsAvailable()) return 0;
+    return request("workspace/symbol", {{"query", query}}, std::move(callback));
+}
+void LspClient::cancelWorkspaceSymbols(int requestId) {
+    const auto pending = callbacks_.constFind(requestId);
+    if (pending == callbacks_.cend() || pending->method != "workspace/symbol") return;
+    if (config_.logLevel == 2) appendLog("Cancel workspace/symbol #" + QString::number(requestId));
+    callbacks_.remove(requestId);
+    notify("$/cancelRequest", {{"id", requestId}});
 }
 bool LspClient::canFormat() const {
     const auto provider=capabilities_.value("documentFormattingProvider");
@@ -293,11 +329,12 @@ void LspClient::send(QJsonObject message) {
     process_.write("Content-Length: " + QByteArray::number(payload.size()) + "\r\n\r\n" + payload);
 }
 void LspClient::notify(const QString& method, QJsonObject params) { send({{"jsonrpc", "2.0"}, {"method", method}, {"params", params}}); }
-void LspClient::request(const QString& method, QJsonObject params, std::function<void(QJsonValue)> callback, const QString& path) {
+int LspClient::request(const QString& method, QJsonObject params, std::function<void(QJsonValue)> callback, const QString& path) {
     const int id = nextId_++;
     const auto now=QDateTime::currentMSecsSinceEpoch();
     callbacks_.insert(id, {std::move(callback), path, method, versions_.value(path), now + ((method == "initialize" || method == "textDocument/rename") ? 30000 : method.startsWith("textDocument/semanticTokens/") ? 2500 : 10000), now});
     send({{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", params}});
+    return id;
 }
 void LspClient::readMessages() {
     input_ += process_.readAllStandardOutput();
@@ -356,7 +393,7 @@ void LspClient::dispatch(const QJsonObject& message) {
             if (message.contains("error")) {
                 const auto object = message.value("error").toObject(); const int code = object.value("code").toInt();
                 if (code != -32800 && code != -32801) emit error(config_.name + ": " + object.value("message").toString());
-                if (pending.callback) pending.callback((pending.method=="textDocument/formatting" || pending.method=="textDocument/documentSymbol") ? QJsonValue(QJsonValue::Undefined) : QJsonValue{});
+                if (pending.callback) pending.callback(requestFailure(pending.method));
             } else if (pending.callback) pending.callback(message.value("result"));
         }
         return;
