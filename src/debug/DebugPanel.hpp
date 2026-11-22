@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <functional>
 class QPersistentModelIndex;
+class QAction;
 class DapClient;
 class QProcess;
 class QTcpServer;
@@ -27,6 +28,7 @@ public:
     ~DebugPanel() override;
     QString configurationPath() const { return DebugConfiguration::filePath(workspace_); }
     void editConfiguration();
+    void setConfigurationWriteCheck(std::function<bool(const QStringList&)> check) { configurationWriteCheck_=std::move(check); }
     void setWorkspace(const QString& root);
     void renameSource(const QString& oldPath,const QString& newPath);
     QSet<int> disabledBreakpoints(const QString& path) const {return state_.disabled.value(path);}
@@ -55,6 +57,7 @@ signals:
     void locationChanged(const QString& path,int line);
     void breakpointsChanged(const QString& path);
 private:
+    void addConfiguration();
     void refreshConfiguration();
     QComboBox* configurations_{nullptr};
     QJsonObject configurationTemplate() const;
@@ -102,7 +105,9 @@ private:
     void append(const QString& text);
     DapClient* client_;
     QToolButton* settingsButton_;
+    QAction *addConfigurationAction_, *openConfigurationAction_;
     QPushButton* configureButton_;
+    std::function<bool(const QStringList&)> configurationWriteCheck_;
     QFileSystemWatcher* configurationWatcher_;
     DebugConfiguration configuration_;
     QString currentFile_;

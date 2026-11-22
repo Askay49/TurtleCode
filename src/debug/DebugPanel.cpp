@@ -1,5 +1,6 @@
 #include "app/IconDialogs.hpp"
 #include "DebugPanel.hpp"
+#include "DebugTemplates.hpp"
 #include "DapClient.hpp"
 #include "DebugViews.hpp"
 #include "app/FontSettings.hpp"
@@ -79,8 +80,11 @@ DebugPanel::DebugPanel(QWidget* parent):QWidget(parent),client_(new DapClient(th
     settingsButton_=button(headingWidget,"gear","Open debug configuration"); settingsButton_->setObjectName("debugOpenConfiguration"); heading->addWidget(settingsButton_);
     auto* more=button(headingWidget,"ellipsis","More actions"); more->setObjectName("debugMoreActions");
     auto* menu=new QMenu(more); more->setMenu(menu); more->setPopupMode(QToolButton::InstantPopup); heading->addWidget(more);
-    auto* configureAction=menu->addAction(Codicons::icon("gear"),t("Open debug configuration"));
-    connect(configureAction,&QAction::triggered,this,&DebugPanel::editConfiguration);
+    addConfigurationAction_=menu->addAction(Codicons::icon("add"),t("Add Debug Configuration…"));
+    addConfigurationAction_->setObjectName("debugAddConfiguration");
+    openConfigurationAction_=menu->addAction(Codicons::icon("gear"),t("Open debug configuration"));
+    connect(addConfigurationAction_,&QAction::triggered,this,&DebugPanel::addConfiguration);
+    connect(openConfigurationAction_,&QAction::triggered,this,&DebugPanel::editConfiguration);
     layout->addWidget(headingWidget);
     debugToolbar_=new QWidget(this); debugToolbar_->setObjectName("debugToolbar");
     auto* bar=new QHBoxLayout(debugToolbar_); bar->setContentsMargins(8,0,8,0); bar->setSpacing(2);
@@ -90,7 +94,7 @@ DebugPanel::DebugPanel(QWidget* parent):QWidget(parent),client_(new DapClient(th
     bar->addStretch(); layout->addWidget(debugToolbar_);
     configureButton_=new QPushButton(t("Configure"),this); configureButton_->setObjectName("debugConfigure");
     configureButton_->setIcon(Codicons::icon("gear")); layout->addWidget(configureButton_);
-    connect(configureButton_,&QPushButton::clicked,this,&DebugPanel::editConfiguration);
+    connect(configureButton_,&QPushButton::clicked,this,&DebugPanel::addConfiguration);
     connect(settingsButton_,&QToolButton::clicked,this,&DebugPanel::editConfiguration);
     configurationWatcher_=new QFileSystemWatcher(this);
     connect(configurationWatcher_,&QFileSystemWatcher::fileChanged,this,[this]{refreshConfiguration();});
@@ -360,6 +364,8 @@ void DebugPanel::startAdapter() {
         if(configuration_.adapterID=="debugpy" && !terminalAvailable_ && session_.launchArguments.value("console").toString()=="integratedTerminal") {
             session_.launchArguments["console"]="internalConsole";session_.launchArguments["redirectOutput"]=true;
         }
+        if(configuration_.adapterID=="lldb" && !terminalAvailable_ && session_.launchArguments.value("runInTerminal").toBool())
+            session_.launchArguments["runInTerminal"]=false;
         client_->start(configuration_.adapter,arguments,configuration_.cwd,environment);
     } else {
         session_.launchArguments["runInTerminal"]=terminalAvailable_; session_.launchArguments["disableASLR"]=false;
@@ -603,7 +609,7 @@ void DebugPanel::refreshConfiguration() {
     const auto watched=configurationWatcher_->files()+configurationWatcher_->directories();
     if(!watched.isEmpty()) configurationWatcher_->removePaths(watched);
     if(!workspace_.isEmpty()) {
-        const QSet<QString> paths{workspace_,QDir(workspace_).filePath(".turtle"),configurationPath(),DebugProject::path(workspace_,"launch.json"),DebugProject::path(workspace_,"tasks.json"),DebugProject::path(workspace_,"settings.json")};
+        const QSet<QString> paths{workspace_,QDir(workspace_).filePath(".turtle"),configurationPath(),DebugProject::path(workspace_,"launch.json"),DebugProject::path(workspace_,"tasks.json"),DebugProject::path(workspace_,"settings.json"),DebugConfiguration::legacyPath(workspace_)};
         for(const auto& path:paths)
             if(QFileInfo::exists(path)) configurationWatcher_->addPath(path);
     }
@@ -620,6 +626,8 @@ void DebugPanel::refreshConfiguration() {
     configurations_->setVisible(modern && configurations_->count()>0);configurations_->setEnabled(!active());
     const bool exists=QFileInfo(configurationPath()).isFile();
     configureButton_->setVisible(!exists); configureButton_->setEnabled(!workspace_.isEmpty() && !active());
+    addConfigurationAction_->setEnabled(!workspace_.isEmpty() && !active());
+    openConfigurationAction_->setEnabled(exists);
     settingsButton_->setVisible(exists); settingsButton_->setEnabled(!workspace_.isEmpty());
     start_->setEnabled(exists && !active());
     configureButton_->setToolTip(workspace_.isEmpty()?t("Open a project folder to configure debugging"):configurationPath());
@@ -641,23 +649,38 @@ QJsonObject DebugPanel::configurationTemplate() const {
     result["stopOnEntry"]=legacy.value("entry").toBool(false);
     return result;
 }
+void DebugPanel::addConfiguration() {
+    if(workspace_.isEmpty() || active()) return;
+    if(!state_.configuration.isEmpty()) {
+        editConfiguration(); // Preserve the existing migration from application settings.
+        return;
+    }
+    emit currentFileRequested();
+    const auto root=workspace_;
+    DebugTemplates::choose(this,root,currentFile_,[this,root](const DebugTemplates::Draft& draft) {
+        if(workspace_!=root || active()) return t("The debug project changed. Reopen the configuration dialog.");
+        const auto launch=DebugProject::path(root,"launch.json");
+        QStringList paths{launch};
+        if(!draft.tasks.isEmpty()) paths.append(DebugProject::path(root,"tasks.json"));
+        if(configurationWriteCheck_ && !configurationWriteCheck_(paths))
+            return t("Save the open debug configuration files and try again.");
+        QString name,error;
+        if(!DebugTemplates::append(root,draft,name,error)) return error;
+        QSettings().setValue(settingsKey()+"/selectedConfiguration",name);
+        refreshConfiguration();
+        setStatus(t("Ready to debug"));
+        return QString{};
+    });
+}
 void DebugPanel::editConfiguration() {
     emit currentFileRequested();
     if(workspace_.isEmpty()) {setStatus(t("Open a project folder to configure debugging")); return;}
     const auto path=state_.configuration.isEmpty()?configurationPath():DebugConfiguration::legacyPath(workspace_);
-    if(!QFileInfo::exists(path)) {
+    if(!state_.configuration.isEmpty() && !QFileInfo::exists(path)) {
         if(!QDir().mkpath(QFileInfo(path).absolutePath())) {setStatus(t("Cannot create debug configuration")+": "+path); return;}
         QFile file(path);
         if(!file.open(QIODevice::WriteOnly|QIODevice::NewOnly)) {setStatus(file.errorString()+": "+path); refreshConfiguration(); return;}
-        auto config=configurationTemplate();
-        QJsonObject document=config;
-        if(path.endsWith("/launch.json")) {
-        config.remove("version");config["name"]=t("Launch");config["request"]="launch";
-        config["type"]=config.value("type").toString()=="python"?"debugpy":"lldb";
-        config.remove("adapter");config.remove("externalSymbols");
-        document=QJsonObject{{"version","0.2.0"},{"configurations",QJsonArray{config}}};
-        }
-        const auto data=QJsonDocument(document).toJson(QJsonDocument::Indented);
+        const auto data=QJsonDocument(configurationTemplate()).toJson(QJsonDocument::Indented);
         if(file.write(data)!=data.size() || !file.flush()) {const auto error=file.errorString(); file.close(); file.remove(); setStatus(error+": "+path); return;}
         file.close(); state_.configuration={}; saveState();
     }

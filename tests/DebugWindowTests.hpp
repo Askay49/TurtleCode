@@ -12,7 +12,7 @@ static void debugWindowTests(QTemporaryDir& directory) {
         QSettings().setValue("appearance/theme","tokyo-night");
     }
     ThemeManager::instance().initialize();
-    if(qEnvironmentVariableIsSet("TURTLE_DEBUG_WINDOW_SCREENSHOT") || qEnvironmentVariableIsSet("TURTLE_DEBUG_SETUP_SCREENSHOT") || qEnvironmentVariableIsSet("TURTLE_DEBUG_CONFIG_SCREENSHOT")) { I18n::saveLanguage("ru"); I18n::initialize(); }
+    if(qEnvironmentVariableIsSet("TURTLE_DEBUG_WINDOW_SCREENSHOT") || qEnvironmentVariableIsSet("TURTLE_DEBUG_SETUP_SCREENSHOT") || qEnvironmentVariableIsSet("TURTLE_DEBUG_CONFIG_SCREENSHOT") || qEnvironmentVariableIsSet("TURTLE_DEBUG_TEMPLATE_SCREENSHOT")) { I18n::saveLanguage("ru"); I18n::initialize(); }
     const auto source=QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()+"/../examples/debug/demo.py";
     QFile input(source); assert(input.open(QIODevice::ReadOnly));
     const auto path=directory.filePath("demo.py"); QFile output(path); assert(output.open(QIODevice::WriteOnly)); output.write(input.readAll()); output.close();
@@ -22,14 +22,39 @@ static void debugWindowTests(QTemporaryDir& directory) {
     activity->click(); assert(activity->isChecked() && panel->isVisible());
     auto* setup=panel->findChild<QPushButton*>("debugConfigure"); assert(setup && setup->isVisible());
     if(qEnvironmentVariableIsSet("TURTLE_DEBUG_SETUP_SCREENSHOT")) {QTest::qWait(50); assert(window.grab().save(qEnvironmentVariable("TURTLE_DEBUG_SETUP_SCREENSHOT")));}
-    setup->click(); assert(QFileInfo::exists(panel->configurationPath()));
+    const auto python=qEnvironmentVariable("TURTLE_TEST_DEBUG_PYTHON");
+    QTimer::singleShot(0, panel, [&] {
+        auto* dialog=panel->findChild<QDialog*>("debugTemplateDialog"); assert(dialog);
+        assert(waitFor([&] { return dialog->findChild<QTreeWidget*>("debugTemplates")->hasFocus(); }));
+        if(!python.isEmpty()) dialog->findChild<QLineEdit*>("debugTemplatePython")->setText(python);
+        if(qEnvironmentVariableIsSet("TURTLE_DEBUG_TEMPLATE_SCREENSHOT"))
+            assert(dialog->grab().save(qEnvironmentVariable("TURTLE_DEBUG_TEMPLATE_SCREENSHOT")));
+        auto* add=dialog->findChild<QPushButton*>("debugTemplateAdd"); assert(add && add->isVisible());
+        QTest::mouseClick(add,Qt::LeftButton);
+        assert(!dialog->isVisible());
+    });
+    QTest::mouseClick(setup,Qt::LeftButton); assert(QFileInfo::exists(panel->configurationPath()));
+    assert(editor->filePath()==path);
+    auto* gear=panel->findChild<QToolButton*>("debugOpenConfiguration"); assert(gear && gear->isVisible());
+    QTest::mouseClick(gear,Qt::LeftButton);
     assert(waitFor([&]{for(auto* candidate:window.findChildren<EditorWidget*>()) if(candidate->filePath()==panel->configurationPath() && !candidate->isBusy()) return true; return false;}));
     if(qEnvironmentVariableIsSet("TURTLE_DEBUG_CONFIG_SCREENSHOT")) {QTest::qWait(50); assert(window.grab().save(qEnvironmentVariable("TURTLE_DEBUG_CONFIG_SCREENSHOT")));}
     // An unsaved configuration must be saved before the on-disk version can run.
     for(auto* candidate:window.findChildren<EditorWidget*>()) if(candidate->filePath()==panel->configurationPath()) {
-        QTest::keyClick(candidate,Qt::Key_Space); emit panel->startRequested(); assert(!panel->active()); candidate->documentUndo();
+        QTest::keyClick(candidate,Qt::Key_Space); emit panel->startRequested(); assert(!panel->active());
+        QTimer::singleShot(0, panel, [&] {
+            auto* dialog=panel->findChild<QDialog*>("debugTemplateDialog"); assert(dialog);
+            dialog->findChild<QPushButton*>("debugTemplateAdd")->click();
+            assert(dialog->isVisible());
+            assert(dialog->findChild<QLabel*>("debugTemplateError")->text()==I18n::text("Save the open debug configuration files and try again."));
+            dialog->reject();
+        });
+        panel->findChild<QAction*>("debugAddConfiguration")->trigger();
+        candidate->documentUndo();
     }
     window.openPaths({path}); assert(!setup->isVisible());
+    window.activateWindow(); editor->setFocus();
+    assert(waitFor([&]{return window.isActiveWindow() && editor->hasFocus();}));
     // A margin click toggles exactly the clicked source line.
     QTest::mouseClick(editor->viewport(),Qt::LeftButton,Qt::NoModifier,QPoint(7,editor->fontMetrics().height()/2));
     assert(panel->breakpoints(path).contains(1));
@@ -50,11 +75,7 @@ static void debugWindowTests(QTemporaryDir& directory) {
     assert(!activity->isChecked()); activity->click(); assert(activity->isChecked());
     // Unsaved buffers must not be launched against different disk contents.
     QTest::keyClick(editor,Qt::Key_X); emit panel->startRequested(); assert(!panel->active()); editor->documentUndo();
-    const auto python=qEnvironmentVariable("TURTLE_TEST_DEBUG_PYTHON");
     if(!python.isEmpty()) {
-        QFile configuration(panel->configurationPath()); assert(configuration.open(QIODevice::WriteOnly|QIODevice::Truncate));
-        auto json=DebugConfiguration::defaults(true); json["program"]="demo.py"; json["python"]=python;
-        configuration.write(QJsonDocument(json).toJson()); configuration.close();
         emit panel->startRequested(); auto* frames=panel->findChild<QTreeWidget*>("debugStack");
         assert(waitFor([&]{return frames->topLevelItemCount()>0;}));
         auto* vars=panel->findChild<QTreeWidget*>("debugVariables");

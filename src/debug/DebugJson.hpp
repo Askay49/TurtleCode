@@ -4,13 +4,19 @@
 #include <QJsonObject>
 
 namespace DebugJson {
+struct Source {
+    QByteArray raw;
+    QByteArray withoutComments;
+};
+
 // Replace comments/commas with whitespace so diagnostics retain original offsets.
-inline bool read(const QString& path,QJsonObject& object,QString& error,bool optional=false) {
+inline bool read(const QString& path,QJsonObject& object,QString& error,bool optional=false,Source* source=nullptr) {
     QFile file(path);
     if(optional && !file.exists()) {object={};return true;}
     if(!file.open(QIODevice::ReadOnly)) {error=path+": "+file.errorString();return false;}
     if(file.size()>1024*1024) {error=path+": Configuration exceeds 1 MiB";return false;}
     auto data=file.readAll();
+    if(source) source->raw=data;
     bool string=false,escape=false;
     for(int i=0;i<data.size();++i) {
         const char ch=data[i];
@@ -28,6 +34,7 @@ inline bool read(const QString& path,QJsonObject& object,QString& error,bool opt
             if(!closed) {error=path+":"+QString::number(data.left(start).count('\n')+1)+": Unterminated block comment";return false;}
         }
     }
+    if(source) source->withoutComments=data;
     string=false;escape=false;
     for(int i=0;i<data.size();++i) {
         const char ch=data[i];

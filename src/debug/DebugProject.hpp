@@ -57,6 +57,9 @@ public:
         if(!available.contains(choice))return fail("Debug configuration not found: "+choice);
         QJsonObject config;
         for(const auto& item:launch.value("configurations").toArray())if(item.toObject().value("name").toString()==choice)config=item.toObject();
+        // An explicit entry is added when creating a launch.json beside an existing debug.json.
+        if(config.value("type").toString()=="turtle-legacy")
+            return DebugJson::read(path(root_,"debug.json"),normalized,error);
         config=platform(config);
         config=expand(config).toObject();if(!error.isEmpty())return false;
         for(const auto& key:{"name","type","request","program","executable","cwd","preLaunchTask"})

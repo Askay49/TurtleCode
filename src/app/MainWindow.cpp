@@ -540,6 +540,13 @@ void MainWindow::createUi() {
         if(revertFile) gitDiff_->revertFile();
     });
     debugPanel_ = new DebugPanel(sidebarStack_); sidebarStack_->addWidget(debugPanel_);
+    debugPanel_->setConfigurationWriteCheck([this](const QStringList& paths) {
+        for (auto* editor : findChildren<EditorWidget*>()) {
+            const auto path = editor->filePath().isEmpty() ? editor->property("openingPath").toString() : editor->filePath();
+            if (paths.contains(path) && (editor->isModified() || editor->isBusy())) return false;
+        }
+        return true;
+    });
     connect(debugPanel_, &DebugPanel::startRequested, this, [this] {
         for (int i=0;i<tabs_->count();++i) if(auto* e=qobject_cast<EditorWidget*>(tabs_->widget(i)); e && (e->isModified() || e->isBusy())) {
             statusBar()->showMessage(I18n::text("Save all files and wait for file operations before debugging"),6000); return;

@@ -171,6 +171,9 @@ if(TURTLE_CODE_BUILD_APP)
         src/debug/DapClient.hpp
         src/debug/DebugPanel.cpp
         src/debug/DebugPanel.hpp
+        src/debug/DebugTemplateDialog.cpp
+        src/debug/DebugTemplates.cpp
+        src/debug/DebugTemplates.hpp
         src/debug/DebugViews.hpp
         src/debug/DebugConfiguration.hpp
         src/project/ProjectExplorer.cpp
@@ -267,7 +270,8 @@ if(TURTLE_CODE_BUILD_APP)
     if(BUILD_TESTING)
         add_executable(turtle-code-debug-input-fixture EXCLUDE_FROM_ALL examples/debug/input.cpp)
         target_compile_options(turtle-code-debug-input-fixture PRIVATE -g -O0)
-        add_executable(turtle-code-debug-tests EXCLUDE_FROM_ALL tests/DebugTests.cpp src/debug/DapClient.cpp src/debug/DebugPanel.cpp)
+        add_executable(turtle-code-debug-tests EXCLUDE_FROM_ALL tests/DebugTests.cpp src/debug/DapClient.cpp
+            src/debug/DebugPanel.cpp src/debug/DebugTemplateDialog.cpp src/debug/DebugTemplates.cpp)
         target_include_directories(turtle-code-debug-tests PRIVATE src)
         target_link_libraries(turtle-code-debug-tests PRIVATE turtle-code-terminal turtle-code-icons turtle-code-i18n Qt6::Widgets Qt6::Network Qt6::Test)
         add_dependencies(turtle-code-debug-tests turtle-code-debug-input-fixture)

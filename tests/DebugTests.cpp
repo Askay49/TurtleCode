@@ -6,6 +6,7 @@
 #include <QSplitter>
 #include <QApplication>
 #include <QClipboard>
+#include <QCheckBox>
 #include <QInputDialog>
 #include <QMenu>
 #include <QPointer>
@@ -20,9 +21,11 @@
 #include <QTest>
 #include <QSignalSpy>
 #include <QSettings>
+#include <QSpinBox>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QLineEdit>
+#include <QProcess>
 #include <QPushButton>
 #include <QCryptographicHash>
 #include <QLabel>
@@ -44,6 +47,16 @@ class DebugTests : public QObject {
         if(!QDir().mkpath(root+"/.turtle")) return false;
         QFile file(DebugConfiguration::legacyPath(root)); if(!file.open(QIODevice::WriteOnly|QIODevice::Truncate)) return false;
         const auto data=QJsonDocument(value).toJson(); return file.write(data)==data.size();
+    }
+    void templateDialog(DebugPanel& panel, const std::function<void(QDialog*)>& interact, bool first = false) {
+        QTimer::singleShot(0, &panel, [&] {
+            auto* dialog = panel.findChild<QDialog*>("debugTemplateDialog");
+            QVERIFY(dialog);
+            interact(dialog);
+            if (dialog->isVisible()) dialog->reject();
+        });
+        if (first) panel.findChild<QPushButton*>("debugConfigure")->click();
+        else panel.findChild<QAction*>("debugAddConfiguration")->trigger();
     }
     QString stateKey(const QString& root) {
         return "debug/workspaces/"+QString::fromLatin1(QCryptographicHash::hash(QDir(root).absolutePath().toUtf8(),QCryptographicHash::Sha256).toHex());
@@ -276,8 +289,12 @@ private slots:
         panel.useFile(project.filePath("main.py")); panel.show();
         auto* setup=panel.findChild<QPushButton*>("debugConfigure"); QVERIFY(setup && setup->isVisible());
         QVERIFY(!panel.findChild<QLineEdit*>("debugProgram"));
-        QSignalSpy opened(&panel,&DebugPanel::configurationRequested); setup->click();
-        QCOMPARE(opened.size(),1); QCOMPARE(opened.first().at(0).toString(),project.filePath(".turtle/launch.json"));
+        QSignalSpy opened(&panel,&DebugPanel::configurationRequested);
+        templateDialog(panel, [](QDialog*) {}, true);
+        QVERIFY(!QFileInfo::exists(panel.configurationPath()));
+        const auto accept = [](QDialog* dialog) { dialog->findChild<QPushButton*>("debugTemplateAdd")->click(); };
+        templateDialog(panel, accept, true);
+        QCOMPARE(opened.size(),0);
         QFile file(panel.configurationPath()); QVERIFY(file.open(QIODevice::ReadOnly)); const auto original=file.readAll(); file.close();
         const auto config=QJsonDocument::fromJson(original).object();
         QCOMPARE(config.value("version").toString(),QString("0.2.0"));
@@ -287,11 +304,153 @@ private slots:
         auto manual=config;manual["extra"]=42;
         QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::Truncate));file.write(QJsonDocument(manual).toJson());file.close();
         panel.toggleBreakpoint(project.filePath("main.py"),1); panel.editConfiguration();
+        QCOMPARE(opened.size(),1); QCOMPARE(opened.first().at(0).toString(),project.filePath(".turtle/launch.json"));
         QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(QJsonDocument::fromJson(file.readAll()).object(),manual); file.close();
         QVERIFY(file.remove()); QTRY_VERIFY(setup->isVisible());
         // F5 never creates a configuration implicitly.
         panel.start(); QVERIFY(!QFileInfo::exists(panel.configurationPath())); QVERIFY(!panel.active());
-        panel.editConfiguration(); QVERIFY(QFileInfo::exists(panel.configurationPath()));
+        templateDialog(panel, accept, true); QVERIFY(QFileInfo::exists(panel.configurationPath()));
+    }
+    void debugTemplates() {
+        QSettings().clear();
+        QTemporaryDir project;
+        const auto root = project.path();
+        QVERIFY(QDir(root).mkdir(".turtle"));
+        const auto write = [&](const QString& name, const QByteArray& content) {
+            QFile file(project.filePath(name));
+            return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(content) == content.size();
+        };
+        const auto read = [&](const QString& name) {
+            QFile file(project.filePath(name));
+            return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
+        };
+        const auto launchPath = QString(".turtle/launch.json");
+        const auto tasksPath = QString(".turtle/tasks.json");
+        const QByteArray oldTasks = "{\r\n  \"version\": \"2.0.0\",\r\n  \"tasks\": [\r\n    {\"label\":\"Firmware\",\"type\":\"process\",\"command\":\"true\"}, // keep this\r\n  ],\r\n}\r\n";
+        QVERIFY(write(tasksPath, oldTasks));
+        QVERIFY(write("main.py", "print('turtle template')\n"));
+        QVERIFY(write("main file.c", "int main(void) { return 0; }\n"));
+        QVERIFY(write("main.elf", "test"));
+        QVERIFY(write("CMakeLists.txt", "cmake_minimum_required(VERSION 3.25)\nproject(Example C)\nadd_executable(demo \"main file.c\")\n"));
+        const QByteArray oldLaunch = "{\n  \"version\":\"0.2.0\",\n  \"other\":[\"]\"],\n  \"configurations\": [\n"
+                                     "    {\"name\":\"Python: main.py\",\"type\":\"debugpy\",\"request\":\"launch\",\"program\":\"main.py\"} // keep this too\n  ]\n}\n";
+        QVERIFY(write(launchPath, oldLaunch));
+        DebugPanel panel;
+        panel.setWorkspace(root);
+        panel.useFile(project.filePath("main.py"));
+        panel.show();
+        auto* combo = panel.findChild<QComboBox*>("debugConfigurations");
+        const auto add = [&](int group, int row, const std::function<void(QDialog*)>& fill) {
+            templateDialog(panel, [&](QDialog* dialog) {
+                auto* tree = dialog->findChild<QTreeWidget*>("debugTemplates");
+                tree->setCurrentItem(tree->topLevelItem(group)->child(row));
+                fill(dialog);
+                auto* button = dialog->findChild<QPushButton*>("debugTemplateAdd");
+                QTest::mouseClick(button, Qt::LeftButton);
+                const auto* error = dialog->findChild<QLabel*>("debugTemplateError");
+                QVERIFY2(!dialog->isVisible(), qPrintable(error->text()));
+            });
+        };
+        add(0, 0, [](QDialog* dialog) { dialog->findChild<QCheckBox*>("debugTemplatePythonCurrent")->setChecked(false); });
+        QCOMPARE(combo->currentText(), QString("Python: main.py (2)"));
+        QVERIFY(read(launchPath).contains(", // keep this too"));
+        QCOMPARE(read(tasksPath), oldTasks);
+
+        panel.useFile(project.filePath("main file.c"));
+        add(1, 0, [](QDialog*) {});
+        DebugConfiguration config;
+        QString error;
+        QVERIFY2(DebugConfiguration::read(root, {}, config, error, combo->currentText()), qPrintable(error));
+        QCOMPARE(config.buildSteps.size(), 1);
+        QCOMPARE(config.buildSteps.first().command, QStringList({"cc", "-g", "-O0", project.filePath("main file.c"), "-o", config.program}));
+        const auto nativeName = combo->currentText();
+        QVERIFY(read(tasksPath).contains("// keep this\r\n"));
+        QVERIFY(!read(tasksPath).replace("\r\n", "").contains('\n'));
+
+        add(1, 1, [](QDialog* dialog) {
+            dialog->findChild<QComboBox*>("debugTemplateTarget")->setEditText("demo");
+            dialog->findChild<QLineEdit*>("debugTemplateExecutable")->setText("build/turtle-debug/demo");
+        });
+        QVERIFY2(DebugConfiguration::read(root, {}, config, error, combo->currentText()), qPrintable(error));
+        QCOMPARE(config.buildSteps.size(), 2);
+        QCOMPARE(config.buildSteps.first().command.last(), QString("-DCMAKE_BUILD_TYPE=Debug"));
+        QCOMPARE(config.buildSteps.last().command.last(), QString("demo"));
+        const auto cmakeName = combo->currentText();
+
+        add(2, 0, [](QDialog* dialog) {
+            dialog->findChild<QLineEdit*>("debugTemplateOpenOcdElf")->setText("future.elf");
+            dialog->findChild<QLineEdit*>("debugTemplateBoard")->setText("target/stm32f4x.cfg");
+            auto* task = dialog->findChild<QComboBox*>("debugTemplateBuildTask");
+            task->setCurrentIndex(task->findText("Firmware"));
+        });
+        add(2, 1, [](QDialog* dialog) {
+            dialog->findChild<QLineEdit*>("debugTemplateExternalElf")->setText("main.elf");
+            dialog->findChild<QLineEdit*>("debugTemplateHost")->setText("::1");
+            dialog->findChild<QSpinBox*>("debugTemplatePort")->setValue(4444);
+        });
+        QJsonObject saved;
+        QVERIFY2(DebugJson::read(project.filePath(launchPath), saved, error), qPrintable(error));
+        const auto entries = saved.value("configurations").toArray();
+        QCOMPARE(entries.size(), 6);
+        QCOMPARE(saved.value("other").toArray(), QJsonArray{"]"});
+        const auto openOcd = entries.at(4).toObject();
+        QCOMPARE(openOcd.value("configFiles").toArray(), QJsonArray({"interface/stlink.cfg", "target/stm32f4x.cfg"}));
+        QCOMPARE(openOcd.value("preLaunchTask").toString(), QString("Firmware"));
+        const auto attach = entries.at(5).toObject();
+        QCOMPARE(attach.value("gdbTarget").toString(), QString("[::1]:4444"));
+        QCOMPARE(attach.value("request").toString(), QString("attach"));
+
+        // Run the generated build steps and check the resulting DAP launch without requiring ptrace.
+        if (!QStandardPaths::findExecutable("cc").isEmpty() && !QStandardPaths::findExecutable("cmake").isEmpty()) {
+            QVERIFY(write("lldb-dap", "#!/bin/sh\nexec python3 '" DEBUG_SOURCE "/tests/debug/fake_adapter.py'\n"));
+            QFile adapter(project.filePath("lldb-dap"));
+            QVERIFY(adapter.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+            const auto oldPath = qgetenv("PATH");
+            const auto restorePath = qScopeGuard([&] { qputenv("PATH", oldPath); });
+            qputenv("PATH", root.toUtf8() + ':' + oldPath);
+            QSignalSpy events(panel.findChild<DapClient*>(), &DapClient::eventReceived);
+            for (const auto& name : {nativeName, cmakeName}) {
+                events.clear();
+                combo->setCurrentText(name);
+                QVERIFY2(DebugConfiguration::read(root, {}, config, error, name), qPrintable(error));
+                QVERIFY(!QFileInfo::exists(config.program));
+                panel.start();
+                auto* stack = panel.findChild<QTreeWidget*>("debugStack");
+                QTRY_VERIFY_WITH_TIMEOUT(stack->topLevelItemCount() > 0 || !panel.active(), 10000);
+                QVERIFY2(stack->topLevelItemCount() > 0, qPrintable(panel.console()->findChild<QPlainTextEdit*>()->toPlainText()));
+                QVERIFY(QFileInfo::exists(config.program));
+                const auto launch = std::find_if(events.cbegin(), events.cend(), [](const auto& event) {
+                    return event.at(0).toString() == "turtle-test-launch";
+                });
+                QVERIFY(launch != events.cend());
+                QCOMPARE(launch->at(1).toJsonObject().value("program").toString(), config.program);
+                panel.perform("stop");
+                QTRY_VERIFY(!panel.active());
+            }
+
+            const auto build = project.filePath("build/turtle-debug");
+            QVERIFY(QDir(build).mkpath(".cmake/api/v1/query"));
+            QVERIFY(write("build/turtle-debug/.cmake/api/v1/query/codemodel-v2", {}));
+            QProcess configure;
+            configure.start("cmake", {"-S", root, "-B", build, "-DCMAKE_BUILD_TYPE=Debug"});
+            QVERIFY(configure.waitForFinished());
+            QCOMPARE(configure.exitCode(), 0);
+            templateDialog(panel, [](QDialog* dialog) {
+                QCOMPARE(dialog->findChild<QComboBox*>("debugTemplateTarget")->currentText(), QString("demo"));
+                QCOMPARE(dialog->findChild<QLineEdit*>("debugTemplateExecutable")->text(), QString("build/turtle-debug/demo"));
+            });
+        }
+
+        const auto originalLaunch = read(launchPath);
+        QVERIFY(write(tasksPath, "{ broken"));
+        templateDialog(panel, [](QDialog* dialog) {
+            auto* tree = dialog->findChild<QTreeWidget*>("debugTemplates");
+            tree->setCurrentItem(tree->topLevelItem(1)->child(0));
+            dialog->findChild<QPushButton*>("debugTemplateAdd")->click();
+            QVERIFY(dialog->findChild<QLabel*>("debugTemplateError")->text().contains("tasks.json"));
+        });
+        QCOMPARE(read(launchPath), originalLaunch);
+        QCOMPARE(read(tasksPath), QByteArray("{ broken"));
     }
     void portableConfigurationAndValidation() {
         QTemporaryDir first,second;
@@ -326,6 +485,13 @@ private slots:
         DebugPanel existing; existing.setWorkspace(project.path()); existing.editConfiguration(); file.close(); QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(QJsonDocument::fromJson(file.readAll()).object(),manual);
         QVERIFY(!QJsonDocument::fromJson(QSettings().value(stateKey(project.path())).toByteArray()).object().contains("configuration"));
+        QFile script(project.filePath("custom.py")); QVERIFY(script.open(QIODevice::WriteOnly)); script.close();
+        existing.useFile(script.fileName());
+        templateDialog(existing, [](QDialog* dialog) { dialog->findChild<QPushButton*>("debugTemplateAdd")->click(); });
+        QCOMPARE(existing.configurationPath(), project.filePath(".turtle/launch.json"));
+        DebugConfiguration parsed; QString error;
+        QVERIFY2(DebugConfiguration::read(project.path(), script.fileName(), parsed, error, "Existing debug.json configuration"), qPrintable(error));
+        QCOMPARE(parsed.type, QString("python"));
     }
     void framingAndErrors() {
         DapClient client; QSignalSpy ready(&client,&DapClient::ready),error(&client,&DapClient::error);
