@@ -861,6 +861,7 @@
   "Choose an existing C/C++ source file.": "Выберите существующий исходный файл C/C++.",
   "Enter a C/C++ compiler.": "Укажите компилятор C/C++.",
   "Build %1": "Сборка %1",
+  "Create build directory for %1": "Создание каталога сборки для %1",
   "Configure %1": "Настройка %1",
   "Open a project with CMakeLists.txt at its root.": "Откройте проект с CMakeLists.txt в корневом каталоге.",
   "Enter a build directory, target and executable path.": "Укажите каталог сборки, цель и путь к программе.",

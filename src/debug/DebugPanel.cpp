@@ -1,4 +1,3 @@
-#include "app/IconDialogs.hpp"
 #include "DebugPanel.hpp"
 #include "DebugTemplates.hpp"
 #include "DapClient.hpp"
@@ -32,7 +31,6 @@
 #include <QTimer>
 #include <QSignalBlocker>
 #include <QCryptographicHash>
-#include <QInputDialog>
 #include <QPushButton>
 #include <QFileSystemWatcher>
 #include <QFile>
@@ -103,11 +101,13 @@ DebugPanel::DebugPanel(QWidget* parent):QWidget(parent),client_(new DapClient(th
     auto* sections=new QSplitter(Qt::Vertical,this); sections->setObjectName("debugSections");
     sections->setChildrenCollapsible(false); sections->setHandleWidth(1); layout->addWidget(sections,1);
     auto tree=[&](const char* id,const char* name,const QStringList& headers,bool values) {
-        auto* w=new QTreeWidget; w->setObjectName(id); w->setHeaderLabels(headers); w->setHeaderHidden(true);
+        auto* w=values?new DebugViews::ValueTree:new QTreeWidget;
+        w->setObjectName(id); w->setHeaderLabels(headers); w->setHeaderHidden(true);
         w->setFrameShape(QFrame::NoFrame); w->setIndentation(16); w->setUniformRowHeights(true); w->setRootIsDecorated(true);
         w->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); w->setMinimumSize(0,0);
         if(values) {
             w->setFont(FontSettings::font(FontSettings::Area::Editor)); w->setItemDelegate(new DebugViews::ValueDelegate(w));
+            w->setEditTriggers(QAbstractItemView::NoEditTriggers);
             w->setColumnHidden(1,true); w->header()->setSectionResizeMode(0,QHeaderView::Stretch);
         }
         w->header()->setStretchLastSection(true);
@@ -130,7 +130,10 @@ DebugPanel::DebugPanel(QWidget* parent):QWidget(parent),client_(new DapClient(th
     }
     auto* watchAdd=button(watches.second,"add","Add watch"); watchAdd->setObjectName("debugAddWatch"); watches.second->actions->addWidget(watchAdd);
     auto* watchRemove=button(watches.second,"trash","Remove watch"); watchRemove->setObjectName("debugRemoveWatchButton"); watches.second->actions->addWidget(watchRemove);
-    connect(watchAdd,&QToolButton::clicked,this,[this]{editWatch();});
+    connect(watchAdd,&QToolButton::clicked,this,[this] {
+        if(watches_->isHidden()) findChild<QToolButton*>("debugWatchesToggle")->setChecked(true);
+        editWatch();
+    });
     connect(watchRemove,&QToolButton::clicked,this,[this]{ auto* item=watches_->currentItem(); if(!item) return; if(item->parent()) return; state_.watches.removeAll(item->text(0)); saveState(); refreshWatches(); });
     console_=new QWidget(this); console_->setObjectName("debugConsole"); auto* consoleLayout=new QVBoxLayout(console_); consoleLayout->setContentsMargins(4,4,4,4);
     output_=new QPlainTextEdit; output_->setObjectName("debugOutput"); output_->setReadOnly(true); output_->setMaximumBlockCount(1500); consoleLayout->addWidget(output_);
@@ -369,9 +372,6 @@ void DebugPanel::startAdapter() {
         client_->start(configuration_.adapter,arguments,configuration_.cwd,environment);
     } else {
         session_.launchArguments["runInTerminal"]=terminalAvailable_; session_.launchArguments["disableASLR"]=false;
-        // External symbol lookup can block launch on debuginfod before initialized.
-        // Keep ordinary source debugging local, without changing the process environment.
-        if(!configuration_.externalSymbols) session_.launchArguments["initCommands"]=QJsonArray{"settings set symbols.enable-external-lookup false"};
         // LLDB's stopOnEntry stops in the ELF loader, without a usable source.
         // Our C/C++ source-level entry is a one-shot breakpoint at main instead.
         if(configuration_.stopOnEntry) {
@@ -383,6 +383,14 @@ void DebugPanel::startAdapter() {
     setState(t("Starting debugger…"));
 }
 void DebugPanel::launch() {
+    const bool lldb=configuration_.type=="cpp" || configuration_.adapterID=="lldb";
+    const auto initCommands=session_.launchArguments.value("initCommands");
+    if(lldb && !configuration_.externalSymbols && (initCommands.isUndefined() || initCommands.isArray())) {
+        // A debuginfod lookup can block launch before the adapter finishes initializing.
+        auto commands=initCommands.toArray();
+        commands.prepend(QStringLiteral("settings set symbols.enable-external-lookup false"));
+        session_.launchArguments["initCommands"]=commands;
+    }
     if(cortexValueFormat()) {
         if(QSettings().contains("debug/ui/hexValues")) session_.launchArguments["variableUseNaturalFormat"]=!hexValues_;
         else hexValues_=!session_.launchArguments.value("variableUseNaturalFormat").toBool(true);
@@ -694,17 +702,31 @@ QJsonObject DebugPanel::formatArguments(QJsonObject arguments) const {
     return arguments;
 }
 
-void DebugPanel::editWatch(const QString& expression) {
-    const auto workspace=workspace_;
-    bool ok=false;
-    const auto text=IconDialogs::InputDialog::getText(this,t(expression.isEmpty()?"Add watch":"Edit watch"),
-                                        t("Expression"),QLineEdit::Normal,expression,&ok).trimmed();
-    if(!ok || text.isEmpty() || workspace!=workspace_) return;
-    const int position=state_.watches.indexOf(expression);
-    if(!expression.isEmpty() && position<0) return;
-    if(text!=expression && state_.watches.contains(text)) {setStatus(t("Expression is already in Watch")); return;}
-    if(expression.isEmpty()) state_.watches.append(text); else state_.watches[position]=text;
-    saveState(); refreshWatches();
+bool DebugPanel::editWatch(QTreeWidgetItem* item) {
+    const bool adding=!item;
+    if(item && (item->parent() || item->text(0).isEmpty())) return false;
+    if(adding) {
+        item=new QTreeWidgetItem(watches_);
+        item->setFirstColumnSpanned(true);
+    }
+    const QPersistentModelIndex index(watches_->indexFromItem(item));
+    const auto discardDraft=[this,index] {if(index.isValid()) delete watches_->itemFromIndex(index);};
+    const auto submit=[this,index,adding](const QString& input) {
+        if(!index.isValid()) return;
+        const auto text=input.trimmed(),expression=index.data().toString();
+        if(text.isEmpty() || text==expression) return;
+        if(state_.watches.contains(text)) {setStatus(t("Expression is already in Watch")); return;}
+        const int position=adding?state_.watches.size():state_.watches.indexOf(expression);
+        if(position<0) return;
+        if(adding) state_.watches.append(text); else state_.watches[position]=text;
+        saveState(); refreshWatches();
+        watches_->setCurrentItem(watches_->topLevelItem(position));
+    };
+    item->setFlags(item->flags()|Qt::ItemIsEditable);
+    auto* delegate=static_cast<ValueDelegate*>(watches_->itemDelegate());
+    if(delegate->edit(watches_,item,false,t("Expression"),submit,adding?discardDraft:std::function<void()>{})) return true;
+    if(adding) discardDraft();
+    return false;
 }
 
 bool DebugPanel::canSetValue(const QPersistentModelIndex& index) const {
@@ -714,14 +736,19 @@ bool DebugPanel::canSetValue(const QPersistentModelIndex& index) const {
         || (index.data(ParentReferenceRole).toInt()>0 && session_.capabilities.value("supportsSetVariable").toBool());
 }
 
-void DebugPanel::setValue(QTreeWidget*,const QPersistentModelIndex& index) {
-    if(!canSetValue(index)) return;
+bool DebugPanel::editValue(QTreeWidget* tree,const QPersistentModelIndex& index) {
+    if(!canSetValue(index)) return false;
     const auto epoch=session_.epoch;
-    bool ok=false;
-    const auto value=IconDialogs::InputDialog::getText(this,t("Set value"),index.data().toString(),QLineEdit::Normal,
-                                         index.sibling(index.row(),1).data().toString(),&ok);
-    // The debuggee can continue or the user can change frames while a dialog is open.
-    if(!ok || epoch!=session_.epoch || !canSetValue(index)) return;
+    auto* item=tree->itemFromIndex(index);
+    item->setFlags(item->flags()|Qt::ItemIsEditable);
+    auto* delegate=static_cast<ValueDelegate*>(tree->itemDelegate());
+    return delegate->edit(tree,item,true,t("Set value"),[this,index,epoch](const QString& value) {
+        if(epoch==session_.epoch && canSetValue(index)) setValue(index,value);
+    });
+}
+
+void DebugPanel::setValue(const QPersistentModelIndex& index,const QString& value) {
+    const auto epoch=session_.epoch;
     const auto expression=index.data(ExpressionRole).toString();
     const bool byExpression=!expression.isEmpty() && session_.capabilities.value("supportsSetExpression").toBool();
     QJsonObject args{{"value",value}};
@@ -750,7 +777,7 @@ void DebugPanel::valueMenu(QTreeWidget* tree,const QPoint& point) {
         auto* a=menu->addAction(Codicons::icon(icon),t(label)); a->setObjectName(id); a->setEnabled(enabled);
         connect(a,&QAction::triggered,this,callback); return a;
     };
-    if(item) {
+    if(item && (!root || !item->text(0).isEmpty())) {
         action("debugCopyValue","copy","Copy value",index.data(HasValueRole).toBool(),[index,valid] {
             if(valid()) QApplication::clipboard()->setText(index.sibling(index.row(),1).data().toString());
         });
@@ -758,9 +785,13 @@ void DebugPanel::valueMenu(QTreeWidget* tree,const QPoint& point) {
         const auto expression=index.data(ExpressionRole).toString();
         action("debugCopyExpression","code","Copy expression",!expression.isEmpty(),[expression,valid] {if(valid()) QApplication::clipboard()->setText(expression);});
         menu->addSeparator();
-        action("debugSetValue","edit","Set value",canSetValue(index),[this,tree,index,valid] {if(valid()) setValue(tree,index);});
+        action("debugSetValue","edit","Set value",canSetValue(index),[this,tree,index,valid] {
+            QTimer::singleShot(0,this,[this,tree,index,valid] {if(valid()) editValue(tree,index);});
+        });
         if(root) {
-            action("debugEditWatch","edit","Edit watch",true,[this,expression,valid] {if(valid()) editWatch(expression);});
+            action("debugEditWatch","edit","Edit watch",true,[this,index,valid] {
+                QTimer::singleShot(0,this,[this,index,valid] {if(valid()) editWatch(watches_->itemFromIndex(index));});
+            });
         }
     }
     if(menu->isEmpty()) {menu->deleteLater(); return;}
@@ -772,19 +803,23 @@ void DebugPanel::initContextMenus() {
     for(auto* tree:{variables_,watches_}) {
         tree->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(tree,&QWidget::customContextMenuRequested,this,[this,tree](const QPoint& point){valueMenu(tree,point);});
-        auto* copy=new QShortcut(QKeySequence::Copy,tree); copy->setContext(Qt::WidgetWithChildrenShortcut);
+        auto* copy=new QShortcut(QKeySequence::Copy,tree); copy->setContext(Qt::WidgetShortcut);
         connect(copy,&QShortcut::activated,this,[tree] {
             auto* item=tree->currentItem(); if(item && item->data(0,HasValueRole).toBool()) QApplication::clipboard()->setText(item->text(1));
         });
+        auto* view=static_cast<ValueTree*>(tree);
+        view->editRow=[this,tree](QTreeWidgetItem* item,ValueTree::EditTarget target) {
+            const bool watch=tree==watches_ && !item->parent();
+            const bool editValueRequested=target==ValueTree::EditTarget::Value || (target==ValueTree::EditTarget::Current && !watch);
+            if(editValueRequested && editValue(tree,tree->indexFromItem(item))) return true;
+            return watch && editWatch(item);
+        };
     }
-    auto* edit=new QShortcut(QKeySequence(Qt::Key_F2),watches_); edit->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(edit,&QShortcut::activated,this,[this]{auto* item=watches_->currentItem(); if(item && !item->parent()) editWatch(item->text(0));});
-    auto* remove=new QShortcut(QKeySequence(Qt::Key_Delete),watches_); remove->setContext(Qt::WidgetWithChildrenShortcut);
+    auto* remove=new QShortcut(QKeySequence(Qt::Key_Delete),watches_); remove->setContext(Qt::WidgetShortcut);
     connect(remove,&QShortcut::activated,this,[this] {
         auto* item=watches_->currentItem(); if(!item || item->parent()) return;
         state_.watches.removeAll(item->text(0)); saveState(); refreshWatches();
     });
-    connect(watches_,&QTreeWidget::itemDoubleClicked,this,[this](QTreeWidgetItem* item) {if(item && !item->parent()) editWatch(item->text(0));});
     for(auto* tree:{frames_,breakpoints_}) {
         tree->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(tree,&QWidget::customContextMenuRequested,this,[this,tree](const QPoint& point) {

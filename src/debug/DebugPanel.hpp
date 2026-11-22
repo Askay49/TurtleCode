@@ -67,8 +67,9 @@ private:
     void refreshWatches();
     void initContextMenus();
     void valueMenu(QTreeWidget* tree,const QPoint& point);
-    void editWatch(const QString& expression={});
-    void setValue(QTreeWidget* tree,const QPersistentModelIndex& index);
+    bool editWatch(QTreeWidgetItem* item=nullptr);
+    bool editValue(QTreeWidget* tree,const QPersistentModelIndex& index);
+    void setValue(const QPersistentModelIndex& index,const QString& value);
     bool canSetValue(const QPersistentModelIndex& index) const;
     QJsonObject formatArguments(QJsonObject arguments) const;
     bool hexValues_{false};

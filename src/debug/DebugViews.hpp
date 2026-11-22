@@ -4,8 +4,11 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QHBoxLayout>
+#include <QLineEdit>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QScopedValueRollback>
 #include <QSettings>
 #include <QSplitter>
 #include <QStyledItemDelegate>
@@ -13,6 +16,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <functional>
 
 namespace DebugViews {
 enum ItemRole {
@@ -48,32 +52,164 @@ protected:
 class ValueDelegate final : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
+
+    bool edit(QTreeWidget* tree, QTreeWidgetItem* item, bool value, const QString& label,
+              std::function<void(const QString&)> submit, std::function<void()> closed = {}) {
+        const Edit request{value, label, std::move(submit), std::move(closed)};
+        const QScopedValueRollback editing(request_, &request);
+        tree->setCurrentItem(item);
+        tree->scrollToItem(item);
+        tree->setFocus(Qt::OtherFocusReason);
+        editingStarted_ = false;
+        tree->editItem(item);
+        return editingStarted_;
+    }
+
+    static QRect valueArea(const QRect& rect, const QFontMetrics& metrics, const QModelIndex& index) {
+        const auto area = textArea(rect);
+        const auto width = metrics.horizontalAdvance(index.data().toString() + QStringLiteral(": ")) + 2;
+        return area.adjusted(qMin(width, qMax(0, area.width() - 24)), 0, 0, 0);
+    }
+
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         auto styled = option; initStyleOption(&styled, index); styled.text.clear();
         const auto* widget = option.widget;
         (widget ? widget->style() : QApplication::style())->drawControl(QStyle::CE_ItemViewItem, &styled, painter, widget);
         const auto value = index.sibling(index.row(), 1).data().toString();
         const auto& theme = ThemeManager::instance();
-        const auto area = option.rect.adjusted(3, 0, -5, 0);
+        const auto area = textArea(option.rect);
         QFont font = option.font;
         QFontMetrics metrics(font);
-        const auto name = index.data().toString() + (value.isEmpty() ? QString{} : QStringLiteral(": "));
+        const bool hasValue = !value.isEmpty() || index.data(HasValueRole).toBool();
+        const auto name = index.data().toString() + (hasValue ? QStringLiteral(": ") : QString{});
         const int naturalWidth = metrics.horizontalAdvance(name) + 2;
-        const int nameWidth = value.isEmpty() ? area.width() : qMin(naturalWidth, qMax(0, area.width() - 24));
+        const auto valueRect = valueArea(option.rect, metrics, index);
+        const int nameWidth = hasValue ? valueRect.left() - area.left() : area.width();
         painter->save(); painter->setClipRect(area); painter->setFont(font);
-        painter->setPen(theme.color(value.isEmpty() ? "text.primary" : "syntax.property"));
+        painter->setPen(theme.color(hasValue ? "syntax.property" : "text.primary"));
         painter->drawText(QRect(area.left(), area.top(), nameWidth, area.height()), Qt::AlignVCenter,
                           naturalWidth <= nameWidth ? name : metrics.elidedText(name, Qt::ElideRight, nameWidth));
         if (!value.isEmpty()) {
-            font.setItalic(index.data(Qt::UserRole + 3).toBool()); painter->setFont(font);
-            painter->setPen(theme.color(index.data(Qt::UserRole + 3).toBool() ? "text.muted" : "text.primary"));
-            const auto valueArea = area.adjusted(nameWidth, 0, 0, 0);
-            painter->drawText(valueArea, Qt::AlignVCenter, QFontMetrics(font).elidedText(value, Qt::ElideRight, valueArea.width()));
+            const bool unavailable = index.data(UnavailableRole).toBool();
+            font.setItalic(unavailable); painter->setFont(font);
+            painter->setPen(theme.color(unavailable ? "text.muted" : "text.primary"));
+            painter->drawText(valueRect, Qt::AlignVCenter, QFontMetrics(font).elidedText(value, Qt::ElideRight, valueRect.width()));
         }
         painter->restore();
     }
     QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex&) const override {
         return {40, qMax(22, option.fontMetrics.height() + 4)};
+    }
+
+protected:
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex&) const override {
+        if (!request_) return nullptr;
+        auto* editor = new Editor(*request_, parent);
+        editor->setObjectName("debugInlineEdit");
+        editor->setAccessibleName(request_->label);
+        editor->setFont(option.font);
+        editor->setStyleSheet(QStringLiteral("QLineEdit { padding: 0px 2px; }"));
+        editingStarted_ = true;
+        return editor;
+    }
+
+    void setEditorData(QWidget* widget, const QModelIndex& index) const override {
+        auto* editor = static_cast<Editor*>(widget);
+        if (editor->initialized) return;
+        editor->initialized = true;
+        const auto source = editor->request.value ? index.siblingAtColumn(1) : index;
+        editor->setText(source.data().toString());
+        editor->selectAll();
+    }
+
+    void updateEditorGeometry(QWidget* widget, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        const auto* editor = static_cast<Editor*>(widget);
+        const auto area = editor->request.value ? valueArea(option.rect, option.fontMetrics, index) : textArea(option.rect);
+        widget->setGeometry(area);
+    }
+
+    void setModelData(QWidget* widget, QAbstractItemModel*, const QModelIndex&) const override {
+        const auto* editor = static_cast<Editor*>(widget);
+        if (!editor->acceptRequested) return;
+        // Applying edits can rebuild the tree. Let Qt finish closing the editor first.
+        QMetaObject::invokeMethod(parent(), [submit = editor->request.submit, text = editor->text()] { submit(text); },
+                                  Qt::QueuedConnection);
+    }
+
+    void destroyEditor(QWidget* widget, const QModelIndex& index) const override {
+        const auto* editor = static_cast<Editor*>(widget);
+        if (editor->request.closed) QMetaObject::invokeMethod(parent(), editor->request.closed, Qt::QueuedConnection);
+        QStyledItemDelegate::destroyEditor(widget, index);
+    }
+
+    bool eventFilter(QObject* object, QEvent* event) override {
+        if (event->type() == QEvent::KeyPress) {
+            const int key = static_cast<QKeyEvent*>(event)->key();
+            if (key == Qt::Key_Return || key == Qt::Key_Enter) static_cast<Editor*>(object)->acceptRequested = true;
+        }
+        if (event->type() == QEvent::FocusOut) {
+            const auto reason = static_cast<QFocusEvent*>(event)->reason();
+            if (reason != Qt::PopupFocusReason && reason != Qt::ActiveWindowFocusReason)
+                emit closeEditor(static_cast<QWidget*>(object));
+            return false;
+        }
+        if (event->type() == QEvent::Hide) {
+            emit closeEditor(static_cast<QWidget*>(object));
+            return false;
+        }
+        return QStyledItemDelegate::eventFilter(object, event);
+    }
+
+private:
+    struct Edit {
+        bool value;
+        QString label;
+        std::function<void(const QString&)> submit;
+        std::function<void()> closed;
+    };
+    class Editor final : public QLineEdit {
+    public:
+        Editor(const Edit& edit, QWidget* parent) : QLineEdit(parent), request(edit) {}
+        Edit request;
+        bool initialized{false};
+        bool acceptRequested{false};
+    };
+
+    static QRect textArea(const QRect& rect) { return rect.adjusted(3, 0, -5, 0); }
+
+    const Edit* request_{nullptr};
+    mutable bool editingStarted_{false};
+};
+
+class ValueTree final : public QTreeWidget {
+public:
+    using QTreeWidget::QTreeWidget;
+    enum class EditTarget { Current, Name, Value };
+    std::function<bool(QTreeWidgetItem*, EditTarget)> editRow;
+
+protected:
+    bool event(QEvent* event) override {
+        if ((event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) && hasFocus()) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_F2 && key->modifiers() == Qt::NoModifier && currentItem() && editRow) {
+                // F2 also belongs to the window's Rename Symbol action.
+                if (event->type() == QEvent::KeyPress) editRow(currentItem(), EditTarget::Current);
+                event->accept();
+                return true;
+            }
+        }
+        return QTreeWidget::event(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent* event) override {
+        const auto point = event->position().toPoint();
+        const auto index = indexAt(point);
+        const auto rect = visualRect(index);
+        if (event->button() == Qt::LeftButton && index.isValid() && rect.contains(point) && editRow) {
+            const bool onValue = ValueDelegate::valueArea(rect, fontMetrics(), index).contains(point);
+            if (editRow(itemFromIndex(index), onValue ? EditTarget::Value : EditTarget::Name)) return;
+        }
+        QTreeWidget::mouseDoubleClickEvent(event);
     }
 };
 

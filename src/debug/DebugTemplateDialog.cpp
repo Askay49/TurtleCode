@@ -436,6 +436,14 @@ private:
                 {"options", QJsonObject{{"cwd", "${workspaceFolder}"}}}};
     }
 
+    static void configureLldbLaunch(QJsonObject& launch, const QString& program) {
+        launch["type"] = "lldb";
+        launch["program"] = program;
+        launch["disableASLR"] = false;
+        launch["runInTerminal"] = true;
+        launch["preRunCommands"] = QJsonArray{"breakpoint set --name main --one-shot true"};
+    }
+
     QString makeDraft(DebugTemplates::Draft& draft) const {
         auto& launch = draft.launch;
         launch = {{"request", "launch"}, {"cwd", "${workspaceFolder}"}};
@@ -459,12 +467,11 @@ private:
             const auto file = QFileInfo(source);
             const auto portable = DebugConfiguration::portable(root_.absoluteFilePath(source), root_.absolutePath());
             const auto hash = QCryptographicHash::hash(portable.toUtf8(), QCryptographicHash::Sha256).toHex().left(12);
-            const auto program = "${workspaceFolder}/.turtle/" + file.completeBaseName() + "-" + QString::fromLatin1(hash) + ".debug";
+            const QString buildDirectory = "${workspaceFolder}/build";
+            const auto program = buildDirectory + '/' + file.completeBaseName() + "-" + QString::fromLatin1(hash) + ".debug";
             launch["name"] = t("C/C++: %1").arg(file.fileName());
-            launch["type"] = "lldb";
-            launch["program"] = program;
-            launch["disableASLR"] = false;
-            launch["runInTerminal"] = true;
+            configureLldbLaunch(launch, program);
+            draft.tasks.append(task(t("Create build directory for %1"), "mkdir", {"-p", buildDirectory}));
             draft.tasks.append(task(t("Build %1"), compiler.contains('/') ? workspacePath(compiler) : compiler,
                                     {"-g", "-O0", workspacePath(source), "-o", program}));
             return {};
@@ -477,10 +484,7 @@ private:
             if (build.isEmpty() || target.isEmpty() || program.isEmpty()) return t("Enter a build directory, target and executable path.");
             const auto directory = workspacePath(build);
             launch["name"] = t("CMake: %1").arg(target);
-            launch["type"] = "lldb";
-            launch["program"] = workspacePath(program);
-            launch["disableASLR"] = false;
-            launch["runInTerminal"] = true;
+            configureLldbLaunch(launch, workspacePath(program));
             draft.tasks.append(task(t("Configure %1"), "cmake", {"-S", "${workspaceFolder}", "-B", directory, "-DCMAKE_BUILD_TYPE=Debug"}));
             draft.tasks.append(task(t("Build %1"), "cmake", {"--build", directory, "--config", "Debug", "--target", target}));
             return {};

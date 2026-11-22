@@ -75,6 +75,19 @@ static void debugWindowTests(QTemporaryDir& directory) {
     assert(!activity->isChecked()); activity->click(); assert(activity->isChecked());
     // Unsaved buffers must not be launched against different disk contents.
     QTest::keyClick(editor,Qt::Key_X); emit panel->startRequested(); assert(!panel->active()); editor->documentUndo();
+    auto* watches=panel->findChild<QTreeWidget*>("debugWatches");
+    const auto watchInput=[&] {return watches->findChild<QLineEdit*>("debugInlineEdit");};
+    QTest::mouseClick(panel->findChild<QToolButton*>("debugAddWatch"),Qt::LeftButton);
+    assert(waitFor([&]{return watchInput() && watchInput()->hasFocus();}));
+    QTest::keyClicks(watchInput(),"values");
+    QTest::keyClick(watchInput(),Qt::Key_Return);
+    assert(waitFor([&]{return !watchInput() && watches->topLevelItemCount()==1;}));
+    assert(watches->topLevelItem(0)->text(0)=="values");
+    watches->setFocus();
+    QTest::keyClick(watches,Qt::Key_F2);
+    assert(waitFor([&]{return watchInput() && watchInput()->hasFocus();}));
+    assert(!QApplication::activeModalWidget() && watchInput()->selectedText()=="values");
+    QTest::keyClick(watchInput(),Qt::Key_Escape);
     if(!python.isEmpty()) {
         emit panel->startRequested(); auto* frames=panel->findChild<QTreeWidget*>("debugStack");
         assert(waitFor([&]{return frames->topLevelItemCount()>0;}));

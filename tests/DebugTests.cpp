@@ -7,7 +7,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCheckBox>
-#include <QInputDialog>
+#include <QDialog>
 #include <QMenu>
 #include <QPointer>
 #include <QTimer>
@@ -163,6 +163,49 @@ private slots:
         QTest::addColumn<QString>("mode");
         for(const auto& mode:{"all","variable","none","cortex"}) QTest::newRow(mode)<<QString(mode);
     }
+    void watchInlineEditing() {
+        QSettings().clear();
+        QTemporaryDir project;
+        DebugPanel panel; panel.setWorkspace(project.path()); panel.resize(250,800); panel.show();
+        auto* watches=panel.findChild<QTreeWidget*>("debugWatches");
+        auto* toggle=panel.findChild<QToolButton*>("debugWatchesToggle");
+        auto* add=panel.findChild<QToolButton*>("debugAddWatch");
+        const auto editor=[&] {return watches->findChild<QLineEdit*>("debugInlineEdit");};
+
+        QTest::mouseClick(toggle,Qt::LeftButton);
+        QTest::mouseClick(add,Qt::LeftButton);
+        QTRY_VERIFY(editor() && editor()->hasFocus());
+        QVERIFY(!QApplication::activeModalWidget());
+        QVERIFY(watches->viewport()->rect().contains(editor()->geometry()));
+        QTest::keyClicks(editor(),"discarded");
+        QTest::keyClick(editor(),Qt::Key_Escape);
+        QTRY_COMPARE(watches->topLevelItemCount(),0);
+
+        QTest::mouseClick(add,Qt::LeftButton);
+        QTRY_VERIFY(editor() && editor()->hasFocus());
+        QTest::keyClicks(editor()," total ");
+        QTest::keyClick(editor(),Qt::Key_Return);
+        QTRY_VERIFY(watches->topLevelItem(0) && watches->topLevelItem(0)->text(0)=="total");
+        QCOMPARE(watches->topLevelItemCount(),1);
+
+        QTest::mouseClick(add,Qt::LeftButton);
+        QTRY_VERIFY(editor() && editor()->hasFocus());
+        QTest::keyClicks(editor(),"total");
+        QTest::keyClick(editor(),Qt::Key_Return);
+        QTRY_COMPARE(watches->topLevelItemCount(),1);
+
+        watches->setCurrentItem(watches->topLevelItem(0));
+        watches->setFocus();
+        QTest::keyClick(watches,Qt::Key_F2);
+        QTRY_VERIFY(editor() && editor()->hasFocus());
+        QCOMPARE(editor()->selectedText(),QString("total"));
+        QTest::keyClick(editor(),Qt::Key_Delete);
+        QTest::keyClicks(editor(),"total + 1");
+        QTest::keyClick(editor(),Qt::Key_Return);
+        QTRY_COMPARE(watches->topLevelItem(0)->text(0),QString("total + 1"));
+        DebugPanel restored; restored.setWorkspace(project.path());
+        QCOMPARE(restored.findChild<QTreeWidget*>("debugWatches")->topLevelItem(0)->text(0),QString("total + 1"));
+    }
     void valueMenus() {
         QFETCH(QString,mode); QSettings().clear();
         QTemporaryDir project;
@@ -175,6 +218,7 @@ private slots:
         DebugPanel panel; panel.setWorkspace(project.path()); panel.resize(300,900); panel.show();
         auto* tree=panel.findChild<QTreeWidget*>("debugVariables");
         auto* watches=panel.findChild<QTreeWidget*>("debugWatches");
+        const auto editor=[](QTreeWidget* view) {return view->findChild<QLineEdit*>("debugInlineEdit");};
         QSignalSpy events(panel.findChild<DapClient*>(),&DapClient::eventReceived);
         panel.start(); QTRY_VERIFY(tree->topLevelItemCount()>0 && tree->topLevelItem(0)->childCount()==3);
         const auto total=[&]{return tree->topLevelItem(0)->child(0);};
@@ -184,8 +228,10 @@ private slots:
             for(auto* candidate:view->findChildren<QMenu*>("debugValuesMenu")) if(candidate->isVisible()) menu=candidate;
             if(!menu) return false;
             auto* action=menu->findChild<QAction*>(id); const bool enabled=action && action->isEnabled();
-            if(enabled) action->trigger();
+            if(enabled) QTest::mouseClick(menu,Qt::LeftButton,Qt::NoModifier,menu->actionGeometry(action).center());
             if(menu) menu->close();
+            // The offscreen platform needs an explicit activation after closing a popup.
+            panel.activateWindow();
             return enabled;
         };
         QVERIFY(invoke(tree,total(),"debugCopyValue")); QCOMPARE(QApplication::clipboard()->text(),QString("42"));
@@ -199,8 +245,15 @@ private slots:
         if(mode=="none") {
             QVERIFY(!invoke(tree,total(),"debugSetValue")); QVERIFY(!hexButton->isEnabled());
         } else {
-            QTimer::singleShot(0,[]{if(auto* dialog=qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {dialog->setTextValue("55"); dialog->accept();}});
             QVERIFY(invoke(tree,total(),"debugSetValue"));
+            QTRY_VERIFY(editor(tree) && editor(tree)->hasFocus());
+            QVERIFY(!QApplication::activeModalWidget());
+            const auto row=tree->visualItemRect(total());
+            QVERIFY(row.contains(editor(tree)->geometry()));
+            QVERIFY(editor(tree)->geometry().left()>row.left()+tree->fontMetrics().horizontalAdvance("total"));
+            QCOMPARE(editor(tree)->selectedText(),QString("42"));
+            QTest::keyClicks(editor(tree),"55");
+            QTest::keyClick(editor(tree),Qt::Key_Return);
             QTRY_VERIFY(tree->topLevelItemCount()>0 && tree->topLevelItem(0)->childCount()==3 && total()->text(1)=="55");
             QTRY_COMPARE(watches->topLevelItem(0)->text(1),QString("55"));
             bool correctRequest=false;
@@ -213,20 +266,49 @@ private slots:
             QVERIFY(hexButton->isEnabled()); hexButton->click();
             QTRY_VERIFY(tree->topLevelItemCount()>0 && tree->topLevelItem(0)->childCount()==3 && total()->text(1)=="0x37");
             QTRY_COMPARE(watches->topLevelItem(0)->text(1),QString("0x37"));
+            if(mode=="all") {
+                const auto watchRow=watches->visualItemRect(watches->topLevelItem(0));
+                QTest::mouseDClick(watches->viewport(),Qt::LeftButton,Qt::NoModifier,watchRow.center());
+                QTRY_VERIFY(editor(watches) && editor(watches)->hasFocus());
+                QCOMPARE(editor(watches)->selectedText(),QString("0x37"));
+                QTest::keyClicks(editor(watches),"99");
+                QTest::keyClick(editor(watches),Qt::Key_Escape);
+                QTRY_VERIFY(!editor(watches));
+                QCOMPARE(watches->topLevelItem(0)->text(1),QString("0x37"));
+            }
             if(mode=="cortex") {
                 QVERIFY(hexButton->isEnabled()); hexButton->click();
                 QTRY_VERIFY(tree->topLevelItemCount()>0 && tree->topLevelItem(0)->childCount()==3 && total()->text(1)=="55");
                 QVERIFY(hexButton->isEnabled()); hexButton->click();
                 QTRY_VERIFY(tree->topLevelItemCount()>0 && tree->topLevelItem(0)->childCount()==3 && total()->text(1)=="0x37");
             }
-            QTimer::singleShot(0,[]{if(auto* dialog=qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {dialog->setTextValue("reject"); dialog->accept();}});
-            QVERIFY(invoke(tree,total(),"debugSetValue"));
+            QTest::mouseDClick(tree->viewport(),Qt::LeftButton,Qt::NoModifier,tree->visualItemRect(total()).center());
+            QTRY_VERIFY(editor(tree) && editor(tree)->hasFocus());
+            QTest::keyClicks(editor(tree),"reject");
+            QTest::keyClick(editor(tree),Qt::Key_Return);
             QTRY_VERIFY(panel.findChild<QLabel*>("debugStatus")->text().contains("Cannot set value"));
             QCOMPARE(total()->text(1),QString("0x37"));
+
+            QTest::mouseDClick(tree->viewport(),Qt::LeftButton,Qt::NoModifier,tree->visualItemRect(total()).center());
+            QTRY_VERIFY(editor(tree) && editor(tree)->hasFocus());
+            QTest::keyClicks(editor(tree),"99");
+            QTest::mouseClick(tree->viewport(),Qt::LeftButton,Qt::NoModifier,tree->visualItemRect(tree->topLevelItem(0)->child(2)).center());
+            QTRY_VERIFY(!editor(tree));
+            QCOMPARE(total()->text(1),QString("0x37"));
+
+            QTest::mouseDClick(tree->viewport(),Qt::LeftButton,Qt::NoModifier,tree->visualItemRect(total()).center());
+            QTRY_VERIFY(editor(tree) && editor(tree)->hasFocus());
+            QTest::keyClicks(editor(tree),"99");
+            panel.perform("next");
+            QTRY_VERIFY(!editor(tree) && tree->topLevelItemCount()>0 && tree->topLevelItem(0)->childCount()==3);
+            QCOMPARE(total()->text(1),QString("0x37"));
         }
-        QTimer::singleShot(0,[]{if(auto* dialog=qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {dialog->setTextValue("total + 1"); dialog->accept();}});
         QVERIFY(invoke(watches,watches->topLevelItem(0),"debugEditWatch"));
-        QCOMPARE(watches->topLevelItem(0)->text(0),QString("total + 1"));
+        QTRY_VERIFY(editor(watches) && editor(watches)->hasFocus());
+        QCOMPARE(editor(watches)->selectedText(),QString("total"));
+        QTest::keyClicks(editor(watches),"total + 1");
+        QTest::keyClick(editor(watches),Qt::Key_Return);
+        QTRY_COMPARE(watches->topLevelItem(0)->text(0),QString("total + 1"));
         QVERIFY(!invoke(watches,watches->topLevelItem(0),"debugRemoveWatch"));
         watches->setCurrentItem(watches->topLevelItem(0)); panel.findChild<QToolButton*>("debugRemoveWatchButton")->click();
         QCOMPARE(watches->topLevelItemCount(),0);
@@ -361,8 +443,11 @@ private slots:
         DebugConfiguration config;
         QString error;
         QVERIFY2(DebugConfiguration::read(root, {}, config, error, combo->currentText()), qPrintable(error));
-        QCOMPARE(config.buildSteps.size(), 1);
-        QCOMPARE(config.buildSteps.first().command, QStringList({"cc", "-g", "-O0", project.filePath("main file.c"), "-o", config.program}));
+        QVERIFY(!QFileInfo::exists(project.filePath("build")));
+        QCOMPARE(QFileInfo(config.program).absolutePath(), project.filePath("build"));
+        QCOMPARE(config.buildSteps.size(), 2);
+        QCOMPARE(config.buildSteps.first().command, QStringList({"mkdir", "-p", project.filePath("build")}));
+        QCOMPARE(config.buildSteps.last().command, QStringList({"cc", "-g", "-O0", project.filePath("main file.c"), "-o", config.program}));
         const auto nativeName = combo->currentText();
         QVERIFY(read(tasksPath).contains("// keep this\r\n"));
         QVERIFY(!read(tasksPath).replace("\r\n", "").contains('\n'));
@@ -423,7 +508,9 @@ private slots:
                     return event.at(0).toString() == "turtle-test-launch";
                 });
                 QVERIFY(launch != events.cend());
-                QCOMPARE(launch->at(1).toJsonObject().value("program").toString(), config.program);
+                const auto arguments = launch->at(1).toJsonObject();
+                QCOMPARE(arguments.value("program").toString(), config.program);
+                QCOMPARE(arguments.value("preRunCommands").toArray(), QJsonArray{"breakpoint set --name main --one-shot true"});
                 panel.perform("stop");
                 QTRY_VERIFY(!panel.active());
             }
@@ -560,6 +647,53 @@ private slots:
         // Changing settings/tasks is picked up before the next start.
         QVERIFY(QFile::remove(program));QVERIFY(write("tasks.json",{{"version","2.0.0"},{"tasks",QJsonArray{QJsonObject{{"label","Build"},{"type","process"},{"command",python},{"args",QJsonArray{"-c","import sys;sys.exit(5)"}}}}}}));
         events.clear();panel.start();QTRY_VERIFY(!panel.active());QVERIFY(events.isEmpty());QVERIFY(!QFileInfo::exists(program));
+    }
+    void lldbTemplateLaunchArguments() {
+        QSettings().clear();
+        QTemporaryDir project;
+        QVERIFY(QDir(project.path()).mkdir(".turtle"));
+        QFile adapter(project.filePath("lldb-dap"));
+        QVERIFY(adapter.open(QIODevice::WriteOnly));
+        adapter.write("#!/bin/sh\nexec python3 '" DEBUG_SOURCE "/tests/debug/fake_adapter.py'\n");
+        adapter.close();
+        QVERIFY(adapter.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        const auto originalPath=qgetenv("PATH");
+        const auto restorePath=qScopeGuard([&] {qputenv("PATH",originalPath);});
+        QVERIFY(qputenv("PATH",QFile::encodeName(project.path())+':'+originalPath));
+
+        const QJsonObject defaults{{"name","C/C++: main.c"},{"type","lldb"},{"request","launch"},
+            {"program",QString(DEBUG_SOURCE "/examples/debug/demo.py")},{"runInTerminal",true}};
+        const QJsonArray customCommands{"settings set symbols.enable-external-lookup true","settings show symbols"};
+        auto custom=defaults;
+        custom["name"]="Custom symbols";
+        custom["initCommands"]=customCommands;
+        QFile launch(DebugProject::path(project.path(),"launch.json"));
+        QVERIFY(launch.open(QIODevice::WriteOnly));
+        launch.write(QJsonDocument(QJsonObject{{"version","0.2.0"},{"configurations",QJsonArray{defaults,custom}}}).toJson());
+        launch.close();
+
+        DebugPanel panel;
+        panel.setWorkspace(project.path());
+        panel.setTerminalAvailable(true);
+        auto* configurations=panel.findChild<QComboBox*>("debugConfigurations");
+        QCOMPARE(configurations->count(),2);
+        QJsonObject arguments;
+        connect(panel.findChild<DapClient*>(),&DapClient::eventReceived,&panel,[&](const QString& event,const QJsonObject& body) {
+            if(event=="turtle-test-launch") arguments=body;
+        });
+        const auto disableLookup=QStringLiteral("settings set symbols.enable-external-lookup false");
+        for(int i=0;i<configurations->count();++i) {
+            configurations->setCurrentIndex(i);
+            arguments={};
+            panel.start();
+            QTRY_VERIFY(!arguments.isEmpty());
+            QVERIFY(arguments.value("runInTerminal").toBool());
+            auto expected=i==0?QJsonArray{}:customCommands;
+            expected.prepend(disableLookup);
+            QCOMPARE(arguments.value("initCommands").toArray(),expected);
+            panel.perform("stop");
+            QTRY_VERIFY(!panel.active());
+        }
     }
     void externalAdapterAndPreparation() {
         QTemporaryDir project; QDir root(project.path()); QVERIFY(root.mkpath("source folder"));
