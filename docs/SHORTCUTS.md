@@ -126,7 +126,9 @@ last line. Affected ranges of 1 MiB or more use the existing cancellable backgro
 editing path. Undo restores text and cursors; as with other commands, the existing
 history does not store selection anchors.
 
-Document formatting: **Ctrl+Shift+I**, command ID `code.formatDocument`, menu Code → Format document. The shortcut can be changed in Settings… → Keyboard shortcuts.
+**Ctrl+Shift+I** formats the selected block or the whole document when there is
+no selection. The command is under **Code → Format document or selection** and
+keeps the ID `code.formatDocument`. Change the shortcut in **Settings… → Keyboard shortcuts**.
 
 Smart editing: **Ctrl+/** toggles line comments, **Ctrl+Shift+A** toggles block
 comments. Command IDs: `editor.toggleLineComment`, `editor.toggleBlockComment`.

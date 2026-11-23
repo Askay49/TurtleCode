@@ -906,7 +906,7 @@ void MainWindow::createMenus() {
         });
     }
     codeMenu->addSeparator();
-    auto* formatAction = codeMenu->addAction(Codicons::icon("symbol-method"), I18n::text("Format document"));
+    auto* formatAction = codeMenu->addAction(Codicons::icon("symbol-method"), I18n::text("Format document or selection"));
     formatAction->setObjectName("code.formatDocument");
     ShortcutManager::instance().bind("code.formatDocument", formatAction);
     connect(formatAction, &QAction::triggered, this, &MainWindow::formatDocument);
@@ -2325,21 +2325,55 @@ void MainWindow::formatDocument() {
     if(closing_ || renameInProgress_ || !replaceLockedEditors_.isEmpty()) return;
     auto* editor=activeEditor();
     if(!editor || editor->isBusy()) return;
+    const auto selection = editor->linearSelectionRange();
+    if (!selection) {
+        statusBar()->showMessage(I18n::text("Select a single continuous block of text to format."), 6000);
+        return;
+    }
+    requestFormatting(*selection);
+}
+
+void MainWindow::requestFormatting(std::pair<std::size_t, std::size_t> selection) {
+    if (closing_ || renameInProgress_ || !replaceLockedEditors_.isEmpty()) return;
+    auto* editor = activeEditor();
+    if (!editor || editor->isBusy()) return;
     if(editor->filePath().isEmpty() || !lsp_->supports(editor->filePath())) {
         statusBar()->showMessage(I18n::text("Formatting is unavailable for this document. Save it with a supported extension first."),6000);return;
     }
-    if(!ensureManualLsp(editor,[this]{formatDocument();})) return;
-    if(!lsp_->canFormat(editor->filePath())) {
-        statusBar()->showMessage(I18n::text("The language server does not support document formatting."),6000);return;
-    }
+    if (!ensureManualLsp(editor, [this, selection] { requestFormatting(selection); })) return;
     const auto path=editor->filePath();const auto revision=editor->lspRevision();
     const auto generation=editor->property("formatGeneration").toULongLong()+1;
     editor->setProperty("formatGeneration",generation);
-    const auto before=QByteArray::fromStdString(editor->document()->buffer().text());
-    const auto bufferRevision = editor->document()->buffer().contentRevision();
+    const bool ranged = selection.first != selection.second;
+    if (!lsp_->canFormat(path, ranged)) {
+        statusBar()->showMessage(I18n::text(ranged ? "The language server does not support selection formatting."
+                                                 : "The language server does not support document formatting."), 6000);
+        return;
+    }
+    const auto& buffer = editor->document()->buffer();
+    const auto before = QByteArray::fromStdString(buffer.text());
+    const auto bufferRevision = buffer.contentRevision();
+    QJsonObject range;
+    if (ranged) {
+        // The UTF-8 BOM is not part of the document text sent to the server.
+        const std::size_t textStart = before.startsWith("\xef\xbb\xbf") ? 3 : 0;
+        selection.first = std::max(selection.first, textStart);
+        if (selection.first >= selection.second) {
+            statusBar()->showMessage(I18n::text("No formatting changes needed."), 4000);
+            return;
+        }
+        const auto position = [&](std::size_t offset) {
+            const auto line = buffer.lineIndexAt(offset);
+            const auto start = std::max(buffer.lineStart(line), textStart);
+            return QJsonObject{{"line", static_cast<int>(line)},
+                               {"character", static_cast<int>(buffer.utf16Before(offset) - buffer.utf16Before(start))}};
+        };
+        range = {{"start", position(selection.first)}, {"end", position(selection.second)}};
+    }
     lsp_->change(path, QString::fromUtf8(before));
     QPointer<EditorWidget> guard(editor);
-    statusBar()->showMessage(I18n::text("Formatting document…"),10000);
+    const auto progressMessage = I18n::text(ranged ? "Formatting selection…" : "Formatting document…");
+    statusBar()->showMessage(progressMessage, 10000);
     editor->refreshEditorConfig();
     const auto current = [this, guard, path, revision, generation, bufferRevision] {
         return !closing_ && !renameInProgress_ && replaceLockedEditors_.isEmpty() &&
@@ -2347,7 +2381,8 @@ void MainWindow::formatDocument() {
             guard->lspRevision() == revision && guard->document()->buffer().contentRevision() == bufferRevision &&
             guard->property("formatGeneration").toULongLong() == generation;
     };
-    lsp_->formatDocument(path,editor->tabSize(),editor->insertsSpaces(),[this,guard,path,current,before](QJsonValue result) {
+    lsp_->formatDocument(path, editor->tabSize(), editor->insertsSpaces(),
+                         [this, guard, path, current, before, selection, ranged, progressMessage](QJsonValue result) {
         if(!current()) return;
         if(result.isUndefined()) return; // Preserve the protocol error shown by LspClient.
         if(result.isNull() || (result.isArray() && result.toArray().isEmpty())) {
@@ -2361,7 +2396,7 @@ void MainWindow::formatDocument() {
         };
         // The parser validates ranges and extracts removed bytes from this exact revision.
         auto* watcher = new QFutureWatcher<FormatResult>(this);
-        connect(watcher, &QFutureWatcher<FormatResult>::finished, this, [this, watcher, guard, path, current] {
+        connect(watcher, &QFutureWatcher<FormatResult>::finished, this, [this, watcher, guard, path, current, ranged, progressMessage] {
             watcher->deleteLater();
             if (!current()) return;
             auto parsed = watcher->future().takeResult();
@@ -2373,23 +2408,33 @@ void MainWindow::formatDocument() {
                 statusBar()->showMessage(I18n::text("No formatting changes needed."),4000);
                 return;
             }
-            guard->applyFormattingEdits(std::move(parsed.changes), [this, guard, path](bool applied) {
+            guard->applyFormattingEdits(std::move(parsed.changes), [this, guard, path, ranged, progressMessage](bool applied) {
                 if (closing_ || !guard || activeEditor() != guard || guard->filePath() != path) return;
                 if (!applied) {
-                    if (statusBar()->currentMessage() == I18n::text("Formatting document…")) statusBar()->clearMessage();
+                    if (statusBar()->currentMessage() == progressMessage) statusBar()->clearMessage();
                     return;
                 }
                 requestSemanticHighlighting(guard, false, true);
-                statusBar()->showMessage(I18n::text("Document formatted. Changes are not saved yet."),5000);
+                statusBar()->showMessage(I18n::text(ranged ? "Selection formatted. Changes are not saved yet."
+                                                         : "Document formatted. Changes are not saved yet."), 5000);
             });
         });
-        watcher->setFuture(QtConcurrent::run([before, result] {
+        watcher->setFuture(QtConcurrent::run([before, result, selection, ranged] {
             FormatResult parsed;
             parsed.valid = result.isArray() &&
                 WorkspaceEdits::convertFormatting(before, result.toArray(), &parsed.changes, &parsed.error);
+            if (parsed.valid && ranged) {
+                const auto [begin, end] = selection;
+                const bool endsAtNextLine = end < static_cast<std::size_t>(before.size()) && before[end - 1] == '\n';
+                // Filter after trimming unchanged text: formatters can return edits beyond the requested range.
+                std::erase_if(parsed.changes, [begin, end, endsAtNextLine](const EditChange& edit) {
+                    return edit.offset < begin || edit.offset + edit.removed.size() > end ||
+                        (endsAtNextLine && edit.offset == end);
+                });
+            }
             return parsed;
         }));
-    });
+    }, range);
 }
 
 LspAdaptivePolicy::Mode MainWindow::semanticHighlightMode(EditorWidget* editor) const {

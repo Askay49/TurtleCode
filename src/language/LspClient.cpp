@@ -29,7 +29,8 @@ QJsonObject incrementalChange(const QString& before, const QString& after) {
             {"text", after.mid(prefix, after.size()-prefix-suffix)}};
 }
 QJsonValue requestFailure(const QString& method) {
-    if (method == "textDocument/formatting" || method == "textDocument/documentSymbol" || method == "workspace/symbol")
+    if (method == "textDocument/formatting" || method == "textDocument/rangeFormatting" ||
+        method == "textDocument/documentSymbol" || method == "workspace/symbol")
         return QJsonValue::Undefined;
     return {};
 }
@@ -183,6 +184,7 @@ void LspClient::initialize() {
             {"references", QJsonObject{{"dynamicRegistration", false}}},
             {"documentSymbol", QJsonObject{{"hierarchicalDocumentSymbolSupport",true}}},
             {"formatting", QJsonObject{{"dynamicRegistration", false}}},
+            {"rangeFormatting", QJsonObject{{"dynamicRegistration", false}}},
             {"rename", QJsonObject{{"prepareSupport", true}, {"prepareSupportDefaultBehavior", 1}}},
             {"hover", QJsonObject{{"contentFormat", QJsonArray{"plaintext"}}}},
             {"signatureHelp", QJsonObject{{"signatureInformation", QJsonObject{{"documentationFormat", QJsonArray{"plaintext"}}}}}},
@@ -312,15 +314,23 @@ void LspClient::cancelWorkspaceSymbols(int requestId) {
     callbacks_.remove(requestId);
     notify("$/cancelRequest", {{"id", requestId}});
 }
-bool LspClient::canFormat() const {
-    const auto provider=capabilities_.value("documentFormattingProvider");
+bool LspClient::canFormat(bool ranged) const {
+    const auto provider=capabilities_.value(ranged ? "documentRangeFormattingProvider" : "documentFormattingProvider");
     return initialized_ && (provider.toBool() || provider.isObject());
 }
-void LspClient::formatDocument(const QString& path, int tabSize, bool insertSpaces, std::function<void(QJsonValue)> callback) {
-    if (!canFormat() || !opened_.contains(path)) { if(callback) callback(QJsonValue(QJsonValue::Undefined)); return; }
-    cancel(path,"textDocument/formatting");
-    request("textDocument/formatting",{{"textDocument",documentId(path)},
-        {"options",QJsonObject{{"tabSize",std::max(1,tabSize)},{"insertSpaces",insertSpaces}}}},std::move(callback),path);
+void LspClient::formatDocument(const QString& path, int tabSize, bool insertSpaces, std::function<void(QJsonValue)> callback,
+                               const QJsonObject& range) {
+    const bool ranged = !range.isEmpty();
+    cancel(path, "textDocument/formatting");
+    cancel(path, "textDocument/rangeFormatting");
+    if (!canFormat(ranged) || !opened_.contains(path)) {
+        if (callback) callback(QJsonValue::Undefined);
+        return;
+    }
+    QJsonObject params{{"textDocument", documentId(path)},
+                       {"options", QJsonObject{{"tabSize", std::max(1, tabSize)}, {"insertSpaces", insertSpaces}}}};
+    if (ranged) params.insert("range", range);
+    request(ranged ? "textDocument/rangeFormatting" : "textDocument/formatting", params, std::move(callback), path);
 }
 void LspClient::send(QJsonObject message) {
     if (process_.state() != QProcess::Running) return;

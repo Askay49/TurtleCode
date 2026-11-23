@@ -65,6 +65,68 @@ static void formattingHighlightTests(QTemporaryDir& directory) {
     closeDiscard(window);
 }
 
+static void formattingSelectionTests(QTemporaryDir& directory) {
+    const QByteArray declaration = "int  value=1;";
+    const QByteArray formatted = "int value = 1;";
+    const QByteArray prefix = "\xef\xbb\xbf" + QString::fromUtf8("/* 😀 */ ").toUtf8();
+    const QByteArray original = prefix + declaration + "\r\n" + declaration + "\r\n" + declaration;
+    const auto path = directory.filePath("format-selection.cpp");
+    {
+        QFile file(path);
+        assert(file.open(QIODevice::WriteOnly) && file.write(original) == original.size());
+    }
+    for (const auto& mode : QStringList{"range-only", "document-only", "clangd"}) {
+        const bool realServer = mode == "clangd";
+        const auto command = QStandardPaths::findExecutable(realServer ? "clangd" : "python3");
+        if (realServer && command.isEmpty()) continue;
+        QSettings settings;
+        settings.setValue("lsp/enabled", true);
+        settings.setValue("editor/recoveryEnabled", false);
+        settings.setValue("lsp/semanticHighlighting", false);
+        settings.setValue("lsp/clangd/command", command);
+        settings.setValue("lsp/clangd/arguments", realServer ? QString("--fallback-style=LLVM") :
+            QString("\"%1\" %2").arg(LSP_FAKE_SERVER, mode == "range-only" ? "--format-range" : ""));
+
+        MainWindow window;
+        window.show();
+        window.openPaths({path});
+        auto* editor = window.findChild<EditorWidget*>();
+        assert(editor && waitFor([&] { return !editor->isBusy(); }));
+        auto contents = [editor] { return QByteArray::fromStdString(editor->document()->buffer().text()); };
+        editor->setFocus();
+        window.activateWindow();
+        QTest::qWait(30);
+        auto format = [editor] { QTest::keyClick(editor, Qt::Key_I, Qt::ControlModifier | Qt::ShiftModifier); };
+
+        editor->setNavigationPosition(1, QString::fromUtf8(prefix).size() + 2); // Include BOM and one-based column.
+        QTest::keyClick(editor, Qt::Key_End, Qt::ShiftModifier);
+        assert(editor->selectedText() == QString::fromLatin1(declaration));
+        format();
+        if (mode == "document-only") {
+            assert(waitFor([&] { return window.statusBar()->currentMessage() ==
+                "The language server does not support selection formatting."; }));
+            assert(contents() == original && !editor->isModified());
+        } else {
+            const auto expected = prefix + formatted + "\r\n" + declaration + "\r\n" + declaration;
+            assert(waitFor([&] { return contents() == expected; }));
+            QTest::keyClick(editor, Qt::Key_Z, Qt::ControlModifier);
+            assert(contents() == original && !editor->isModified());
+            QTest::keyClick(editor, Qt::Key_Y, Qt::ControlModifier);
+            assert(contents() == expected);
+            QTest::keyClick(editor, Qt::Key_Z, Qt::ControlModifier);
+
+            editor->setNavigationPosition(3, 1);
+            QTest::keyClick(editor, Qt::Key_Up, Qt::ShiftModifier);
+            assert(editor->selectedText() == QString::fromLatin1(declaration + "\r\n"));
+            format();
+            assert(waitFor([&] { return contents() == prefix + declaration + "\r\n" + formatted + "\r\n" + declaration; }));
+            QFile file(path);
+            assert(file.open(QIODevice::ReadOnly) && file.readAll() == original);
+        }
+        closeDiscard(window);
+    }
+}
+
 static void formattingTests(QTemporaryDir& directory) {
     const auto read=[](const QString& path) {
         QFile file(path);assert(file.open(QIODevice::ReadOnly));return file.readAll();
@@ -136,5 +198,6 @@ static void formattingTests(QTemporaryDir& directory) {
         }
         closeDiscard(window);QTest::qWait(200);
     }
+    formattingSelectionTests(directory);
     formattingHighlightTests(directory);
 }

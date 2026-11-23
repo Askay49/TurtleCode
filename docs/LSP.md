@@ -163,20 +163,20 @@ Ranges include the viewport plus 80 lines on each side. They replace the previou
 
 Tests use full-only and range-only peers, Unicode range decoding, deterministic policy latency/failure inputs, a 3 MiB document with/without range support and viewport scrolling, and a 17 MiB document activated by a manual definition request. The real clangd check remains enabled when clangd is installed.
 
-## Document formatting
+## Formatting
 
-Use **Code → Format document** or **Ctrl+Shift+I**. This formats the entire current
-saved-path document using its language server (the profile assigned to the current document).
+Use **Code → Format document or selection** or **Ctrl+Shift+I**. A continuous
+selection sends its range to the document's language server. With no selection,
+the command formats the whole document. The server must support the requested
+operation. If it returns edits beyond the selected range, the editor keeps only
+the edits that fit inside the selection.
 Unsaved edits in that document are sent before the request; the file is not saved
 automatically. The command can initialize the server on demand, subject to the
 existing 32 MiB LSP transport budget. New untitled files must first be saved with
-a supported extension. A missing/disabled server or unsupported capability produces
-a status message.
+a supported extension. A missing or disabled server produces a status message.
 
 Formatting sends the editor's effective `tabSize` and `insertSpaces` settings.
-The formatter determines the code style;
-clangd can use the project's `.clang-format`. No formatting on save or selection
-formatting is provided by this command.
+The formatter determines the code style. clangd can use the project's `.clang-format`.
 
 Results are converted and checked against the original text in a worker. The
 editor checks the revision, path, active tab and request generation again before
@@ -195,7 +195,7 @@ are requested for the viewport first when the server supports ranges. Small
 documents can then receive a full refresh during idle time; larger documents
 refresh as the user scrolls, subject to the usual LSP budgets.
 
-The `formatting` CTest exercises the UI shortcut, delayed replies, tab switching,
+The `formatting` CTest exercises the UI shortcut for documents and selections, delayed replies, tab switching,
 closing, unsaved edits, Undo/Redo, Unicode/BOM/CRLF, no-op/null replies, malformed
 edits, unsupported servers, protocol errors and stable colors during a large
 batch with a delayed semantic response. `lsp-protocol` checks the wire

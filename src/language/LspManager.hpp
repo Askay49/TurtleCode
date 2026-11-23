@@ -50,7 +50,7 @@ public:
     bool documentSymbolsAvailable(const QString& path) const;
     void documentSymbols(const QString& path, std::function<void(QJsonValue)> callback);
     QVector<QPointer<LspClient>> startWorkspaceSymbolClients(const QString& root);
-    bool canFormat(const QString& path) const;
+    bool canFormat(const QString& path, bool ranged = false) const;
     bool canRename(const QString& path) const;
     bool semanticTokensAvailable(const QString& path) const;
     bool semanticTokensRangeAvailable(const QString& path) const;
@@ -66,7 +66,7 @@ public:
     void signatureHelp(const QString& path, int line, int column, Callback callback);
     void prepareRename(const QString& path, int line, int column, Callback callback);
     void renameSymbol(const QString& path, int line, int column, const QString& name, Callback callback);
-    void formatDocument(const QString& path, int tabSize, bool spaces, Callback callback);
+    void formatDocument(const QString& path, int tabSize, bool spaces, Callback callback, const QJsonObject& range = {});
     void semanticTokens(const QString& path, Callback callback, const QJsonObject& range = {});
     const LspConfiguration& configuration() const { return configuration_; }
 signals:

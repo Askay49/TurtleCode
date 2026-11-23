@@ -105,7 +105,7 @@ ShortcutManager::ShortcutManager() {
     add("search.next", "Next match", "Search", "F3");
     add("search.previous", "Previous match", "Search", "Shift+F3");
     add("search.replace", "Replace in current file", "Search");
-    add("code.formatDocument", "Format document", "Code", "Ctrl+Shift+I");
+    add("code.formatDocument", "Format document or selection", "Code", "Ctrl+Shift+I");
     add("code.complete", "Complete", "Code", "Ctrl+Space");
     add("code.rename", "Rename symbol", "Code", "F2");
     add("code.problems", "Errors and warnings", "Code", "Ctrl+Shift+M");

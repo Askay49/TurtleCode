@@ -205,7 +205,6 @@ int LspManager::documentVersionForServer(const QString& source, const QString& t
 }
 #define LSP_QUERY(method) bool LspManager::method(const QString& path) const { auto* client=existing(path); return client && client->method(); }
 LSP_QUERY(documentSymbolsAvailable)
-LSP_QUERY(canFormat)
 LSP_QUERY(canRename)
 LSP_QUERY(semanticTokensAvailable)
 LSP_QUERY(semanticTokensRangeAvailable)
@@ -225,8 +224,13 @@ LSP_POSITION(prepareRename)
 void LspManager::renameSymbol(const QString& path,int line,int column,const QString& name,Callback callback) {
     if(auto* client=existing(path)) client->renameSymbol(path,line,column,name,std::move(callback)); else if(callback) callback({});
 }
-void LspManager::formatDocument(const QString& path,int tabSize,bool spaces,Callback callback) {
-    if(auto* client=existing(path)) client->formatDocument(path,tabSize,spaces,std::move(callback)); else if(callback) callback(QJsonValue(QJsonValue::Undefined));
+bool LspManager::canFormat(const QString& path, bool ranged) const {
+    auto* client = existing(path);
+    return client && client->canFormat(ranged);
+}
+void LspManager::formatDocument(const QString& path, int tabSize, bool spaces, Callback callback, const QJsonObject& range) {
+    if (auto* client = existing(path)) client->formatDocument(path, tabSize, spaces, std::move(callback), range);
+    else if (callback) callback(QJsonValue::Undefined);
 }
 void LspManager::semanticTokens(const QString& path,Callback callback,const QJsonObject& range) {
     if(auto* client=existing(path)) client->semanticTokens(path,std::move(callback),range); else if(callback) callback({});

@@ -64,8 +64,9 @@ public:
     bool starting() const;
     int workspaceSymbols(const QString& query, std::function<void(QJsonValue)> callback);
     void cancelWorkspaceSymbols(int requestId);
-    bool canFormat() const;
-    void formatDocument(const QString& path, int tabSize, bool insertSpaces, std::function<void(QJsonValue)> callback);
+    bool canFormat(bool ranged = false) const;
+    void formatDocument(const QString& path, int tabSize, bool insertSpaces, std::function<void(QJsonValue)> callback,
+                        const QJsonObject& range = {});
     bool canRename() const;
     void prepareRename(const QString& path, int line, int character, std::function<void(QJsonValue)> callback);
     void renameSymbol(const QString& path, int line, int character, const QString& newName, std::function<void(QJsonValue)> callback);

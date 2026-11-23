@@ -65,7 +65,7 @@ while True:
         if '--init-error' in sys.argv:
             send({'jsonrpc': '2.0', 'id': identifier, 'error': {'code': -32603, 'message': 'test initialization error'}})
             continue
-        response(identifier, {'capabilities': {'positionEncoding': 'utf-16', 'textDocumentSync': {'openClose': True, 'change': 2, 'save': {'includeText': True}}, 'documentSymbolProvider': '--no-outline' not in sys.argv, 'workspaceSymbolProvider': project_extension is not None, 'documentFormattingProvider': False if '--no-format' in sys.argv else {}, 'completionProvider': {}, 'hoverProvider': True, 'definitionProvider': True, 'signatureHelpProvider': {}, 'renameProvider': {'prepareProvider': True}, 'semanticTokensProvider': {'legend': {'tokenTypes': ['variable', 'parameter', 'type'], 'tokenModifiers': ['declaration', 'static']}, 'full': '--range-only' not in sys.argv, 'range': '--semantic-range' in sys.argv or '--range-only' in sys.argv}}})
+        response(identifier, {'capabilities': {'positionEncoding': 'utf-16', 'textDocumentSync': {'openClose': True, 'change': 2, 'save': {'includeText': True}}, 'documentSymbolProvider': '--no-outline' not in sys.argv, 'workspaceSymbolProvider': project_extension is not None, 'documentFormattingProvider': False if '--no-format' in sys.argv or '--format-range' in sys.argv else {}, 'documentRangeFormattingProvider': '--format-range' in sys.argv, 'completionProvider': {}, 'hoverProvider': True, 'definitionProvider': True, 'signatureHelpProvider': {}, 'renameProvider': {'prepareProvider': True}, 'semanticTokensProvider': {'legend': {'tokenTypes': ['variable', 'parameter', 'type'], 'tokenModifiers': ['declaration', 'static']}, 'full': '--range-only' not in sys.argv, 'range': '--semantic-range' in sys.argv or '--range-only' in sys.argv}}})
     elif method == 'initialized':
         send({'jsonrpc': '2.0', 'id': 'config-request', 'method': 'workspace/configuration', 'params': {'items': ([{'section': 'custom'}, {'section': 'custom.nested'}, {}, {'section': 'missing'}] if '--any-language' in sys.argv else [{'section': 'custom'}])}})
     elif identifier == 'config-request':
@@ -126,11 +126,25 @@ while True:
                     'location': {'uri': path.as_uri(), 'range': {'start': position, 'end': position}}}
         result = [project_symbol(path) for path in sorted(root.glob('*' + project_extension))]
         response(identifier, result + result[:1] + [project_symbol(root.parent / 'outside.cpp')], delayed=True)
-    elif method == 'textDocument/formatting':
+    elif method in ('textDocument/formatting', 'textDocument/rangeFormatting'):
         expected_options = {'tabSize': 8, 'insertSpaces': False} if '--format-tabs' in sys.argv else {'tabSize': 4, 'insertSpaces': True}
         assert params['options'] == expected_options
         uri = params['textDocument']['uri']
         text = documents[uri]
+        if method == 'textDocument/rangeFormatting':
+            assert '--format-range' in sys.argv
+            assert initialization['capabilities']['textDocument']['rangeFormatting'] == {'dynamicRegistration': False}
+            span = params['range']
+            first, last = (offset(text, span[boundary]) for boundary in ('start', 'end'))
+            selected = text[first:last]
+            assert selected in ('int  value=1;', 'int  value=1;\r\n')
+            before_selection = {'line': 0, 'character': 0}
+            edits = [{'range': {'start': before_selection, 'end': before_selection}, 'newText': '// extra\n'},
+                     {'range': span, 'newText': selected.replace('int  value=1;', 'int value = 1;').replace('\r\n', '\n')}]
+            if span['end']['character'] == 0:
+                edits.append({'range': {'start': span['end'], 'end': span['end']}, 'newText': '  '})
+            response(identifier, edits, delayed=True)
+            continue
         if '--format-error' in sys.argv:
             send({'jsonrpc': '2.0', 'id': identifier, 'error': {'code': -32603, 'message': 'test formatting error'}})
             continue

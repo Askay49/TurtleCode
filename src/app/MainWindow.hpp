@@ -194,6 +194,7 @@ private:
     void updateVimAutocmdBuffer();
     void queueVimBufferAutocmd(EditorWidget* editor, const QString& event);
     void formatDocument();
+    void requestFormatting(std::pair<std::size_t, std::size_t> selection);
     void renameSymbol();
     void navigateSymbol(const QString& method);
     bool renameInProgress_{false};

@@ -147,6 +147,8 @@ public:
     [[nodiscard]] bool isModified() const noexcept { return modified_; }
     [[nodiscard]] std::size_t cursorCount() const noexcept { return cursors_.size(); }
     [[nodiscard]] QString selectedText() const;
+    // A collapsed range means no selection. Multiple or rectangular selections have no single range.
+    [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> linearSelectionRange() const;
     [[nodiscard]] QString lspText() const;
     [[nodiscard]] bool lspEligible() const;
     bool lspAutomaticEligible() const { return lspEligible() && LspAdaptivePolicy::automaticDocument(buffer_.size()); }

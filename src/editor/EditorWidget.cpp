@@ -1347,6 +1347,18 @@ std::pair<std::size_t, std::size_t> EditorWidget::selectionRange() const {
     return {std::min(*anchor_,cursorPosition_),vim_.enabled() && vim_.mode()==VimController::Mode::Visual?vimSelectionEnd(last):last};
 }
 
+std::optional<std::pair<std::size_t, std::size_t>> EditorWidget::linearSelectionRange() const {
+    if (vimVisualBlock_) return std::nullopt;
+    std::pair range{cursorPosition_, cursorPosition_};
+    for (std::size_t i = 0; i < cursors_.size(); ++i) {
+        const auto selection = cursorSelectionRange(i);
+        if (selection.first == selection.second) continue;
+        if (range.first != range.second) return std::nullopt;
+        range = selection;
+    }
+    return range;
+}
+
 QString EditorWidget::selectedText() const {
     if(vimVisualBlock_ && anchor_){QStringList lines;const auto [left,right]=vimBlockColumns();for(auto row=buffer_.lineIndexAt(std::min(*anchor_,cursorPosition_));row<=buffer_.lineIndexAt(std::max(*anchor_,cursorPosition_));++row){const auto selected=VimBlock::slice(buffer_,row,left,right,tabWidth_);lines<<QString::fromUtf8(selected.text.data(),qsizetype(selected.text.size()));}return lines.join('\n');}
     const auto [begin, end] = selectionRange();
