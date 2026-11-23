@@ -1013,6 +1013,30 @@ void MainWindow::createMenus() {
         applyVimSettings();
     });
 
+    auto* focusNavigation = addWindowAction(ShortcutManager::navigationPrefixId,
+                                            I18n::text("Focus navigation prefix"), "keyboard");
+    focusNavigation->setAutoRepeat(false);
+    connect(focusNavigation, &QAction::triggered, this, &MainWindow::beginFocusNavigation);
+    auto* focusEditorAction = addWindowAction("view.focusEditor", I18n::text("Focus Editor"), "file-code");
+    connect(focusEditorAction, &QAction::triggered, this, &MainWindow::focusEditor);
+    auto* closePaneAction = addWindowAction("editor.closePane", I18n::text("Close Editor Pane"), "close");
+    connect(closePaneAction, &QAction::triggered, this, [this] { closeEditorPane(activeEditor()); });
+    auto* focusTerminalAction = addWindowAction("view.focusTerminal", I18n::text("Toggle Terminal Focus"), "terminal");
+    connect(focusTerminalAction, &QAction::triggered, this, [this] {
+        auto* focused = QApplication::focusWidget();
+        if (terminalPanel_ && focused &&
+            (focused == terminalPanel_ || terminalPanel_->isAncestorOf(focused))) {
+            focusEditor();
+        } else {
+            focusTerminal();
+        }
+    });
+    auto* focusTreeAction = addWindowAction("view.focusProjectTree", I18n::text("Toggle Project Tree Focus"), "files");
+    connect(focusTreeAction, &QAction::triggered, this, [this] {
+        if (explorer_->hasFocus()) focusEditor();
+        else focusProjectTree();
+    });
+
     auto* viewMenu = menuBar()->addMenu(I18n::text("&View"));
     auto addViewAction = [this, viewMenu](const QString& id, const QString& label, const QString& icon, auto action) {
         auto* item = viewMenu->addAction(Codicons::icon(icon), I18n::text(label));
@@ -1021,13 +1045,8 @@ void MainWindow::createMenus() {
         connect(item, &QAction::triggered, this, action);
         return item;
     };
-    auto* focusNavigation = addViewAction(ShortcutManager::navigationPrefixId, "Focus navigation prefix",
-                                           "keyboard", &MainWindow::beginFocusNavigation);
-    focusNavigation->setAutoRepeat(false);
-    addViewAction("view.focusEditor", "Focus Editor", "file-code", &MainWindow::focusEditor);
     addViewAction("editor.splitBelow", "Split Editor Below", "split-horizontal", [this] { splitEditor(Qt::Vertical); });
     addViewAction("editor.splitRight", "Split Editor Right", "split-vertical", [this] { splitEditor(Qt::Horizontal); });
-    addViewAction("editor.closePane", "Close Editor Pane", "close", [this] { closeEditorPane(activeEditor()); });
     updateEditorPaneActions();
     outline_=new OutlinePanel(editorArea_);
     editorArea_->addDockWidget(Qt::RightDockWidgetArea,outline_);
@@ -1072,15 +1091,6 @@ void MainWindow::createMenus() {
         if (terminalPanel_ && terminalPanel_->isVisible()) terminalPanel_->hide();
         else showTerminal();
     });
-    addViewAction("view.focusTerminal", "Toggle Terminal Focus", "terminal", [this] {
-        auto* focused = QApplication::focusWidget();
-        if (terminalPanel_ && focused &&
-            (focused == terminalPanel_ || terminalPanel_->isAncestorOf(focused))) {
-            focusEditor();
-        } else {
-            focusTerminal();
-        }
-    });
     auto addFileFilterAction = [this, &addWindowAction](const QString& id, const char* label,
                                                         const QString& icon, const QString& key) {
         auto* action = addWindowAction(id, I18n::text(label), icon);
@@ -1104,10 +1114,6 @@ void MainWindow::createMenus() {
     ShortcutManager::instance().bind("view.explorer", explorerAction);
     connect(explorerAction, &QAction::triggered, this, [this] {
         setSidebarVisible(sidebar_->isHidden());
-    });
-    addViewAction("view.focusProjectTree", "Toggle Project Tree Focus", "files", [this] {
-        if (explorer_->hasFocus()) focusEditor();
-        else focusProjectTree();
     });
     auto* revealAction = viewMenu->addAction(Codicons::icon("target"), I18n::text("Reveal Active File in Project Tree"));
     revealAction->setObjectName("view.revealActiveFile");

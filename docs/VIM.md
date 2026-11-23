@@ -614,8 +614,9 @@ suppressed.
 
 ## Editor panes, Vim tab pages and diff
 
-**Split Editor Below**, **Split Editor Right** and **Close Editor Pane** are
-available in the View menu and command palette with or without Vim mode.
+**Split Editor Below** and **Split Editor Right** are available in the View menu.
+The command palette offers both split commands and **Close Editor Pane** with or
+without Vim mode. You can assign a shortcut to **Close Editor Pane** in settings.
 When two panes show the same buffer, they share text, dirty state and Undo.
 Each pane has its own cursor and scroll position. Drag a divider to resize the
 panes. Closing a pane leaves its buffer available.

@@ -20,6 +20,17 @@ static void commandPaletteTests(QTemporaryDir& directory) {
     auto* other = second.findChild<EditorWidget*>();
     auto* action = first.findChild<QAction*>("navigation.commands"); assert(action);
     assert(action->shortcut() == QKeySequence("Ctrl+Shift+P"));
+    QMenu* viewMenu = nullptr;
+    for (auto* menuAction : first.menuBar()->actions()) {
+        if (menuAction->text() == I18n::text("&View")) viewMenu = menuAction->menu();
+    }
+    assert(viewMenu);
+    for (const auto* id : {ShortcutManager::navigationPrefixId, "view.focusEditor", "editor.closePane",
+                           "view.focusTerminal", "view.focusProjectTree"}) {
+        auto* windowAction = first.findChild<QAction*>(id);
+        assert(windowAction && first.actions().contains(windowAction));
+        assert(!viewMenu->actions().contains(windowAction));
+    }
     auto run = [&](const QString& id, bool cancel = false) {
         bool visited = false;
         first.activateWindow(); editor->setFocus(); QTest::qWait(30);
