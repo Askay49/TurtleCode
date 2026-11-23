@@ -101,6 +101,11 @@ std::size_t lineBoundary(const PieceTreeBuffer& buffer,std::size_t line,std::siz
 
 namespace {
 struct BulkResult {
+    struct DisplayEdit {
+        HighlightEdit range;
+        Document::Edit bytes;
+    };
+    std::vector<DisplayEdit> displayEdits;
     std::map<int,int> lineAnchors;
     std::vector<std::size_t> vimAnchors;
     std::vector<QMap<quint64,std::size_t>> vimLostPositions;
@@ -116,14 +121,16 @@ struct BulkResult {
     std::optional<std::size_t> editBegin,editEnd;
 };
 std::size_t mapPositionThroughChanges(std::size_t position,
-                                      const std::vector<EditChange>& sortedChanges) {
+                                      const std::vector<EditChange>& sortedChanges,
+                                      bool keepRelative = false) {
     std::ptrdiff_t delta = 0;
     for (const auto& change : sortedChanges) {
         if (position < change.offset) break;
         const auto end = change.offset + change.removed.size();
         if (position <= end) {
-            const auto mapped = static_cast<std::ptrdiff_t>(change.offset) + delta +
-                                static_cast<std::ptrdiff_t>(change.inserted.size());
+            const auto relative = keepRelative && position < end
+                ? std::min(position - change.offset, change.inserted.size()) : change.inserted.size();
+            const auto mapped = static_cast<std::ptrdiff_t>(change.offset) + delta + static_cast<std::ptrdiff_t>(relative);
             return static_cast<std::size_t>(std::max<std::ptrdiff_t>(0, mapped));
         }
         delta += static_cast<std::ptrdiff_t>(change.inserted.size()) -
@@ -262,7 +269,9 @@ EditorWidget::EditorWidget(QWidget* parent, DocumentPtr document)
     });
     connect(document_.get(), &Document::changed, this,
             [this](QObject* source, bool modified, bool replaced, const std::vector<Document::Edit>& edits) {
-        if (source != this) refreshSharedView(modified, replaced, edits);
+        if (source == this) return;
+        const auto* editor = qobject_cast<EditorWidget*>(source);
+        refreshSharedView(modified, replaced, edits, editor ? editor->publishedHighlights_ : std::span<const HighlightEdit>{});
     });
     connect(document_.get(), &Document::busyChanged, this, [this](bool busy) {
         if (busy) hideCompletions();
@@ -1710,10 +1719,12 @@ void EditorWidget::paintEvent(QPaintEvent*) {
     }
 }
 
-void EditorWidget::setModified(bool value, bool replaced) {
+void EditorWidget::setModified(bool value, bool replaced, std::span<const HighlightEdit> highlights) {
     observedPath_ = filePath_;
     notifyDocumentChanged(value);
+    const auto previous = std::exchange(publishedHighlights_, highlights);
     document_->publishChange(this, value, replaced);
+    publishedHighlights_ = previous;
     const auto notice=history_.takeNotice();if(!notice.empty())emit highlightingStatusChanged(I18n::text(QString::fromStdString(notice)));
 }
 
@@ -1730,7 +1741,8 @@ void EditorWidget::notifyDocumentChanged(bool value) {
     emit contentChanged();
 }
 
-void EditorWidget::refreshSharedView(bool modified, bool replaced, const std::vector<Document::Edit>& edits) {
+void EditorWidget::refreshSharedView(bool modified, bool replaced, const std::vector<Document::Edit>& edits,
+                                      std::span<const HighlightEdit> highlights) {
     const bool pathChanged = observedPath_ != filePath_;
     if (pathChanged) {
         observedPath_ = filePath_;
@@ -1749,8 +1761,13 @@ void EditorWidget::refreshSharedView(bool modified, bool replaced, const std::ve
         if (replaced) screenWrapFull_ = true;
         invalidateLineCache();
         horizontalExtentDirty_ = true;
-        clearSemanticHighlighting();
-        highlighter_.setDocumentText(buffer_);
+        if (!pathChanged && !highlights.empty()) {
+            codeContext_.invalidate(0);
+            projectHighlightBatch(highlights, true);
+        } else {
+            clearSemanticHighlighting();
+            highlighter_.setDocumentText(buffer_);
+        }
         updateScrollBars();
     }
     notifyDocumentChanged(modified);
@@ -1997,7 +2014,8 @@ void EditorWidget::replaceRange(std::size_t begin, std::size_t length, const std
 
 void EditorWidget::applyBatchEdits(std::vector<EditChange> changes,
                                    const std::vector<std::size_t>& cursorsBefore,
-                                   const std::vector<std::size_t>& cursorsAfter) {
+                                   const std::vector<std::size_t>& cursorsAfter,
+                                   std::optional<std::size_t> viewAnchor) {
     if (changes.empty()) return;
     std::sort(changes.begin(), changes.end(), [](const EditChange& a, const EditChange& b) {
         return a.offset < b.offset;
@@ -2005,22 +2023,28 @@ void EditorWidget::applyBatchEdits(std::vector<EditChange> changes,
     changes.erase(std::unique(changes.begin(), changes.end(), [](const EditChange& a, const EditChange& b) {
         return a.offset == b.offset && a.removed == b.removed && a.inserted == b.inserted;
     }), changes.end());
+    std::vector<HighlightEdit> highlights;
+    highlights.reserve(changes.size());
     for (auto it = changes.rbegin(); it != changes.rend(); ++it) {
         const auto row=buffer_.lineIndexAt(it->offset),column=it->offset-buffer_.lineStart(row);
         if (!it->removed.empty()) buffer_.erase(it->offset, it->removed.size());
         if (!it->inserted.empty()) buffer_.insert(it->offset, it->inserted);
-        trackHighlightEdit(it->offset,row,column,it->removed,it->inserted);
+        trackHighlightEdit(it->offset,row,column,it->removed,it->inserted,
+                           changes.size() > 1 || viewAnchor ? &highlights : nullptr);
     }
+    projectHighlightBatch(highlights);
     invalidateLineCache(changes.empty()?buffer_.size():changes.front().offset);
     horizontalExtentDirty_ = true;
     history_.recordBatch(std::move(changes), cursorsBefore, cursorsAfter, editClock_.elapsed());
     cursors_ = cursorsAfter;
     cursorAnchors_.assign(cursors_.size(), std::nullopt);
-    normalizeCursors();
+    if (viewAnchor) normalizeBatchCursors();
+    else normalizeCursors();
     clearAllSelections();
-    setModified(history_.isModified());
+    setModified(history_.isModified(), false, highlights);
     updateScrollBars();
-    ensureCursorVisible();
+    if (viewAnchor) verticalScrollBar()->setValue(screenRowForPosition(*viewAnchor));
+    else ensureCursorVisible();
     viewport()->update();
 }
 
@@ -2254,14 +2278,38 @@ void EditorWidget::deleteForward(bool byWord) {
         QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle | Qt::ImCursorPosition | Qt::ImSurroundingText);
 }
 
+void EditorWidget::replayHistoryInBackground(bool redo) {
+    runBulkOperation(redo ? I18n::text("Redoing…") : I18n::text("Undoing…"),
+        [redo](PieceTreeBuffer& buffer, EditHistory& history, std::shared_ptr<ChunkedFile>&, const BulkStep& step) {
+            step(0);
+            const auto checkpoint = [&] { step(50); };
+            const auto result = redo ? history.redo(buffer, step.displayEdit, checkpoint, step.storedDisplayEdit)
+                                     : history.undo(buffer, step.displayEdit, checkpoint, step.storedDisplayEdit);
+            step(100);
+            if (!result) throw std::runtime_error(redo ? "Redo failed" : "Undo failed");
+            return *result;
+        });
+}
+
+void EditorWidget::normalizeBatchCursors() {
+    for (auto& cursor : cursors_) {
+        cursor = buffer_.byteAtCodePoint(buffer_.codePointsBefore(cursor));
+        if (cursor && cursor < buffer_.size() && buffer_.byteAt(cursor - 1) == '\r' && buffer_.byteAt(cursor) == '\n')
+            --cursor;
+    }
+    normalizeCursors();
+}
+
 void EditorWidget::undo() {
     const auto previous=std::exchange(vimApplyingHistory_,true);const auto guard=qScopeGuard([this,previous]{vimApplyingHistory_=previous;});
-    if(history_.undoNeedsBackground()){runBulkOperation(I18n::text("Undoing…"),[](PieceTreeBuffer& buffer,EditHistory& history,std::shared_ptr<ChunkedFile>&,const BulkStep& step){step(0);auto result=history.undo(buffer,{},[&]{step(50);});step(100);if(!result)throw std::runtime_error("Undo failed");return *result;});return;}
-    const auto result = history_.undo(buffer_,[this](std::size_t offset,std::size_t row,std::size_t column,
+    if (history_.undoNeedsBackground()) { replayHistoryInBackground(false); return; }
+    std::vector<HighlightEdit> highlights;
+    const auto result = history_.undo(buffer_,[this, &highlights](std::size_t offset,std::size_t row,std::size_t column,
                                                           std::string_view removed,std::string_view inserted) {
-        trackHighlightEdit(offset,row,column,removed,inserted);
+        trackHighlightEdit(offset,row,column,removed,inserted,&highlights);
     });
     if (!result) return;
+    projectHighlightBatch(highlights);
     horizontalExtentDirty_ = true;
     invalidateLineCache(buffer_.size());
     cursorPosition_ = result->cursorPosition;
@@ -2271,7 +2319,7 @@ void EditorWidget::undo() {
     normalizeCursors();
     clearAllSelections();
     preferredColumn_ = static_cast<std::size_t>(-1);
-    setModified(history_.isModified());
+    setModified(history_.isModified(), false, highlights);
     updateScrollBars();
     ensureCursorVisible();
     viewport()->update();
@@ -2281,12 +2329,14 @@ void EditorWidget::undo() {
 
 void EditorWidget::redo() {
     const auto previous=std::exchange(vimApplyingHistory_,true);const auto guard=qScopeGuard([this,previous]{vimApplyingHistory_=previous;});
-    if(history_.redoNeedsBackground()){runBulkOperation(I18n::text("Redoing…"),[](PieceTreeBuffer& buffer,EditHistory& history,std::shared_ptr<ChunkedFile>&,const BulkStep& step){step(0);auto result=history.redo(buffer,{},[&]{step(50);});step(100);if(!result)throw std::runtime_error("Redo failed");return *result;});return;}
-    const auto result = history_.redo(buffer_,[this](std::size_t offset,std::size_t row,std::size_t column,
+    if (history_.redoNeedsBackground()) { replayHistoryInBackground(true); return; }
+    std::vector<HighlightEdit> highlights;
+    const auto result = history_.redo(buffer_,[this, &highlights](std::size_t offset,std::size_t row,std::size_t column,
                                                           std::string_view removed,std::string_view inserted) {
-        trackHighlightEdit(offset,row,column,removed,inserted);
+        trackHighlightEdit(offset,row,column,removed,inserted,&highlights);
     });
     if (!result) return;
+    projectHighlightBatch(highlights);
     horizontalExtentDirty_ = true;
     invalidateLineCache(buffer_.size());
     cursorPosition_ = result->cursorPosition;
@@ -2296,7 +2346,7 @@ void EditorWidget::redo() {
     normalizeCursors();
     clearAllSelections();
     preferredColumn_ = static_cast<std::size_t>(-1);
-    setModified(history_.isModified());
+    setModified(history_.isModified(), false, highlights);
     updateScrollBars();
     ensureCursorVisible();
     viewport()->update();
@@ -3090,8 +3140,57 @@ void EditorWidget::applyWorkspaceEdits(std::vector<EditChange> changes) {
     applyingCompletion_=false;
 }
 
-void EditorWidget::setSemanticHighlighting(SemanticHighlightResult result,quint64 revision,quint64 generation) {
+void EditorWidget::applyFormattingEdits(std::vector<EditChange> changes, std::function<void(bool)> completed) {
+    const auto before = cursors_;
+    std::vector<std::size_t> after;
+    after.reserve(before.size());
+    for (const auto cursor : before) after.push_back(mapPositionThroughChanges(cursor, changes, true));
+    // Leave the live buffer and its colors on screen while large edit lists are applied.
+    std::size_t changedBytes = 0;
+    for (const auto& change : changes) changedBytes += change.removed.size() + change.inserted.size();
+    if (changes.size() > 256 || changedBytes >= 1024 * 1024) {
+        const auto timestamp = editClock_.elapsed();
+        runBulkOperation(I18n::text("Formatting document…"),
+            [changes = std::move(changes), before, after = std::move(after), timestamp]
+            (PieceTreeBuffer& buffer, EditHistory& history, std::shared_ptr<ChunkedFile>&, const BulkStep& step) mutable {
+                std::size_t processed = 0;
+                for (auto it = changes.rbegin(); it != changes.rend(); ++it) {
+                    step(static_cast<int>(100 * processed++ / changes.size()));
+                    const auto row = buffer.lineIndexAt(it->offset);
+                    const auto column = it->offset - buffer.lineStart(row);
+                    buffer.erase(it->offset, it->removed.size());
+                    buffer.insert(it->offset, it->inserted);
+                    step.displayEdit(it->offset, row, column, it->removed, it->inserted);
+                }
+                history.breakCoalescing();
+                history.recordBatch(std::move(changes), before, after, timestamp);
+                return HistoryResult{after.empty() ? 0 : after.front(), after};
+            }, true, {}, std::move(completed), 1000);
+        return;
+    }
+    const auto viewAnchor = mapPositionThroughChanges(screenSlice(verticalScrollBar()->value()).begin, changes, true);
+    history_.breakCoalescing();
+    applyingCompletion_ = true;
+    applyBatchEdits(std::move(changes), before, after, viewAnchor);
+    applyingCompletion_ = false;
+    completed(true);
+}
+
+void EditorWidget::setSemanticHighlighting(SemanticHighlightResult result, quint64 revision, quint64 generation,
+                                            std::optional<std::pair<int, int>> refreshedRange) {
     if(!result.valid || revision!=lspRevision_ || generation!=semanticGeneration_ || busy_) return;
+    if (refreshedRange) {
+        const auto [first, last] = *refreshedRange;
+        constexpr qsizetype cacheLimit = 50000;
+        qsizetype count = 0;
+        for (const auto& row : std::as_const(result.lines)) count += row.size();
+        for (auto it = semanticLines_.cbegin(); it != semanticLines_.cend(); ++it) {
+            if (it.key() >= first && it.key() <= last) continue;
+            if (it.value().size() > cacheLimit - count) continue;
+            count += it.value().size();
+            result.lines.insert(it.key(), it.value());
+        }
+    }
     semanticLines_=std::move(result.lines); viewport()->update();
 }
 void EditorWidget::clearSemanticHighlighting() {
@@ -3102,19 +3201,25 @@ void EditorWidget::clearSemanticHighlighting() {
 int EditorWidget::semanticTokenCount() const {
     int count=0; for(const auto& row:semanticLines_) count+=row.size(); return count;
 }
-void EditorWidget::invalidateSemanticLines(std::size_t firstLine,std::size_t byteColumn,std::string_view removed,std::string_view inserted) {
+HighlightEdit EditorWidget::prepareHighlightEdit(std::size_t firstLine, std::size_t byteColumn,
+                                                  std::string_view removed, std::string_view inserted) {
     captureVimEdit(buffer_.lineStart(firstLine)+byteColumn,removed,inserted);
     const int removedLines = static_cast<int>(std::count(removed.begin(),removed.end(),'\n'));
     const int insertedLines = static_cast<int>(std::count(inserted.begin(),inserted.end(),'\n'));
     adjustDiffAlignment(firstLine, removedLines, insertedLines);
     emit debugLinesEdited(static_cast<int>(firstLine),static_cast<int>(byteColumn),removedLines,insertedLines);
-    ++semanticGeneration_; semanticAdjusted_=true;
     const auto prefix=buffer_.slice(buffer_.lineStart(firstLine),byteColumn);
     const int column=QString::fromUtf8(prefix.data(),static_cast<qsizetype>(prefix.size())).size();
     HighlightEdit edit(firstLine,column,
         QString::fromUtf8(removed.data(),static_cast<qsizetype>(removed.size())),
         QString::fromUtf8(inserted.data(),static_cast<qsizetype>(inserted.size())));
     adjustDiffHighlights(edit);
+    return edit;
+}
+
+void EditorWidget::invalidateSemanticLines(std::size_t firstLine,std::size_t byteColumn,std::string_view removed,std::string_view inserted) {
+    const auto edit = prepareHighlightEdit(firstLine, byteColumn, removed, inserted);
+    ++semanticGeneration_; semanticAdjusted_=true;
     QHash<int,QVector<SemanticToken>> projected;
     for(auto it=semanticLines_.cbegin();it!=semanticLines_.cend();++it)
         for(const auto& token:it.value()) edit.project(it.key(),token,[&](std::size_t row,SemanticToken copy) {
@@ -3124,9 +3229,38 @@ void EditorWidget::invalidateSemanticLines(std::size_t firstLine,std::size_t byt
     semanticLines_=std::move(projected);
 }
 
+void EditorWidget::projectHighlightBatch(std::span<const HighlightEdit> edits, bool reparse) {
+    if (edits.empty()) return;
+    ++semanticGeneration_;
+    semanticAdjusted_ = true;
+    // A compound history action may contain several independent, reverse-ordered batches.
+    while (!edits.empty()) {
+        const auto boundary = std::adjacent_find(edits.begin(), edits.end(),
+            [](const auto& previous, const auto& next) { return !HighlightEditBatch::follows(previous, next); });
+        const auto size = boundary == edits.end() ? edits.size() : static_cast<std::size_t>(boundary - edits.begin()) + 1;
+        const HighlightEditBatch batch(edits.first(size));
+        highlighter_.applyBatch(batch, buffer_, reparse);
+        QHash<int, QVector<SemanticToken>> projected;
+        for (auto it = semanticLines_.cbegin(); it != semanticLines_.cend(); ++it)
+            for (const auto& token : it.value()) batch.project(it.key(), token, [&](std::size_t row, SemanticToken copy) {
+                projected[static_cast<int>(row)].append(std::move(copy));
+            });
+        for (auto& row : projected)
+            std::sort(row.begin(), row.end(), [](const auto& a, const auto& b) { return a.start < b.start; });
+        semanticLines_ = std::move(projected);
+        edits = edits.subspan(size);
+    }
+}
+
 void EditorWidget::trackHighlightEdit(std::size_t offset,std::size_t row,std::size_t column,
-                                     std::string_view removed,std::string_view inserted) {
+                                     std::string_view removed,std::string_view inserted,
+                                     std::vector<HighlightEdit>* batch) {
     codeContext_.invalidate(offset);
+    if (batch) {
+        batch->push_back(prepareHighlightEdit(row, column, removed, inserted));
+        if (highlighter_.usesTreeSitter()) highlighter_.queueEdit(offset, row, column, removed, inserted);
+        return;
+    }
     if(highlighter_.usesTreeSitter()) highlighter_.applyEdit(offset,row,column,removed,inserted,buffer_);
     invalidateSemanticLines(row,column,removed,inserted);
 }
@@ -3191,13 +3325,16 @@ void EditorWidget::prepareEditorConfigSave(const QString& path,std::function<voi
 }
 
 void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modifies,std::function<void()> committed,
-                                    std::function<void(bool)> completed) {
+                                    std::function<void(bool)> completed, int progressDelayMs) {
     if(busy_)return;
     const bool historyReplay=vimApplyingHistory_;
     setBusy(true);const auto revision=lspRevision_;const auto doc=document_;QPointer<EditorWidget> guard(this);
     auto cancelled=std::make_shared<std::atomic<bool>>(false);auto percent=std::make_shared<std::atomic<int>>(0);
     connect(this,&QObject::destroyed,[cancelled]{cancelled->store(true);});
-    auto* progress=new IconDialogs::ProgressDialog(label,I18n::text("Cancel"),0,100,this);progress->setWindowModality(Qt::NonModal);progress->setMinimumDuration(300);
+    auto* progress = new IconDialogs::ProgressDialog(label, I18n::text("Cancel"), 0, 100, this);
+    progress->setWindowModality(Qt::NonModal);
+    progress->setAttribute(Qt::WA_ShowWithoutActivating);
+    progress->setMinimumDuration(progressDelayMs);
     connect(progress,&QProgressDialog::canceled,progress,[cancelled]{cancelled->store(true);});
     auto* tick=new QTimer(progress);tick->setInterval(50);connect(tick,&QTimer::timeout,progress,[progress,percent,cancelled]{if(progress->wasCanceled())cancelled->store(true);else progress->setValue(percent->load());});tick->start();
     auto* watcher=new QFutureWatcher<std::shared_ptr<BulkResult>>(this);
@@ -3206,6 +3343,7 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
     connect(watcher,&QFutureWatcher<std::shared_ptr<BulkResult>>::finished,this,[this,guard,watcher,progress,revision,modifies,cancelled,committed,completed,trackedVimAnchors,trackedExLines,historyReplay] {
         const auto result=watcher->result();
         if(progress->wasCanceled())cancelled->store(true);
+        progress->hide();
         watcher->deleteLater();progress->deleteLater();if(!guard)return;
         setBusy(false);
         const auto vimReturn=qScopeGuard([this]{resumeVimInsertNormal();if(!busy_ && std::exchange(vimInsertExitAfterPut_,false))switchVimMode(VimController::Mode::Normal,true);});
@@ -3219,14 +3357,43 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
             for(qsizetype i=0;i<trackedVimAnchors.size() && std::size_t(i)<result->vimAnchors.size();++i){trackedVimAnchors[i]->offset=result->vimAnchors[std::size_t(i)];
                 if(std::size_t(i)<result->vimLostPositions.size())for(auto it=result->vimLostPositions[std::size_t(i)].cbegin();it!=result->vimLostPositions[std::size_t(i)].cend();++it)if(!trackedVimAnchors[i]->lostPositions.contains(it.key()))trackedVimAnchors[i]->lostPositions.insert(it.key(),it.value());
                 while(trackedVimAnchors[i]->lostPositions.size()>256)trackedVimAnchors[i]->lostPositions.erase(trackedVimAnchors[i]->lostPositions.begin());}
-            diffHighlights_.clear();
-            const auto top=verticalScrollBar()->value();buffer_=std::move(*result->buffer);history_=std::move(*result->history);
+            const int top = verticalScrollBar()->value();
+            auto viewAnchor = screenSlice(top).begin;
+            const bool preserveHighlights = !result->displayEdits.empty();
+            std::vector<HighlightEdit> highlights;
+            buffer_=std::move(*result->buffer);history_=std::move(*result->history);
             screenWrapFull_=true;
             document_->appendEdits(std::move(result->edits));
             if(!historyReplay && result->editBegin)noteVimEdit(*result->editBegin,result->editEnd.value_or(*result->editBegin)-*result->editBegin);
             cursorPosition_=std::min(result->cursor.cursorPosition,buffer_.size());cursors_=result->cursor.cursorPositions.empty()?std::vector<std::size_t>{cursorPosition_}:result->cursor.cursorPositions;
             cursorAnchors_.assign(cursors_.size(),std::nullopt);clearAllSelections();invalidateLineCache();horizontalExtentDirty_=true;
-            clearSemanticHighlighting();highlighter_.setDocumentText(buffer_);setModified(history_.isModified(),true);updateScrollBars();verticalScrollBar()->setValue(top);ensureCursorVisible();viewport()->update();
+            if (preserveHighlights) {
+                codeContext_.invalidate(0);
+                highlights.reserve(result->displayEdits.size());
+                for (const auto& change : result->displayEdits) {
+                    const auto [offset, removed, inserted] = change.bytes;
+                    if (viewAnchor >= offset) {
+                        const auto relative = viewAnchor - offset;
+                        viewAnchor = relative < removed ? offset + std::min(relative, inserted)
+                                                       : viewAnchor - removed + inserted;
+                    }
+                    const auto& edit = change.range;
+                    adjustDiffAlignment(edit.row, int(edit.oldEndRow - edit.row), int(edit.newEndRow - edit.row));
+                    adjustDiffHighlights(edit);
+                    highlights.push_back(edit);
+                }
+                projectHighlightBatch(highlights, true);
+                normalizeBatchCursors();
+            } else {
+                diffHighlights_.clear();
+                clearSemanticHighlighting();
+                highlighter_.setDocumentText(buffer_);
+            }
+            setModified(history_.isModified(), true, highlights);
+            updateScrollBars();
+            verticalScrollBar()->setValue(preserveHighlights ? screenRowForPosition(viewAnchor) : top);
+            if (!preserveHighlights || historyReplay) ensureCursorVisible();
+            viewport()->update();
         }
         if(committed)committed();
         if(result->clipboard)QApplication::clipboard()->setMimeData(new StoredClipboard(result->clipboard));
@@ -3256,10 +3423,34 @@ void EditorWidget::runBulkOperation(const QString& label,BulkTask task,bool modi
                 for(auto& [original,line]:result->lineAnchors) { (void)original; line=projectLineAnchor(line,static_cast<int>(row),static_cast<int>(column),static_cast<int>(removed),static_cast<int>(inserted)); }
             };
             const auto state=result->history->stateId();
-            result->cursor=task(*result->buffer,*result->history,result->clipboard,step);
+            const auto displayEdit = [&](std::size_t offset, std::size_t row, std::size_t column,
+                                              std::string_view removed, std::string_view inserted) {
+                const auto start = offset - column;
+                auto utf16Column = result->buffer->utf16Before(offset) - result->buffer->utf16Before(start);
+                if (column >= 3 && result->buffer->slice(start, 3) == "\xef\xbb\xbf") --utf16Column;
+                result->displayEdits.push_back({
+                    HighlightEdit(row, static_cast<int>(utf16Column),
+                        QString::fromUtf8(removed.data(), static_cast<qsizetype>(removed.size())),
+                        QString::fromUtf8(inserted.data(), static_cast<qsizetype>(inserted.size()))),
+                    {offset, removed.size(), inserted.size()}});
+            };
+            const auto storedDisplayEdit = [&](const EditHistory::StoredEditGeometry& change) {
+                const auto [row, column] = change.start;
+                const auto [oldEndRow, oldEndColumn] = change.oldEnd;
+                const auto [newEndRow, newEndColumn] = change.newEnd;
+                result->displayEdits.push_back({
+                    HighlightEdit(row, static_cast<int>(column), oldEndRow, static_cast<int>(oldEndColumn),
+                                  newEndRow, static_cast<int>(newEndColumn)),
+                    {change.offset, change.removed, change.inserted}});
+            };
+            const BulkStep bulkStep{step, displayEdit, storedDisplayEdit};
+            result->cursor=task(*result->buffer,*result->history,result->clipboard,bulkStep);
             result->changed=result->history->stateId()!=state;
             result->buffer->lineEditObserver={};result->buffer->editObserver={};step(100);
-            if (result->edits.size() > 16384) result->edits.clear();
+            if (result->edits.size() > 16384) {
+                result->edits.clear();
+                for (const auto& edit : result->displayEdits) result->edits.push_back(edit.bytes);
+            }
         } catch(const std::exception& error){result->cancelled=cancelled->load();result->error=QString::fromUtf8(error.what());}
         return result;
     }));

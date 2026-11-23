@@ -7,6 +7,7 @@
 #include <functional>
 #include <string_view>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct EditChange {
@@ -31,6 +32,11 @@ public:
     // Called after each applied change, with its pre-edit UTF-8 row/column.
     using EditApplied = std::function<void(std::size_t offset,std::size_t row,std::size_t column,
                                           std::string_view removed,std::string_view inserted)>;
+    struct StoredEditGeometry {
+        std::size_t offset, removed, inserted;
+        std::pair<std::size_t, std::size_t> start, oldEnd, newEnd;
+    };
+    using StoredEditApplied = std::function<void(const StoredEditGeometry&)>;
     struct Limits {
         std::size_t memoryBytes{64u*1024u*1024u};
         bool spillToDisk{true};
@@ -59,8 +65,10 @@ public:
                      std::vector<std::size_t> cursorsBefore,
                      std::vector<std::size_t> cursorsAfter,
                      std::int64_t timestampMs);
-    [[nodiscard]] std::optional<HistoryResult> undo(PieceTreeBuffer& buffer, const EditApplied& applied = {},const std::function<void()>& checkpoint = {});
-    [[nodiscard]] std::optional<HistoryResult> redo(PieceTreeBuffer& buffer, const EditApplied& applied = {},const std::function<void()>& checkpoint = {});
+    [[nodiscard]] std::optional<HistoryResult> undo(PieceTreeBuffer& buffer, const EditApplied& applied = {},
+        const std::function<void()>& checkpoint = {}, const StoredEditApplied& storedApplied = {});
+    [[nodiscard]] std::optional<HistoryResult> redo(PieceTreeBuffer& buffer, const EditApplied& applied = {},
+        const std::function<void()>& checkpoint = {}, const StoredEditApplied& storedApplied = {});
     void markSaved() noexcept;
     void markUnsaved() noexcept { savedState_ = UINT64_MAX; }
     void breakCoalescing() noexcept { coalescingBarrier_ = true; }
@@ -116,6 +124,6 @@ private:
     bool discardingGroup_{false};
     bool groupRedoAtStart_{false};
     unsigned compoundDepth_{};
-    std::optional<HistoryResult> undoOne(PieceTreeBuffer&,const EditApplied&,const std::function<void()>&);
-    std::optional<HistoryResult> redoOne(PieceTreeBuffer&,const EditApplied&,const std::function<void()>&);
+    std::optional<HistoryResult> undoOne(PieceTreeBuffer&,const EditApplied&,const std::function<void()>&,const StoredEditApplied&);
+    std::optional<HistoryResult> redoOne(PieceTreeBuffer&,const EditApplied&,const std::function<void()>&,const StoredEditApplied&);
 };

@@ -173,22 +173,31 @@ existing 32 MiB LSP transport budget. New untitled files must first be saved wit
 a supported extension. A missing/disabled server or unsupported capability produces
 a status message.
 
-Formatting options request four-space indentation (`tabSize: 4`, `insertSpaces:
-true`), matching editor Tab behavior. The formatter determines the code style;
+Formatting sends the editor's effective `tabSize` and `insertSpaces` settings.
+The formatter determines the code style;
 clangd can use the project's `.clang-format`. No formatting on save or selection
 formatting is provided by this command.
 
-Results are checked against the original document and revision, path, current tab,
-and request generation. Replies to changed/closed/switched/busy documents are
-ignored. Invalid or overlapping UTF-16 edits are rejected before any change.
+Results are converted and checked against the original text in a worker. The
+editor checks the revision, path, active tab and request generation again before
+applying the edits. Invalid or overlapping UTF-16 edits are rejected before any change.
 UTF-8 BOM and the existing line-ending convention (chosen from the first LF/CRLF)
 are retained. Unchanged replacements are removed so a no-op does not create an Undo
 step. All remaining edits are one Undo step; Ctrl+Z preserves earlier unsaved edits,
 and Ctrl+Y restores formatting. Cursor byte positions are mapped through edits;
 selections are cleared, as for other workspace edits.
 
+Large batches are staged in a worker. The editor keeps the displayed buffer
+while the worker runs, then moves existing colors for surviving text to their
+new positions at the same time as it displays the formatted buffer. The viewport
+follows the same text through insertions and deletions. Fresh semantic tokens
+are requested for the viewport first when the server supports ranges. Small
+documents can then receive a full refresh during idle time; larger documents
+refresh as the user scrolls, subject to the usual LSP budgets.
+
 The `formatting` CTest exercises the UI shortcut, delayed replies, tab switching,
 closing, unsaved edits, Undo/Redo, Unicode/BOM/CRLF, no-op/null replies, malformed
-edits, unsupported servers and protocol errors. `lsp-protocol` checks the wire
+edits, unsupported servers, protocol errors and stable colors during a large
+batch with a delayed semantic response. `lsp-protocol` checks the wire
 request and cancellation; `lsp-client` also requests formatting from an installed
 clangd when available.

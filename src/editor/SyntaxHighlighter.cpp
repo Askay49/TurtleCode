@@ -79,6 +79,7 @@ void SyntaxHighlighter::clear() {
     hasPendingParse_ = false;
     viewportPending_=true; nextPendingLine_=-1; backgroundComplete_=true;
     needsFullParse_ = true;
+    preserveProjectedCache_ = false;
     cache_.clear();
     workerCacheBytes_=0; workerCacheRows_=0; lastLimit_=HighlightLimit::None; parseLimited_=false;
     workerState_ = std::make_shared<WorkerState>();
@@ -92,6 +93,7 @@ void SyntaxHighlighter::setDocumentText(const PieceTreeBuffer& buffer) {
     // its previous tree and performs one fresh parse for this revision.
     queuedEdits_.clear(); queuedEditBytes_=0;
     needsFullParse_ = true;
+    preserveProjectedCache_ = false;
     requestParse(buffer);
 }
 
@@ -100,6 +102,17 @@ void SyntaxHighlighter::applyEdit(std::size_t offset, std::size_t startRow, std:
                                   const PieceTreeBuffer& buffer) {
     if(!inputFitsBudget(buffer)) return;
     if (!usesTreeSitter()) { clear(); return; }
+    queueEdit(offset, startRow, startColumn, removed, inserted);
+    const auto prefix=buffer.slice(buffer.lineStart(startRow),startColumn);
+    const int column=QString::fromUtf8(prefix.data(),static_cast<qsizetype>(prefix.size())).size();
+    cache_.projectEdit(HighlightEdit(startRow,column,
+        QString::fromUtf8(removed.data(),static_cast<qsizetype>(removed.size())),
+        QString::fromUtf8(inserted.data(),static_cast<qsizetype>(inserted.size()))),visibleFirst_,visibleLast_);
+    requestParse(buffer);
+}
+
+void SyntaxHighlighter::queueEdit(std::size_t offset, std::size_t startRow, std::size_t startColumn,
+                                  std::string_view removed, std::string_view inserted) {
     if (!needsFullParse_) {
         const auto bytes=sizeof(PendingEdit)+removed.size()+inserted.size();
         if(bytes>limits_.cacheBytes-queuedEditBytes_ || queuedEdits_.size()>=4096) {
@@ -109,11 +122,17 @@ void SyntaxHighlighter::applyEdit(std::size_t offset, std::size_t startRow, std:
             queuedEditBytes_+=bytes;
         }
     }
-    const auto prefix=buffer.slice(buffer.lineStart(startRow),startColumn);
-    const int column=QString::fromUtf8(prefix.data(),static_cast<qsizetype>(prefix.size())).size();
-    cache_.projectEdit(HighlightEdit(startRow,column,
-        QString::fromUtf8(removed.data(),static_cast<qsizetype>(removed.size())),
-        QString::fromUtf8(inserted.data(),static_cast<qsizetype>(inserted.size()))),visibleFirst_,visibleLast_);
+}
+
+void SyntaxHighlighter::applyBatch(const HighlightEditBatch& batch, const PieceTreeBuffer& buffer, bool reparse) {
+    if (!usesTreeSitter() || !inputFitsBudget(buffer)) return;
+    cache_.projectBatch(batch, visibleFirst_, visibleLast_);
+    if (reparse) {
+        setDocumentText(buffer);
+        preserveProjectedCache_ = true;
+        return;
+    }
+    preserveProjectedCache_ = true;
     requestParse(buffer);
 }
 
@@ -292,7 +311,10 @@ void SyntaxHighlighter::handleParseFinished() {
     jobActive_=false;
     if (!result.cancelled && result.generation == generation_ && result.revision == revision_ &&
         result.languageId == languageId_ && usesTreeSitter()) {
-        if(result.resetCache) { cache_.clear(); workerState_->pendingUiReset=false; }
+        if(result.resetCache) {
+            if (!preserveProjectedCache_) cache_.clear();
+            workerState_->pendingUiReset=false;
+        }
         for (qsizetype line=0;line<result.lines.size();++line)
             cache_.put(result.firstLine+static_cast<std::size_t>(line),result.lines[line],visibleFirst_,visibleLast_);
         workerCacheBytes_=result.cacheBytes; workerCacheRows_=result.cacheRows;

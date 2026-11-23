@@ -204,6 +204,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    QObject::disconnect(qApp, nullptr, this, nullptr);
     finishFocusNavigation();
     qApp->removeEventFilter(this);
     // QObject deletes children after C++ members have been destroyed. Disconnect
@@ -2334,36 +2335,85 @@ void MainWindow::formatDocument() {
     const auto path=editor->filePath();const auto revision=editor->lspRevision();
     const auto generation=editor->property("formatGeneration").toULongLong()+1;
     editor->setProperty("formatGeneration",generation);
-    const auto before=QByteArray::fromStdString(editor->snapshotBuffer().text());
-    lsp_->change(path,editor->lspText());
+    const auto before=QByteArray::fromStdString(editor->document()->buffer().text());
+    const auto bufferRevision = editor->document()->buffer().contentRevision();
+    lsp_->change(path, QString::fromUtf8(before));
     QPointer<EditorWidget> guard(editor);
     statusBar()->showMessage(I18n::text("Formatting document…"),10000);
     editor->refreshEditorConfig();
-    lsp_->formatDocument(path,editor->tabSize(),editor->insertsSpaces(),[this,guard,path,revision,generation,before](QJsonValue result) {
-        if(closing_ || renameInProgress_ || !replaceLockedEditors_.isEmpty() || !guard || activeEditor()!=guard || guard->isBusy() || guard->filePath()!=path
-            || guard->lspRevision()!=revision || guard->property("formatGeneration").toULongLong()!=generation) return;
+    const auto current = [this, guard, path, revision, generation, bufferRevision] {
+        return !closing_ && !renameInProgress_ && replaceLockedEditors_.isEmpty() &&
+            guard && activeEditor() == guard && !guard->isBusy() && guard->filePath() == path &&
+            guard->lspRevision() == revision && guard->document()->buffer().contentRevision() == bufferRevision &&
+            guard->property("formatGeneration").toULongLong() == generation;
+    };
+    lsp_->formatDocument(path,editor->tabSize(),editor->insertsSpaces(),[this,guard,path,current,before](QJsonValue result) {
+        if(!current()) return;
         if(result.isUndefined()) return; // Preserve the protocol error shown by LspClient.
-        if(result.isNull()) {statusBar()->showMessage(I18n::text("No formatting changes needed."),4000);return;}
-        QString error;std::vector<EditChange> changes;
-        if(!result.isArray() || !WorkspaceEdits::convertFormatting(before,result.toArray(),&changes,&error)
-            || !guard->validateWorkspaceEdits(before,changes)) {
-            statusBar()->showMessage(I18n::text("Formatting not applied: invalid edits from the language server.")+" "+error,8000);return;
+        if(result.isNull() || (result.isArray() && result.toArray().isEmpty())) {
+            statusBar()->showMessage(I18n::text("No formatting changes needed."),4000);
+            return;
         }
-        if(changes.empty()) {statusBar()->showMessage(I18n::text("No formatting changes needed."),4000);return;}
-        guard->applyWorkspaceEdits(std::move(changes));
-        statusBar()->showMessage(I18n::text("Document formatted. Changes are not saved yet."),5000);
+        struct FormatResult {
+            QString error;
+            std::vector<EditChange> changes;
+            bool valid{false};
+        };
+        // The parser validates ranges and extracts removed bytes from this exact revision.
+        auto* watcher = new QFutureWatcher<FormatResult>(this);
+        connect(watcher, &QFutureWatcher<FormatResult>::finished, this, [this, watcher, guard, path, current] {
+            watcher->deleteLater();
+            if (!current()) return;
+            auto parsed = watcher->future().takeResult();
+            if (!parsed.valid) {
+                statusBar()->showMessage(I18n::text("Formatting not applied: invalid edits from the language server.")+" "+parsed.error,8000);
+                return;
+            }
+            if (parsed.changes.empty()) {
+                statusBar()->showMessage(I18n::text("No formatting changes needed."),4000);
+                return;
+            }
+            guard->applyFormattingEdits(std::move(parsed.changes), [this, guard, path](bool applied) {
+                if (closing_ || !guard || activeEditor() != guard || guard->filePath() != path) return;
+                if (!applied) {
+                    if (statusBar()->currentMessage() == I18n::text("Formatting document…")) statusBar()->clearMessage();
+                    return;
+                }
+                requestSemanticHighlighting(guard, false, true);
+                statusBar()->showMessage(I18n::text("Document formatted. Changes are not saved yet."),5000);
+            });
+        });
+        watcher->setFuture(QtConcurrent::run([before, result] {
+            FormatResult parsed;
+            parsed.valid = result.isArray() &&
+                WorkspaceEdits::convertFormatting(before, result.toArray(), &parsed.changes, &parsed.error);
+            return parsed;
+        }));
     });
 }
 
-void MainWindow::requestSemanticHighlighting(EditorWidget* editor, bool force) {
+LspAdaptivePolicy::Mode MainWindow::semanticHighlightMode(EditorWidget* editor) const {
+    const auto path = editor->filePath();
+    const bool range = lsp_->semanticTokensRangeAvailable(path);
+    const auto mode = editor->lspPolicy().mode(editor->byteSize(), range,
+        lsp_->semanticTokensFullAvailable(path), QDateTime::currentMSecsSinceEpoch());
+    const auto visibleRevision = editor->property("semanticVisibleRevision");
+    if (mode != LspAdaptivePolicy::Mode::None && range && visibleRevision.isValid() &&
+        visibleRevision.toULongLong() == editor->lspRevision()) return LspAdaptivePolicy::Mode::Range;
+    return mode;
+}
+
+void MainWindow::requestSemanticHighlighting(EditorWidget* editor, bool force, bool preferVisible) {
     if (!lsp_ || !editor || activeEditor()!=editor || editor->isBusy()
         || !editor->lspAutomaticEligible() || !lsp_->supports(editor->filePath())
         || !QSettings().value("lsp/semanticHighlighting",true).toBool()
         || !lsp_->ready(editor->filePath()) || !lsp_->semanticTokensAvailable(editor->filePath())) return;
     if(force) editor->setProperty("semanticForcePending",true);
+    if (preferVisible && lsp_->semanticTokensRangeAvailable(editor->filePath()))
+        editor->setProperty("semanticVisibleRevision", editor->lspRevision());
     const bool effectiveForce=editor->property("semanticForcePending").toBool();
     const auto now=QDateTime::currentMSecsSinceEpoch();
-    const auto mode=editor->lspPolicy().mode(editor->byteSize(),lsp_->semanticTokensRangeAvailable(editor->filePath()),lsp_->semanticTokensFullAvailable(editor->filePath()),now);
+    const auto mode=semanticHighlightMode(editor);
     auto* timer=editor->findChild<QTimer*>("semanticSync");
     if(mode==LspAdaptivePolicy::Mode::None) {
         lsp_->cancelSemanticTokens(editor->filePath()); editor->clearSemanticHighlighting();
@@ -2390,7 +2440,7 @@ void MainWindow::requestSemanticHighlighting(EditorWidget* editor, bool force) {
         && editor->property("semanticAppliedWindow").toString()==window) return;
     const auto last=editor->property("semanticLastRequest").toLongLong();
     const auto wait=editor->lspPolicy().delay(editor->byteSize())-(now-last);
-    if(last && wait>0 && timer) { timer->start(static_cast<int>(wait)); return; }
+    if(!preferVisible && last && wait>0 && timer) { timer->start(static_cast<int>(wait)); return; }
     const auto serial=editor->property("semanticSerial").toULongLong()+1;
     editor->setProperty("semanticForcePending",false);
     editor->setProperty("semanticSerial",serial); editor->setProperty("semanticLastRequest",now);
@@ -2407,7 +2457,9 @@ void MainWindow::requestSemanticHighlighting(EditorWidget* editor, bool force) {
     const QString text=ranged ? editor->lspRangeText(first,lastLine) : editor->lspText();
     auto clock=std::make_shared<QElapsedTimer>(); clock->start();
     QPointer<EditorWidget> guard(editor);
-    lsp_->semanticTokens(path,[this,guard,path,text,first,ranged,revision,generation,serial,window,clock](QJsonValue response) {
+    const bool retainOutside = ranged && editor->property("semanticVisibleRevision").isValid() &&
+        editor->property("semanticVisibleRevision").toULongLong() == revision;
+    lsp_->semanticTokens(path,[this,guard,path,text,first,lastLine,ranged,retainOutside,revision,generation,serial,window,clock](QJsonValue response) {
         if (!guard || guard->filePath()!=path) return;
         const auto object=response.toObject(); const auto data=object.value("data").toArray();
         const auto count=static_cast<std::size_t>(data.size()/5); const std::size_t budget=ranged?20000:50000;
@@ -2421,8 +2473,8 @@ void MainWindow::requestSemanticHighlighting(EditorWidget* editor, bool force) {
         }
         if(guard->lspRevision()!=revision || guard->semanticGeneration()!=generation || guard->property("semanticSerial").toULongLong()!=serial) return;
         auto* watcher=new QFutureWatcher<SemanticHighlightResult>(guard);
-        connect(watcher,&QFutureWatcher<SemanticHighlightResult>::finished,this,[watcher,guard,path,revision,generation,serial,window,clock,count] {
-            const auto result=watcher->result(); watcher->deleteLater();
+        connect(watcher,&QFutureWatcher<SemanticHighlightResult>::finished,this,[this,watcher,guard,path,first,lastLine,retainOutside,revision,generation,serial,window,clock,count] {
+            auto result=watcher->result(); watcher->deleteLater();
             if(!guard || guard->filePath()!=path) return;
             if(guard->lspRevision()!=revision || guard->semanticGeneration()!=generation || guard->property("semanticSerial").toULongLong()!=serial) return;
             guard->setProperty("semanticPending",false);
@@ -2434,11 +2486,25 @@ void MainWindow::requestSemanticHighlighting(EditorWidget* editor, bool force) {
                 return;
             }
             if(!QSettings().value("lsp/semanticHighlighting",true).toBool()) return;
-            guard->setSemanticHighlighting(result,revision,generation);
+            guard->setSemanticHighlighting(std::move(result), revision, generation,
+                retainOutside ? std::optional(std::pair{first, lastLine}) : std::nullopt);
             guard->setProperty("semanticAppliedRevision",revision); guard->setProperty("semanticAppliedGeneration",generation);
             guard->setProperty("semanticAppliedWindow",window);
             if(guard->property("semanticForcePending").toBool())
                 if(auto* retry=guard->findChild<QTimer*>("semanticSync")) retry->start(guard->lspPolicy().delay(guard->byteSize()));
+            if (retainOutside && guard->byteSize() <= 512 * 1024 && lsp_->semanticTokensFullAvailable(path)) {
+                const int idle = std::max(400, guard->lspPolicy().delay(guard->byteSize()));
+                QTimer::singleShot(idle, this, [this, guard, path, revision, serial] {
+                    if (closing_ || !guard || activeEditor() != guard || guard->filePath() != path ||
+                        guard->lspRevision() != revision || guard->property("semanticSerial").toULongLong() != serial ||
+                        guard->property("semanticPending").toBool() || guard->isBusy()) return;
+                    const auto mode = guard->lspPolicy().mode(guard->byteSize(), lsp_->semanticTokensRangeAvailable(path),
+                        lsp_->semanticTokensFullAvailable(path), QDateTime::currentMSecsSinceEpoch());
+                    if (mode != LspAdaptivePolicy::Mode::Full) return;
+                    guard->setProperty("semanticVisibleRevision", QVariant{});
+                    requestSemanticHighlighting(guard);
+                });
+            }
         });
         watcher->setFuture(QtConcurrent::run([object,text,first,budget] {
             return SemanticHighlighting::decode(object.value("data").toArray(),object.value("legend").toObject(),text,first,budget);
@@ -2685,7 +2751,7 @@ void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool p
     connect(semanticSync,&QTimer::timeout,this,[this,editor]{requestSemanticHighlighting(editor);});
     connect(editor,&EditorWidget::semanticViewportChanged,semanticSync,[this,editor,semanticSync] {
         if(!lsp_ || !lsp_->semanticTokensRangeAvailable(editor->filePath())) return;
-        const auto mode=editor->lspPolicy().mode(editor->byteSize(),true,lsp_->semanticTokensFullAvailable(editor->filePath()),QDateTime::currentMSecsSinceEpoch());
+        const auto mode=semanticHighlightMode(editor);
         if(mode!=LspAdaptivePolicy::Mode::Range) return;
         lsp_->cancelSemanticTokens(editor->filePath());
         editor->setProperty("semanticPending",false);

@@ -15,6 +15,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <span>
 
 #include "core/text/PieceTreeBuffer.hpp"
 #include "core/text/EditHistory.hpp"
@@ -162,7 +163,8 @@ public:
     bool shouldAutoComplete() const;
     bool applyingCompletion() const { return applyingCompletion_; }
     void setDiagnostics(const QJsonArray& items);
-    void setSemanticHighlighting(SemanticHighlightResult result,quint64 revision,quint64 generation);
+    void setSemanticHighlighting(SemanticHighlightResult result, quint64 revision, quint64 generation,
+                                 std::optional<std::pair<int, int>> refreshedRange = {});
     void clearSemanticHighlighting();
     quint64 semanticGeneration() const { return semanticGeneration_; }
     int semanticTokenCount() const;
@@ -170,6 +172,7 @@ public:
     bool validateWorkspaceEdits(const QByteArray& expected, const std::vector<EditChange>& changes) const;
     // Caller must validate the whole workspace transaction before applying any file.
     void applyWorkspaceEdits(std::vector<EditChange> changes);
+    void applyFormattingEdits(std::vector<EditChange> changes, std::function<void(bool)> completed);
 
 signals:
     void vimExInterruptRequested();
@@ -445,12 +448,17 @@ private:
     EditorMiniMap* miniMap_{nullptr};
     bool miniMapEnabled_{false};
     bool miniMapSuppressed_{false};
-    using BulkStep=std::function<void(int)>;
+    struct BulkStep {
+        std::function<void(int)> progress;
+        EditHistory::EditApplied displayEdit;
+        EditHistory::StoredEditApplied storedDisplayEdit;
+        void operator()(int percent) const { progress(percent); }
+    };
     using BulkTask=std::function<HistoryResult(PieceTreeBuffer&,EditHistory&,std::shared_ptr<ChunkedFile>&,const BulkStep&)>;
     void replaceSelectionsInBackground(const QString& text,std::shared_ptr<ChunkedFile> source={});
     bool selectionsNeedBackground() const;
     void runBulkOperation(const QString& label,BulkTask task,bool modifies=true, std::function<void()> committed = {},
-                          std::function<void(bool)> completed = {});
+                          std::function<void(bool)> completed = {}, int progressDelayMs = 300);
     void editLines(int direction, bool copy);
     void applySmartPlan(SmartEditing::Plan plan);
     using SmartBuilder=std::function<SmartEditing::Plan(const PieceTreeBuffer&,const std::function<void()>&)>;
@@ -473,7 +481,11 @@ private:
     quint64 semanticGeneration_{0};
     bool semanticAdjusted_{false};
     void trackHighlightEdit(std::size_t offset,std::size_t row,std::size_t column,
-                            std::string_view removed,std::string_view inserted);
+                            std::string_view removed,std::string_view inserted,
+                            std::vector<HighlightEdit>* batch = nullptr);
+    HighlightEdit prepareHighlightEdit(std::size_t row, std::size_t column,
+                                       std::string_view removed, std::string_view inserted);
+    void projectHighlightBatch(std::span<const HighlightEdit> edits, bool reparse = false);
     void invalidateSemanticLines(std::size_t firstLine,std::size_t byteColumn,std::string_view removed,std::string_view inserted);
     QCompleter* completer_{nullptr};
     quint64 lspRevision_{0};
@@ -485,11 +497,14 @@ private:
     void deleteForward(bool byWord = false);
     void undo();
     void redo();
+    void replayHistoryInBackground(bool redo);
+    void normalizeBatchCursors();
     void replaceSelection(const std::string& text);
     void replaceRange(std::size_t begin, std::size_t length, const std::string& text);
     void applyBatchEdits(std::vector<EditChange> changes,
                          const std::vector<std::size_t>& cursorsBefore,
-                         const std::vector<std::size_t>& cursorsAfter);
+                         const std::vector<std::size_t>& cursorsAfter,
+                         std::optional<std::size_t> viewAnchor = {});
     [[nodiscard]] std::size_t previousGraphemePosition() const;
     [[nodiscard]] std::size_t nextGraphemePosition() const;
     [[nodiscard]] std::size_t previousWordPosition() const;
@@ -547,9 +562,12 @@ private:
     void ensureCursorVisible(bool centerVertically = false);
     [[nodiscard]] int textAreaWidth() const;
     [[nodiscard]] int cursorPixelColumn() const;
-    void setModified(bool modified, bool replaced = false);
+    void setModified(bool modified, bool replaced = false, std::span<const HighlightEdit> highlights = {});
     void notifyDocumentChanged(bool modified);
-    void refreshSharedView(bool modified, bool replaced, const std::vector<Document::Edit>& edits);
+    void refreshSharedView(bool modified, bool replaced, const std::vector<Document::Edit>& edits,
+                           std::span<const HighlightEdit> highlights);
+    // Borrowed only during the synchronous Document::changed notification.
+    std::span<const HighlightEdit> publishedHighlights_;
     int lineHeight() const;
     int gutterWidth() const;
     int lineAtY(int y) const;

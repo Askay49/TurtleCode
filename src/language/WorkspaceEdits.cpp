@@ -35,6 +35,12 @@ struct TextCoordinates {
         return starts[line]+text.left(column).toUtf8().size();
     }
 };
+
+bool textBoundary(std::string_view text, std::size_t offset) {
+    return !offset || offset == text.size() ||
+        ((static_cast<unsigned char>(text[offset]) & 0xc0) != 0x80 &&
+         !(text[offset - 1] == '\r' && text[offset] == '\n'));
+}
 }
 QString WorkspaceEdits::pathKey(const QString& path) {
     const QFileInfo info(path); const auto canonical=info.canonicalFilePath();
@@ -107,6 +113,23 @@ bool WorkspaceEdits::convertFormatting(const QByteArray& before,const QJsonArray
         change.inserted=text.toStdString();
     }
     output->erase(std::remove_if(output->begin(),output->end(),[](const auto& change){return change.removed==change.inserted;}),output->end());
+    for (std::size_t i = 0; i < output->size(); ++i) {
+        auto& change = (*output)[i];
+        const std::string_view oldText = change.removed, newText = change.inserted;
+        const auto common = std::min(oldText.size(), newText.size());
+        std::size_t prefix = 0;
+        while (prefix < common && oldText[prefix] == newText[prefix]) ++prefix;
+        // If a replacement becomes an insertion, keep its position distinct from a neighboring edit.
+        if (prefix && prefix == oldText.size() && i + 1 < output->size() &&
+            change.offset + prefix == (*output)[i + 1].offset) --prefix;
+        while (!textBoundary(oldText, prefix) || !textBoundary(newText, prefix)) --prefix;
+        std::size_t suffix = 0;
+        while (suffix < common - prefix && oldText[oldText.size()-1-suffix] == newText[newText.size()-1-suffix]) ++suffix;
+        while (!textBoundary(oldText, oldText.size()-suffix) || !textBoundary(newText, newText.size()-suffix)) --suffix;
+        change.offset += prefix;
+        change.removed = oldText.substr(prefix, oldText.size()-prefix-suffix);
+        change.inserted = newText.substr(prefix, newText.size()-prefix-suffix);
+    }
     return true;
 }
 bool WorkspaceEdits::rangeText(const QByteArray& before,const QJsonObject& range,QString* text,QString* error) {

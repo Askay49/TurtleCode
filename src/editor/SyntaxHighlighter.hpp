@@ -46,6 +46,9 @@ public:
     void setDocumentText(const PieceTreeBuffer& buffer);
     void applyEdit(std::size_t offset, std::size_t startRow, std::size_t startColumn,
                    std::string_view removed, std::string_view inserted, const PieceTreeBuffer& buffer);
+    void queueEdit(std::size_t offset, std::size_t row, std::size_t column,
+                   std::string_view removed, std::string_view inserted);
+    void applyBatch(const HighlightEditBatch& batch, const PieceTreeBuffer& buffer, bool reparse = false);
     [[nodiscard]] bool usesTreeSitter() const noexcept;
     [[nodiscard]] bool enabled() const noexcept { return usesTreeSitter(); }
     [[nodiscard]] QVector<Span> highlightLine(std::size_t lineIndex, std::size_t lineStartByte,
@@ -107,6 +110,7 @@ private:
     std::shared_ptr<WorkerState> workerState_;
     std::shared_ptr<CancellationState> cancellation_;
     bool needsFullParse_{true};
+    bool preserveProjectedCache_{false};
     bool hasPendingParse_{false};
     std::size_t visibleFirst_{0}, visibleLast_{255};
     bool viewportPending_{true};

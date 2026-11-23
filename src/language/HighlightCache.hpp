@@ -88,6 +88,35 @@ public:
         for(const auto& [key,row]:ordered) { rows_.at(row).touched=++clock_; recency_.emplace(clock_,row); }
         trim(pinFirst,pinLast);
     }
+    void projectBatch(const HighlightEditBatch& batch, std::size_t pinFirst, std::size_t pinLast) {
+        struct ProjectedRow {
+            QVector<Span> spans;
+            std::uint64_t touched{};
+        };
+        std::map<std::size_t, ProjectedRow> projected;
+        for (const auto& [row, entry] : rows_) {
+            if (entry.spans.isEmpty()) {
+                if (const auto target = batch.untouchedRow(row))
+                    projected[*target].touched = entry.touched;
+                continue;
+            }
+            for (const auto& span : entry.spans) batch.project(row, span, [&](std::size_t target, Span copy) {
+                auto& output = projected[target];
+                output.touched = std::max(output.touched, entry.touched);
+                output.spans.append(std::move(copy));
+            });
+        }
+        std::vector<std::pair<std::uint64_t, std::size_t>> ordered;
+        ordered.reserve(projected.size());
+        for (const auto& [row, entry] : projected) ordered.emplace_back(entry.touched, row);
+        std::sort(ordered.begin(), ordered.end());
+        clear();
+        for (const auto& [touched, row] : ordered) {
+            auto& spans = projected.at(row).spans;
+            std::stable_sort(spans.begin(), spans.end(), [](const auto& a, const auto& b) { return a.start < b.start; });
+            put(row, std::move(spans), pinFirst, pinLast);
+        }
+    }
     void splice(std::size_t first,std::size_t removedRows,std::size_t insertedRows) {
         std::map<std::size_t,Entry> shifted;
         for(auto& [row,entry]:rows_) {

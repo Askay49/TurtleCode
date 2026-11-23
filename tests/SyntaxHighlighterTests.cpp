@@ -135,6 +135,32 @@ int main(int argc, char** argv) {
     }
     require(returnOffsetMatches, "Tree-sitter UTF-8 byte offsets map to Qt UTF-16 columns");
 
+    {
+        PieceTreeBuffer formatted("int  first;\nint  second;\n");
+        SyntaxHighlighter syntax;
+        syntax.setLanguageForPath("format.cpp");
+        syntax.setDocumentText(formatted);
+        waitForHighlight(syntax);
+        const auto second = formatted.lineStart(1) + 4;
+        formatted.erase(second, 1);
+        syntax.queueEdit(second, 1, 4, " ", "");
+        formatted.erase(4, 1);
+        syntax.queueEdit(4, 0, 4, " ", "");
+        formatted.insert(0, "\n");
+        syntax.queueEdit(0, 0, 0, "", "\n");
+        const HighlightEdit edits[] = {{1, 4, " ", ""}, {0, 4, " ", ""}, {0, 0, "", "\n"}};
+        syntax.applyBatch(HighlightEditBatch(edits), formatted);
+        const auto verify = [&] {
+            const auto spans = syntax.highlightLine(2, formatted.lineStart(2), "int second;", {});
+            require(std::any_of(spans.cbegin(), spans.cend(), [](const auto& span) {
+                return span.kind == SyntaxHighlighter::Kind::Variable && span.start == 4 && span.length == 6;
+            }), "batched syntax spans retain their new row and column");
+        };
+        verify();
+        waitForHighlight(syntax);
+        verify();
+    }
+
     const std::string inserted = "// inserted\n";
     const std::size_t editOffset = buffer.lineStart(3);
     buffer.insert(editOffset, inserted);

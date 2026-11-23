@@ -1,6 +1,70 @@
 #pragma once
 #include <QStatusBar>
 
+static void formattingHighlightTests(QTemporaryDir& directory) {
+    QSettings settings;
+    settings.setValue("lsp/enabled", true);
+    settings.setValue("editor/recoveryEnabled", false);
+    settings.setValue("lsp/semanticHighlighting", true);
+    settings.setValue("lsp/clangd/command", QStandardPaths::findExecutable("python3"));
+    settings.setValue("lsp/clangd/arguments", QString("\"%1\" --format-many --semantic-range").arg(LSP_FAKE_SERVER));
+    const auto path = directory.filePath("format-many.cpp");
+    QByteArray original;
+    for (int row = 0; row < 300; ++row) original += "int  value_" + QByteArray::number(row) + "=1;\n";
+    {
+        QFile file(path);
+        assert(file.open(QIODevice::WriteOnly) && file.write(original) == original.size());
+    }
+    MainWindow window;
+    window.show();
+    window.openPaths({path});
+    auto* editor = window.findChild<EditorWidget*>();
+    auto* client = window.findChild<LspClient*>();
+    auto* action = window.findChild<QAction*>("code.formatDocument");
+    assert(editor && client && action);
+    client->setLogLevel(2);
+    auto tokenAt = [](const EditorWidget* view, int row, int column) {
+        const auto tokens = view->semanticSnapshot().value(row);
+        return std::any_of(tokens.cbegin(), tokens.cend(), [row, column](const auto& token) {
+            return token.line == row && token.start == column && token.type == "parameter";
+        });
+    };
+    assert(waitFor([&] { return !editor->isBusy() && tokenAt(editor, 12, 5); }));
+    EditorWidget secondView(nullptr, editor->document());
+    secondView.setSemanticHighlighting({editor->semanticSnapshot(), {}, true},
+                                       secondView.lspRevision(), secondView.semanticGeneration());
+    editor->setNavigationPosition(13, 6);
+    editor->verticalScrollBar()->setValue(10);
+    bool keptColors = false;
+    const auto statusConnection = QObject::connect(window.statusBar(), &QStatusBar::messageChanged, &window, [&](const QString& message) {
+        if (message.startsWith("Document formatted"))
+            keptColors = tokenAt(editor, 13, 4) && tokenAt(&secondView, 13, 4) &&
+                editor->verticalScrollBar()->value() == 11;
+    });
+    action->trigger();
+    assert(waitFor([&] { return keptColors; }));
+    QObject::disconnect(statusConnection);
+    assert(editor->lspPosition() == QPoint(13, 4));
+    assert(waitFor([&] {
+        return client->log().contains("Response textDocument/semanticTokens/range")
+            && editor->property("semanticAppliedRevision").toULongLong() == editor->lspRevision();
+    }));
+    assert(tokenAt(editor, 13, 4));
+
+    // Replay the same batch through the streaming history path as well.
+    auto limits = editor->document()->history().limits();
+    limits.memoryBytes = 0;
+    editor->document()->history().setLimits(limits);
+    assert(editor->document()->history().memoryBytes() == 0 && editor->document()->history().diskBytes() > 0);
+    QTest::keyClick(editor, Qt::Key_Z, Qt::ControlModifier);
+    assert(waitFor([&] { return !editor->isBusy() && tokenAt(editor, 12, 5) && tokenAt(&secondView, 12, 5); }));
+    assert(QByteArray::fromStdString(editor->document()->buffer().text()) == original);
+    QTest::keyClick(editor, Qt::Key_Y, Qt::ControlModifier);
+    assert(waitFor([&] { return !editor->isBusy() && tokenAt(editor, 13, 4) && tokenAt(&secondView, 13, 4); }));
+    assert(QByteArray::fromStdString(editor->document()->buffer().text()) == "\n" + QByteArray(original).replace("int  ", "int "));
+    closeDiscard(window);
+}
+
 static void formattingTests(QTemporaryDir& directory) {
     const auto read=[](const QString& path) {
         QFile file(path);assert(file.open(QIODevice::ReadOnly));return file.readAll();
@@ -72,4 +136,5 @@ static void formattingTests(QTemporaryDir& directory) {
         }
         closeDiscard(window);QTest::qWait(200);
     }
+    formattingHighlightTests(directory);
 }

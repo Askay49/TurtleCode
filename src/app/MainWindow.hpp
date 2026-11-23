@@ -12,6 +12,7 @@
 #include <vector>
 #include <QSet>
 #include <QJsonObject>
+#include "language/LspAdaptivePolicy.hpp"
 
 class OutlinePanel;
 class QLockFile;
@@ -216,7 +217,8 @@ private:
     void applyFileVisibilitySettings();
     void configureLsp();
     bool ensureManualLsp(EditorWidget* editor,std::function<void()> retry);
-    void requestSemanticHighlighting(EditorWidget* editor, bool force = false);
+    LspAdaptivePolicy::Mode semanticHighlightMode(EditorWidget* editor) const;
+    void requestSemanticHighlighting(EditorWidget* editor, bool force = false, bool preferVisible = false);
     void requestCompletion(EditorWidget* editor, bool automatic);
     void requestEditorHover(EditorWidget* editor, int line, int column, const QPoint& global, bool hasDiagnostic);
     void showCodeHelp(bool signature);

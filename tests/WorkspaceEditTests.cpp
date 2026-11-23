@@ -24,12 +24,16 @@ int main(int argc,char**argv) {
         const QByteArray original=QByteArray("\xef\xbb\xbf")+QString::fromUtf8("// 😀\r\nint  value=1;\r\n").toUtf8();
         QJsonArray edits{QJsonObject{{"range",QJsonObject{{"start",point(0,0)},{"end",point(2,0)}}},{"newText",QString::fromUtf8("// 😀\nint value = 1;\n")}}};
         assert(WorkspaceEdits::convertFormatting(original,edits,&changes,&error));
-        assert(changes.size()==1 && changes[0].offset==3);
+        assert(changes.size()==1 && changes[0].offset>3);
         auto result=original.toStdString();
         for(auto it=changes.rbegin();it!=changes.rend();++it) result.replace(it->offset,it->removed.size(),it->inserted);
         assert(result==std::string("\xef\xbb\xbf")+"// 😀\r\nint value = 1;\r\n");
         assert(WorkspaceEdits::convertFormatting("int value;\n",QJsonArray{edit(0,0,10,"int value;")},&changes,&error) && changes.empty());
         assert(!WorkspaceEdits::convertFormatting(original,QJsonArray{edit(0,4,5,"x")},&changes,&error));
+        assert(WorkspaceEdits::convertFormatting("ab", QJsonArray{edit(0,0,1,"ax"), edit(0,1,2,"y")}, &changes, &error));
+        assert(changes.size() == 2 && changes[0].offset == 0 && changes[1].offset == 1);
+        assert(WorkspaceEdits::convertFormatting(QString("😀").toUtf8(), QJsonArray{edit(0,0,2,"😁")}, &changes,&error));
+        assert(changes.size() == 1 && changes[0].offset == 0 && changes[0].removed == "😀" && changes[0].inserted == "😁");
     }
     QVector<WorkspaceDocumentEdit> documents;
     const auto uri=QUrl::fromLocalFile("/tmp/rename-target.cpp").toString();

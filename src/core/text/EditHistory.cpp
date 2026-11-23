@@ -126,8 +126,17 @@ void EditHistory::recordBatch(std::vector<EditChange> changes,
 }
 
 namespace {
+std::pair<std::size_t, std::size_t> displayPosition(const PieceTreeBuffer& buffer, std::size_t offset) {
+    const auto row = buffer.lineIndexAt(offset);
+    const auto start = buffer.lineStart(row);
+    auto column = buffer.utf16Before(offset) - buffer.utf16Before(start);
+    if (offset - start >= 3 && buffer.slice(start, 3) == "\xef\xbb\xbf") --column;
+    return {row, column};
+}
+
 void applyStoredCommand(PieceTreeBuffer& buffer,const std::shared_ptr<ChunkedFile>& file,const std::vector<std::size_t>& lengths,
-                        std::size_t offset,const std::vector<EditChange>& changes,bool undo,const std::function<void()>& checkpoint,std::size_t payloadOffset) {
+                        std::size_t offset,const std::vector<EditChange>& changes,bool undo,const std::function<void()>& checkpoint,
+                        std::size_t payloadOffset, const EditHistory::StoredEditApplied& applied) {
     struct Change {std::size_t at,removed,inserted,oldData,newData;};std::vector<Change> items;
     std::size_t position=payloadOffset,index=0;std::ptrdiff_t delta=0;
     auto add=[&](std::size_t at) {
@@ -139,22 +148,33 @@ void applyStoredCommand(PieceTreeBuffer& buffer,const std::shared_ptr<ChunkedFil
     if(changes.empty())add(offset);else{position+=lengths[0]+lengths[1];index=2;for(const auto& change:changes)add(change.offset);}
     for(auto it=items.rbegin();it!=items.rend();++it) {
         if(checkpoint)checkpoint();
-        buffer.erase(it->at,undo?it->inserted:it->removed);
+        const auto removed = undo ? it->inserted : it->removed;
         const auto size=undo?it->removed:it->inserted,begin=undo?it->oldData:it->newData;
+        EditHistory::StoredEditGeometry geometry{it->at, removed, size, {}, {}, {}};
+        if (applied) {
+            geometry.start = displayPosition(buffer, it->at);
+            geometry.oldEnd = displayPosition(buffer, it->at + removed);
+        }
+        buffer.erase(it->at, removed);
         for(std::size_t written=0;written<size;written+=64*1024) {
             if(checkpoint)checkpoint();
             const auto bytes=file->read(begin+written,std::min<std::size_t>(64*1024,size-written));
             buffer.insert(it->at+written,bytes);
+        }
+        if (applied) {
+            geometry.newEnd = displayPosition(buffer, it->at + size);
+            applied(geometry);
         }
     }
     file->dropCache();
 }
 }
 
-std::optional<HistoryResult> EditHistory::undoOne(PieceTreeBuffer& buffer, const EditApplied& applied,const std::function<void()>& checkpoint) {
+std::optional<HistoryResult> EditHistory::undoOne(PieceTreeBuffer& buffer, const EditApplied& applied,
+                                                  const std::function<void()>& checkpoint, const StoredEditApplied& storedApplied) {
     if (undo_.empty()) return std::nullopt;
-    if(undo_.back().disk && !applied) {
-        auto& command=undo_.back();applyStoredCommand(buffer,command.disk,command.lengths,command.offset,command.changes,true,checkpoint,command.diskOffset);
+    if(undo_.back().disk && (!applied || storedApplied)) {
+        auto& command=undo_.back();applyStoredCommand(buffer,command.disk,command.lengths,command.offset,command.changes,true,checkpoint,command.diskOffset,storedApplied);
         currentState_=command.beforeState;const HistoryResult result{command.cursorBefore,command.cursorsBefore};
         redo_.push_back(std::move(command));undo_.pop_back();coalescingBarrier_=true;enforceLimits();return result;
     }
@@ -173,6 +193,7 @@ std::optional<HistoryResult> EditHistory::undoOne(PieceTreeBuffer& buffer, const
                      static_cast<std::ptrdiff_t>(change.removed.size());
         }
         for (std::size_t index = command.changes.size(); index-- > 0;) {
+            if (checkpoint) checkpoint();
             const auto& change = command.changes[index];
             const auto offset = adjustedOffsets[index];
             applyChange(buffer,offset,change.inserted,change.removed,applied);
@@ -188,10 +209,11 @@ std::optional<HistoryResult> EditHistory::undoOne(PieceTreeBuffer& buffer, const
     return HistoryResult{cursor, cursors.empty() ? std::vector<std::size_t>{cursor} : cursors};
 }
 
-std::optional<HistoryResult> EditHistory::redoOne(PieceTreeBuffer& buffer, const EditApplied& applied,const std::function<void()>& checkpoint) {
+std::optional<HistoryResult> EditHistory::redoOne(PieceTreeBuffer& buffer, const EditApplied& applied,
+                                                  const std::function<void()>& checkpoint, const StoredEditApplied& storedApplied) {
     if (redo_.empty()) return std::nullopt;
-    if(redo_.back().disk && !applied) {
-        auto& command=redo_.back();applyStoredCommand(buffer,command.disk,command.lengths,command.offset,command.changes,false,checkpoint,command.diskOffset);
+    if(redo_.back().disk && (!applied || storedApplied)) {
+        auto& command=redo_.back();applyStoredCommand(buffer,command.disk,command.lengths,command.offset,command.changes,false,checkpoint,command.diskOffset,storedApplied);
         currentState_=command.afterState;const HistoryResult result{command.cursorAfter,command.cursorsAfter};
         undo_.push_back(std::move(command));redo_.pop_back();coalescingBarrier_=true;enforceLimits();return result;
     }
@@ -200,6 +222,7 @@ std::optional<HistoryResult> EditHistory::redoOne(PieceTreeBuffer& buffer, const
     redo_.pop_back();
     if (command.changes.size() > 1) {
         for (auto it = command.changes.rbegin(); it != command.changes.rend(); ++it) {
+            if (checkpoint) checkpoint();
             const auto& change = *it;
             applyChange(buffer,change.offset,change.removed,change.inserted,applied);
         }
@@ -214,22 +237,24 @@ std::optional<HistoryResult> EditHistory::redoOne(PieceTreeBuffer& buffer, const
     return HistoryResult{cursor, cursors.empty() ? std::vector<std::size_t>{cursor} : cursors};
 }
 
-std::optional<HistoryResult> EditHistory::undo(PieceTreeBuffer& buffer,const EditApplied& applied,const std::function<void()>& checkpoint) {
+std::optional<HistoryResult> EditHistory::undo(PieceTreeBuffer& buffer,const EditApplied& applied,
+                                               const std::function<void()>& checkpoint,const StoredEditApplied& storedApplied) {
     activeGroup_=0;endGroup();if(undo_.empty())return std::nullopt;
     const auto group=undo_.back().group;std::optional<HistoryResult> result;
     replayingGroup_=true;
-    try { do {auto next=undoOne(buffer,applied,checkpoint);if(!next)break;result=std::move(next);}
+    try { do {auto next=undoOne(buffer,applied,checkpoint,storedApplied);if(!next)break;result=std::move(next);}
         while(group && !undo_.empty() && undo_.back().group==group);
     } catch(...) {replayingGroup_=false;throw;}
     replayingGroup_=false;enforceLimits();return result;
 }
-std::optional<HistoryResult> EditHistory::redo(PieceTreeBuffer& buffer,const EditApplied& applied,const std::function<void()>& checkpoint) {
+std::optional<HistoryResult> EditHistory::redo(PieceTreeBuffer& buffer,const EditApplied& applied,
+                                               const std::function<void()>& checkpoint,const StoredEditApplied& storedApplied) {
     activeGroup_=0;endGroup();if(redo_.empty())return std::nullopt;
     const auto group=redo_.back().group;std::optional<HistoryResult> result;
     const bool atStart=redo_.back().redoAtStart;
     const HistoryResult start{redo_.back().cursorBefore,redo_.back().cursorsBefore};
     replayingGroup_=true;
-    try { do {auto next=redoOne(buffer,applied,checkpoint);if(!next)break;result=std::move(next);}
+    try { do {auto next=redoOne(buffer,applied,checkpoint,storedApplied);if(!next)break;result=std::move(next);}
         while(group && !redo_.empty() && redo_.back().group==group);
     } catch(...) {replayingGroup_=false;throw;}
     replayingGroup_=false;enforceLimits();if(result && atStart)result=start;return result;

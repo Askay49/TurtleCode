@@ -137,6 +137,15 @@ while True:
         if '--format-null' in sys.argv:
             response(identifier, None)
             continue
+        if '--format-many' in sys.argv:
+            edits = [{'range': {'start': {'line': 0, 'character': 0},
+                                'end': {'line': 0, 'character': 0}}, 'newText': '\n'}]
+            for line, row in enumerate(text.split('\n')):
+                if row.startswith('int  value_'):
+                    edits.append({'range': {'start': {'line': line, 'character': 4},
+                                            'end': {'line': line, 'character': 5}}, 'newText': ''})
+            response(identifier, edits, delayed=True)
+            continue
         formatted = text.replace('int  value=1;', 'int value = 1;').replace('\r\n', '\n')
         lines = text.split('\n')
         edits = [] if formatted == text else [{'range': {'start': {'line': 0, 'character': 0},
