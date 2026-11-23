@@ -1,4 +1,4 @@
-# Turtle Code — v0.10.9
+# Turtle Code — v0.10.10
 
 Turtle Code — нативный редактор кода для Linux на C++ и Qt Widgets.
 В основе редактора — собственный текстовый буфер Piece Tree и отрисовка видимой
