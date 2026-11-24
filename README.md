@@ -1,4 +1,4 @@
-# Turtle Code — v0.11.0
+# Turtle Code — v0.11.1
 
 Turtle Code — нативный редактор кода для Linux на C++ и Qt Widgets.
 В основе редактора — собственный текстовый буфер Piece Tree и отрисовка видимой
@@ -179,8 +179,9 @@ cmake --build build-no-treesitter -j4
 ## Установка в Linux
 
 Для новых версий в [GitHub Releases](https://github.com/Askay49/TurtleCode/releases) публикуются
-AppImage и архивы `.tar.gz` для x86_64 и ARM64, пакеты `.deb` для Ubuntu и Debian,
-`.rpm` для Fedora и `.pkg.tar.zst` для Arch Linux. Сборки ветки `main` доступны
+AppImage, архивы `.tar.gz` и общий для Ubuntu и Debian `.deb` для каждой архитектуры
+(x86_64 и ARM64). Для Fedora доступен `.rpm`, для Arch Linux — `.pkg.tar.zst`.
+Сборки ветки `main` доступны
 в разделе Artifacts успешных запусков
 [GitHub Actions](https://github.com/Askay49/TurtleCode/actions/workflows/appimage.yml).
 Список целевых выпусков Linux — в [документации по сборке](docs/BUILDING.md#пакеты-и-github-actions).

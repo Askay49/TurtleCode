@@ -82,8 +82,7 @@ Actions выберите **Build packages**, затем **Run workflow**. Пак
 | Целевая система | Архитектура | Пакеты |
 | --- | --- | --- |
 | Ubuntu 22.04 и совместимые Linux | x86_64, ARM64 | `.AppImage`, `.tar.gz` |
-| Ubuntu 22.04 | amd64, arm64 | `.deb` с суффиксом `~ubuntu22.04` |
-| Debian 13 | amd64, arm64 | `.deb` с суффиксом `~debian13` |
+| Ubuntu 22.04, 24.04, 26.04 и Debian 13 | amd64, arm64 | Один общий `.deb` на архитектуру |
 | Fedora 44 | x86_64 | `.rpm` |
 | Arch Linux | x86_64 | `.pkg.tar.zst` |
 | macOS | Apple Silicon и Intel | `.dmg`, `.app.zip` |
@@ -121,6 +120,21 @@ chmod +x dist/Turtle_Code-x86_64.AppImage
 `./dist/Turtle_Code-x86_64.AppImage --appimage-extract-and-run`.
 Языковые серверы, отладочные адаптеры, Git CLI и инструменты сборки грамматик
 по-прежнему устанавливаются отдельно. Файл AppImage не содержит весь toolchain.
+
+### Универсальный DEB
+
+Пакет создаётся из AppImage той же архитектуры. Он устанавливает Qt, плагины,
+libgit2, Tree-sitter и EditorConfig в `/usr/lib/turtle-code`. Команда
+`turtle-code`, ярлык и иконки доступны в стандартных системных каталогах.
+GitHub Actions устанавливает один и тот же файл в чистые контейнеры четырёх
+целевых систем и проверяет запуск через Qt offscreen.
+
+Чтобы собрать `.deb` локально из уже готового AppImage и установить его на amd64:
+
+```sh
+bash packaging/build-deb.sh dist/Turtle_Code-x86_64.AppImage dist
+sudo apt install ./dist/turtle-code_0.11.1-1_amd64.deb
+```
 
 ## Установка
 
