@@ -42,6 +42,10 @@ icon=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIconFile' "$app/Contents/Info.p
 test "$icon" = turtle-code.icns
 test -s "$app/Contents/Resources/$icon"
 test -f "$app/Contents/PlugIns/platforms/libqcocoa.dylib"
+plist="$app/Contents/Info.plist"
+plutil -lint "$plist"
+test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleDocumentTypes:0:CFBundleTypeRole' "$plist")" = Editor
+/usr/libexec/PlistBuddy -c 'Print CFBundleDocumentTypes:0:LSItemContentTypes' "$plist" | grep -x '[[:space:]]*public[.]plain-text' >/dev/null
 
 binary="$app/Contents/MacOS/turtle-code"
 platform=cocoa

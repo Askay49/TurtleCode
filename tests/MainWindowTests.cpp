@@ -1,7 +1,11 @@
 #include "document/RecoveryStore.hpp"
 #include "document/FileState.hpp"
 #include "app/MainWindow.hpp"
+#include "app/FileOpenApplication.hpp"
 #include "app/ShortcutManager.hpp"
+#include "debug/DebugPanel.hpp"
+#include "git/GitPanel.hpp"
+#include "search/SearchPanel.hpp"
 #include "terminal/TerminalPanel.hpp"
 #include "terminal/TerminalWidget.hpp"
 #include "terminal/TerminalSession.hpp"
@@ -56,6 +60,7 @@
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QThreadPool>
 #include <QScrollBar>
 #include <QScrollArea>
 #include <QWindow>
@@ -76,6 +81,45 @@ static void closeDiscard(MainWindow& window) {
             if(auto* button=message->button(QMessageBox::Discard))button->click();
     });responder.start();window.close();
     assert(waitFor([&]{const auto editors=window.findChildren<EditorWidget*>();return !window.isVisible() || std::any_of(editors.begin(),editors.end(),[](auto* e){return e->isBusy();});}));
+}
+
+static void fileOpenRequestTests(FileOpenApplication& app, const QTemporaryDir& directory) {
+    const QString first = directory.filePath("Finder startup Ω.txt");
+    const QString second = directory.filePath("Finder running #1.txt");
+    const QString third = directory.filePath("Finder running #2.txt");
+    for (const auto& path : {first, second, third}) {
+        QFile file(path);
+        assert(file.open(QIODevice::WriteOnly));
+        assert(file.write("Finder\n") == 7);
+    }
+    QFileOpenEvent startup(first);
+    assert(QApplication::sendEvent(&app, &startup));
+    const auto startupPaths = app.takeFileOpenRequests();
+    assert(startupPaths == QStringList{first});
+
+    MainWindow window;
+    window.openStartupPaths(startupPaths);
+    window.show();
+    int deliveries = 0;
+    app.setFileOpenHandler(&window, [&](const QStringList& paths) {
+        assert(paths == (QStringList{second, third}));
+        ++deliveries;
+        window.openPaths(paths);
+    });
+    QFileOpenEvent request(QUrl::fromLocalFile(second));
+    QFileOpenEvent next(QUrl::fromLocalFile(third));
+    QFileOpenEvent nonLocal(QUrl("https://example.invalid/file.txt"));
+    QApplication::sendEvent(&app, &nonLocal);
+    assert(QApplication::sendEvent(&app, &request));
+    assert(QApplication::sendEvent(&app, &next));
+    assert(waitFor([&] {
+        QStringList opened;
+        for (auto* editor : window.findChildren<EditorWidget*>())
+            if (!editor->isBusy()) opened.append(editor->filePath());
+        return opened.contains(first) && opened.contains(second) && opened.contains(third);
+    }));
+    assert(deliveries == 1);
+    closeDiscard(window);
 }
 
 static void startupProjectTests(const QTemporaryDir& directory) {
@@ -134,11 +178,53 @@ static void startupProjectTests(const QTemporaryDir& directory) {
         assert(drop.isAccepted() && drop.dropAction() == Qt::MoveAction);
     };
     {
+        DebugState state;
+        state.points[filePath].insert(1);
+        state.disabled[filePath].insert(1);
+        state.save(folder);
+
+        MainWindow window;
+        window.openStartupPaths({folder, filePath});
+        auto* editor = window.findChild<EditorWidget*>();
+        assert(editor && waitFor([&] { return !editor->isBusy(); }));
+        assert(!window.findChild<DebugPanel*>());
+        editor->setNavigationPosition(1, 0);
+        QTest::keyClick(editor, Qt::Key_Home);
+        QTest::keyClick(editor, Qt::Key_Return);
+
+        window.show();
+        auto* debugActivity = window.findChild<QToolButton*>("debugActivity");
+        debugActivity->click();
+        auto* debug = window.findChild<DebugPanel*>();
+        assert(debug && debugActivity->isChecked() && debug->isVisible());
+        assert(debug->breakpoints(filePath) == QSet<int>{2});
+        assert(debug->disabledBreakpoints(filePath) == QSet<int>{2});
+        assert(!window.findChild<SearchPanel*>());
+
+        window.findChild<QToolButton*>("searchActivity")->click();
+        auto* search = window.findChild<SearchPanel*>();
+        assert(search && search->isVisible());
+        assert(window.findChildren<SearchPanel*>().size() == 1);
+        assert(window.findChildren<DebugPanel*>().size() == 1);
+        closeDiscard(window);
+    }
+    {
         MainWindow window;
         window.openStartupPaths({});
         window.show();
         assert(page(window)->isVisible() && !sidebar(window)->isVisible());
+        assert(window.findChild<ProjectExplorer*>()->roots().isEmpty());
         assert(tree(window)->topLevelItemCount() == 1);
+        auto* git = window.findChild<GitPanel*>();
+        assert(git && git->service());
+        assert(!window.grab().isNull());
+        assert(!window.findChild<SearchPanel*>() && !window.findChild<DebugPanel*>() && !git->isUiInitialized());
+        assert(waitFor([&] { return window.findChild<SearchPanel*>(); }));
+        assert(!window.findChild<DebugPanel*>());
+        assert(waitFor([&] { return window.findChild<DebugPanel*>(); }));
+        assert(!git->isUiInitialized());
+        assert(waitFor([&] { return git->isUiInitialized(); }));
+        assert(page(window)->hasFocus() && !sidebar(window)->isVisible());
 
         createGroup(window, "Work");
 
@@ -245,6 +331,7 @@ static void startupProjectTests(const QTemporaryDir& directory) {
         window.openStartupPaths({filePath});
         window.show();
         assert(!sidebar(window)->isVisible() && !page(window));
+        assert(window.findChild<ProjectExplorer*>()->roots().isEmpty());
         assert(waitFor([&] {
             auto* editor = window.findChild<EditorWidget*>();
             return editor && !editor->isBusy() && editor->filePath() == filePath;
@@ -270,6 +357,89 @@ static void startupProjectTests(const QTemporaryDir& directory) {
         window.openStartupPaths({folder});
         window.show();
         assert(sidebar(window)->isVisible() && !page(window));
+        assert(window.findChild<ProjectExplorer*>()->roots() == QStringList{folder});
+    }
+    const auto missing = directory.filePath("missing-project");
+    const auto replacedByFile = directory.filePath("replaced-by-file");
+    const auto replacement = directory.filePath("relocated-project");
+    assert(QDir().mkpath(replacement));
+    const auto savedReplacement = QFileInfo(replacement).canonicalFilePath();
+    {
+        QFile file(replacedByFile);
+        assert(file.open(QIODevice::WriteOnly));
+    }
+    QSettings().setValue("projects/saved", QVariantMap{
+        {"groups", QStringList{"Moved Projects"}},
+        {"folders", QVariantMap{{missing, "Moved Projects"}, {replacedByFile, QString{}}, {savedFolder, QString{}}}}
+    });
+    {
+        MainWindow window;
+        window.openStartupPaths({});
+        window.show();
+        auto* list = tree(window);
+        auto* project = findItem(list, "missing-project");
+        assert(project->toolTip(0).isEmpty());
+        list->setCurrentItem(project);
+        const auto answerUnavailable = [&](QMessageBox::ButtonRole role, const QString& path) {
+            auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            assert(dialog && dialog->text().contains(QDir::toNativeSeparators(path)));
+            for (auto* button : dialog->buttons()) {
+                if (dialog->buttonRole(button) != role) continue;
+                button->click();
+                return;
+            }
+            assert(false);
+        };
+        QTimer::singleShot(0, [&] { answerUnavailable(QMessageBox::RejectRole, missing); });
+        click(window, "savedProjectsOpen");
+        assert(page(window)->isVisible() && list->currentItem() == project);
+
+        list->setCurrentItem(findItem(list, "replaced-by-file"));
+        QTimer::singleShot(0, [&] { answerUnavailable(QMessageBox::DestructiveRole, replacedByFile); });
+        click(window, "savedProjectsOpen");
+        assert(list->findItems("replaced-by-file", Qt::MatchExactly | Qt::MatchRecursive).isEmpty());
+        assert(QFileInfo(replacedByFile).isFile());
+
+        const auto chooseReplacement = [&](const QString& selectedFolder) {
+            QTimer::singleShot(0, [&, selectedFolder] {
+                answerUnavailable(QMessageBox::ActionRole, missing);
+                QTimer::singleShot(0, [selectedFolder] {
+                    auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+                    assert(dialog);
+                    dialog->selectFile(selectedFolder);
+                    static_cast<QDialog*>(dialog)->accept();
+                });
+            });
+            list->setCurrentItem(findItem(list, "missing-project"));
+        };
+        chooseReplacement(savedFolder);
+        QTimer duplicateAnswer;
+        QObject::connect(&duplicateAnswer, &QTimer::timeout, [&] {
+            auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (!dialog || !dialog->button(QMessageBox::Ok)) return;
+            assert(dialog->text() == "This folder is already in the project list.");
+            dialog->button(QMessageBox::Ok)->click();
+        });
+        duplicateAnswer.start(1);
+        click(window, "savedProjectsOpen");
+        duplicateAnswer.stop();
+        assert(page(window)->isVisible() && findItem(list, "missing-project"));
+
+        chooseReplacement(replacement);
+        click(window, "savedProjectsOpen");
+        assert(!page(window)->isVisible() && sidebar(window)->isVisible());
+        auto* explorer = window.findChild<ProjectExplorer*>();
+        assert(explorer->topLevelItemCount() == 1);
+        assert(explorer->topLevelItem(0)->data(0, Qt::UserRole).toString() == savedReplacement);
+    }
+    {
+        MainWindow window;
+        window.openStartupPaths({});
+        auto* list = tree(window);
+        auto* project = findItem(list, "relocated-project");
+        assert(project->text(1) == QDir::toNativeSeparators(savedReplacement));
+        assert(project->parent()->text(0) == "Moved Projects");
+        assert(list->findItems("missing-project", Qt::MatchExactly | Qt::MatchRecursive).isEmpty());
     }
 }
 
@@ -412,13 +582,7 @@ static void filePreviewTests(QTemporaryDir& directory) {
     waitForCurrent("split.txt", 5);
     closeDiscard(window);
     QDir recoveryRoot(RecoveryStore::rootDirectory());
-    const auto sessions = recoveryRoot.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-    assert(sessions.size() == 1);
-    const auto session = RecoveryStore::readObject(recoveryRoot.filePath(sessions.front() + "/session.json"));
-    assert(session["clean"].toBool() && session["documents"].toArray().size() == 4);
-    for (const auto& entry : session["documents"].toArray()) {
-        assert(!entry.toObject()["path"].toString().endsWith("/split.txt"));
-    }
+    assert(recoveryRoot.entryList(QDir::Dirs | QDir::NoDotAndDotDot).isEmpty());
 }
 
 static void externalFileTests(QTemporaryDir& directory) {
@@ -608,23 +772,31 @@ static void safetyTests(QTemporaryDir& directory) {
         };
         setBackups(false,false);assert(QSettings().value("editor/recoveryEnabled",true).toBool());
         setBackups(false,true);assert(!QSettings().value("editor/recoveryEnabled",true).toBool());
-        const auto directories=QDir(RecoveryStore::rootDirectory()).entryList(QDir::Dirs|QDir::NoDotAndDotDot);assert(directories.size()==1);
-        const auto base=RecoveryStore::rootDirectory()+"/"+directories.front();
         const auto id=editor->property("recoveryId").toString();
         auto* debounce=window.findChild<QTimer*>("recoveryDebounce");assert(debounce);debounce->setInterval(1);
         QTest::keyClick(editor,Qt::Key_A);debounce->start();
-        assert(waitFor([&]{return QFileInfo::exists(base+"/session.json");}));
-        assert(!QFileInfo::exists(base+"/"+id+".data"));
-        assert(!RecoveryStore::readObject(base+"/session.json")["documents"].toArray().first().toObject()["modified"].toBool());
+        assert(waitFor([&]{return !debounce->isActive();}));
+        assert(!QFileInfo::exists(RecoveryStore::rootDirectory()));
         setBackups(true,true);assert(QSettings().value("editor/recoveryEnabled",false).toBool());
-        assert(waitFor([&]{return RecoveryStore::readObject(base+"/session.json")["documents"].toArray().first().toObject()["modified"].toBool();}));
+        QString base;
+        assert(waitFor([&] {
+            const QDir root(RecoveryStore::rootDirectory());
+            const auto directories = root.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+            if (directories.size() != 1) return false;
+            base = root.filePath(directories.front());
+            const auto state = RecoveryStore::readObject(base + "/session.json");
+            const auto documents = state["documents"].toArray();
+            return documents.size() == 1 && documents.first().toObject()["modified"].toBool()
+                && !state.contains("roots") && !state.contains("clean");
+        }));
         const auto payload=read(base+"/"+id+".data");
         setBackups(false,true);QTest::keyClick(editor,Qt::Key_B);debounce->start();
         assert(waitFor([&]{return !debounce->isActive();}));
-        // Let the session-only worker publish; the existing payload stays untouched.
+        // Disabling backups preserves the existing checkpoint.
         QApplication::processEvents();assert(read(base+"/"+id+".data")==payload);
         setBackups(false,false);assert(!QSettings().value("editor/recoveryEnabled",true).toBool());
         setBackups(true,true);closeDiscard(window);
+        assert(!QFileInfo::exists(base));
     }
     // Exercise the actual automatic checkpoint pipeline and its disk-error notice.
     {
@@ -632,17 +804,25 @@ static void safetyTests(QTemporaryDir& directory) {
         MainWindow window;window.show();window.openPaths({first});
         auto* editor=window.findChild<EditorWidget*>();assert(editor);
         assert(waitFor([&]{return !editor->isBusy();}));
-        const auto directories=QDir(RecoveryStore::rootDirectory()).entryList(QDir::Dirs|QDir::NoDotAndDotDot);assert(directories.size()==1);
-        const auto directoryPath=RecoveryStore::rootDirectory()+"/"+directories.front();
+        const auto root = RecoveryStore::rootDirectory();
         const auto id=editor->property("recoveryId").toString();
         auto* debounce=window.findChild<QTimer*>("recoveryDebounce");assert(debounce);debounce->setInterval(1);
-        assert(QDir().mkpath(directoryPath+"/"+id+".data"));
+        assert(QDir().mkpath(QFileInfo(root).absolutePath()));
+        write(root, "block the first checkpoint");
         QTest::keyClick(editor,Qt::Key_A);
         assert(waitFor([&]{auto* label=window.findChild<QLabel*>("recoveryWarning");return label && label->isVisible();}));
         assert(editor->isModified());
-        assert(QDir(directoryPath+"/"+id+".data").removeRecursively());
+        assert(QFile::remove(root));
         QTest::keyClick(editor,Qt::Key_B);
-        assert(waitFor([&]{return QFileInfo::exists(directoryPath+"/session.json") && !window.findChild<QLabel*>("recoveryWarning")->isVisible();}));
+        QString directoryPath;
+        assert(waitFor([&] {
+            const QDir directory(root);
+            const auto entries = directory.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+            if (entries.size() != 1) return false;
+            directoryPath = directory.filePath(entries.front());
+            return QFileInfo::exists(directoryPath + "/session.json")
+                && !window.findChild<QLabel*>("recoveryWarning")->isVisible();
+        }));
         PieceTreeBuffer restored;QJsonObject metadata;QString error;
         assert(RecoveryStore::restoreDocument(directoryPath,id,restored,metadata,error));
         assert(restored.text()==editor->document()->buffer().text());
@@ -650,7 +830,7 @@ static void safetyTests(QTemporaryDir& directory) {
         QTest::keyClick(editor,Qt::Key_C);
         assert(waitFor([&]{return QFileInfo(directoryPath+"/"+id+".data").size()>size;}));
         closeDiscard(window);
-        assert(!QFileInfo::exists(directoryPath+"/"+id+".data"));
+        assert(!QFileInfo::exists(directoryPath));
     }
     // Restore a crash checkpoint after an external edit: never overwrite either version.
     const auto recoveryRoot=RecoveryStore::rootDirectory();
@@ -661,24 +841,32 @@ static void safetyTests(QTemporaryDir& directory) {
         PieceTreeBuffer text("\xef\xbb\xbfнесохранённый текст\r\nsecond line\r\n");
         assert(store.writeDocument("lost",text,{{"path",first},{"diskState",QString::fromLatin1(diskFileState(first))}}).isEmpty());
         assert(store.writeSession({{"clean",false},{"time","1"},{"active","lost"},{"roots",QJsonArray{directory.path()}},
-            {"documents",QJsonArray{QJsonObject{{"id","lost"},{"path",first},{"modified",true},{"line",2},{"column",3},{"vertical",0},{"horizontal",0}}}}}).isEmpty());
+            {"documents",QJsonArray{QJsonObject{{"id","lost"},{"path",first},{"modified",true},{"line",2},{"column",3},{"vertical",0},{"horizontal",0}},
+                                    QJsonObject{{"id","saved"},{"path",second},{"modified",false}}}}}).isEmpty());
     }
     write(first,"changed while editor was closed\n");
     {
+        QSettings().setValue("editor/recoveryEnabled", false);
         MainWindow window;window.openStartupPaths({});window.show();
         QTimer restore;restore.setInterval(1);
         QObject::connect(&restore,&QTimer::timeout,[]{if(auto* m=qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))for(auto* b:m->buttons())if(m->buttonRole(b)==QMessageBox::AcceptRole)b->click();});
-        restore.start();window.restorePreviousSession(false);restore.stop();
+        restore.start();window.restoreUnsavedDocuments();restore.stop();
         assert(waitFor([&]{auto* e=window.findChild<EditorWidget*>();return e && !e->isBusy();}));
         auto* editor=window.findChild<EditorWidget*>();assert(editor->isModified());
+        assert(window.findChild<QTabWidget*>("editorTabs")->count() == 1);
+        assert(window.findChild<ProjectExplorer*>()->topLevelItemCount() == 0);
         assert(editor->document()->buffer().text()=="\xef\xbb\xbfнесохранённый текст\r\nsecond line\r\n");
         assert(editor->navigationPosition()==QPoint(2,3));
         assert(read(first)=="changed while editor was closed\n");
         assert(editor->document()->diskState!=diskFileState(first));
         closeDiscard(window);
-        assert(RecoveryStore::readObject(abandoned+"/session.json")["documents"].toArray().isEmpty());
+        assert(!QFileInfo::exists(abandoned + "/lost.json"));
+        assert(!QFileInfo::exists(abandoned + "/lost.data"));
+        assert(QDir(recoveryRoot).entryList(QDir::Dirs|QDir::NoDotAndDotDot)
+            == QStringList{QFileInfo(abandoned).fileName()});
+        QSettings().remove("editor/recoveryEnabled");
     }
-    // Clean sessions restore paths, workspace and cursor without opening a recovery prompt.
+    // A regular close writes no session, and a legacy clean session is ignored at startup.
     QDir(recoveryRoot).removeRecursively();
     {
         MainWindow window;window.show();window.openPaths({directory.path(),first,second});
@@ -686,21 +874,20 @@ static void safetyTests(QTemporaryDir& directory) {
         auto* tabs=window.findChild<QTabWidget*>();tabs->setCurrentIndex(0);
         auto* editor=qobject_cast<EditorWidget*>(tabs->widget(0));editor->setNavigationPosition(1,4);
         closeDiscard(window);
+        assert(!QFileInfo::exists(recoveryRoot));
+    }
+    {
+        RecoveryStore legacy;
+        assert(legacy.writeSession({{"clean", true}, {"roots", QJsonArray{directory.path()}},
+            {"documents", QJsonArray{QJsonObject{{"path", first}, {"line", 1}, {"column", 4}}}}}).isEmpty());
     }
     {
         MainWindow window;
         window.openStartupPaths({});
         window.show();
-        window.restorePreviousSession(false);
+        window.restoreUnsavedDocuments();
         assert(window.findChild<QWidget*>("savedProjectsPage")->isVisible());
         assert(!window.findChild<EditorWidget*>());
-    }
-    {
-        MainWindow window;window.show();window.restorePreviousSession();
-        auto* tabs=window.findChild<QTabWidget*>();assert(tabs->count()==2);
-        assert(waitFor([&]{for(auto* e:window.findChildren<EditorWidget*>())if(e->isBusy())return false;return true;}));
-        auto* editor=qobject_cast<EditorWidget*>(tabs->currentWidget());assert(editor && editor->filePath()==first && editor->navigationPosition()==QPoint(1,4));
-        closeDiscard(window);
     }
 }
 #include "MemoryWorkload.hpp"
@@ -759,11 +946,14 @@ static void terminalWindowTests(const QTemporaryDir& directory) {
     checkLayout();
     assert(bounds(sidebar) == sidebarBefore);
     auto* panelTabs = panel->findChild<QTabWidget*>("terminalTabs"); assert(panelTabs);
-    assert(panelTabs->count() == 3);
+    assert(waitFor([&] { return panelTabs->count() == 3; }));
+    assert(panelTabs->tabPosition() == QTabWidget::North);
+    assert(bounds(panelTabs->tabBar()).top() < bounds(panelTabs->currentWidget()).top());
     assert(panelTabs->tabText(0) == I18n::text("OUTPUT"));
     assert(panelTabs->tabText(1) == I18n::text("DEBUG CONSOLE"));
     assert(panelTabs->tabText(2) == I18n::text("TERMINAL"));
     assert(panelTabs->currentWidget() == panel->terminal());
+    assert(!panelTabs->widget(1)->isVisible());
     assert(waitFor([&] { return panel->findChild<QLabel*>("terminalShellName")->text()
                                 == QFileInfo(panel->session()->program()).fileName(); }));
     auto* area = window.findChild<QMainWindow*>("editorArea"); assert(area);
@@ -842,8 +1032,8 @@ static void terminalWindowTests(const QTemporaryDir& directory) {
     panel->findChild<QToolButton*>("terminalClose")->click(); assert(!panel->isVisible());
     assert(ShortcutManager::instance().save({}, &error));
     toggle->trigger();
-    // Exiting leaves the output on screen, and Restart creates a fresh shell.
-    panel->session()->write("exit\n");
+    // A failed exit leaves the output on screen, and Restart creates a fresh shell.
+    panel->session()->write("exit 7\n");
     assert(waitFor([&] { return !panel->session()->isRunning() && terminal->screenText().contains("Process exited"); }));
     panel->findChild<QToolButton*>("terminalRestart")->click();
     assert(waitFor([&] { return panel->session()->processId() > 0; }));
@@ -884,8 +1074,18 @@ static void terminalWindowTests(const QTemporaryDir& directory) {
     explorer->setRoots({}); explorer->rootsChanged({});
     assert(waitFor([&] { return panel->session()->processId() > 0 && panel->session()->processId() != previousPid; }));
     checkDirectory(QDir::homePath(), "REMOVED");
+    panel->session()->write("exit 0\n");
+    assert(waitFor([&] { return !panel->isVisible() && !panel->session(); }));
+    assert(panelTabs->count() == 2 && editor->hasFocus());
+    toggle->trigger();
+    assert(waitFor([&] { return panel->session() && panel->session()->processId() > 0; }));
+    assert(panel->isVisible() && panel->terminal()->hasFocus());
+    const QPointer<TerminalSession> lastSession = panel->session();
+    QTest::mouseClick(panel->findChild<QToolButton*>("terminalCloseSession"), Qt::LeftButton);
+    assert(!panel->isVisible() && editor->hasFocus());
+    QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    assert(lastSession.isNull());
     closeDiscard(window);
-    assert(waitFor([&] { return !panel->session()->isRunning(); }));
 }
 
 static void explorerTerminalTests(const QTemporaryDir& directory) {
@@ -953,7 +1153,7 @@ static void explorerTerminalTests(const QTemporaryDir& directory) {
     TerminalPanel* panel = nullptr;
     assert(waitFor([&] { panel = window.findChild<TerminalPanel*>(); return panel && panel->isVisible(); }));
     auto* tabs = panel->findChild<QTabWidget*>("terminalTabs");
-    assert(tabs && tabs->count() == 4 && !panel->session()->isRunning());
+    assert(tabs && waitFor([&] { return tabs->count() == 4; }) && !panel->session()->isRunning());
     auto* fromFolder = tabs->currentWidget();
     assert(fromFolder != panel->terminal() && window.focusWidget() == fromFolder);
     assert(tabs->tabText(tabs->currentIndex()) == "sub && # % ; Ω");
@@ -1017,7 +1217,7 @@ int main(int argc,char**argv) {
     qputenv("XDG_CONFIG_HOME",directory.path().toUtf8());
     qputenv("XDG_DATA_HOME",directory.filePath("data").toUtf8());
     qputenv("SHELL", "/bin/sh"); // Do not source the user's shell configuration or write its history in tests.
-    QApplication app(argc,argv); app.setOrganizationName("TurtleCodeTests"); app.setApplicationName("WindowTests");
+    FileOpenApplication app(argc,argv); app.setOrganizationName("TurtleCodeTests"); app.setApplicationName("WindowTests");
     app.setQuitOnLastWindowClosed(false);
     QSettings().setValue("lsp/enabled",false); QSettings().setValue("lsp/autoCompletion",false);
     LanguageRegistry::setEnabled("cpp",false);
@@ -1051,7 +1251,11 @@ int main(int argc,char**argv) {
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--external-files"){externalFileTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--safety"){safetyTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--file-preview"){filePreviewTests(directory);return 0;}
-    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--startup-projects"){startupProjectTests(directory);return 0;}
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--startup-projects"){
+        fileOpenRequestTests(app, directory);
+        startupProjectTests(directory);
+        return 0;
+    }
     if (argc>1 && QString::fromLocal8Bit(argv[1])=="--russian-ui") {
         assert(I18n::saveLanguage("ru")); assert(I18n::initialize());
         QSettings().setValue("appearance/theme","tokyo-night");
@@ -1235,7 +1439,7 @@ int main(int argc,char**argv) {
             action->trigger(); assert(checked);
         };
         MainWindow window; window.show();
-        // The default home-directory explorer must not become a quick-open project.
+        // With no project, quick open only lists open files.
         checkQuickOpen(window,{});
         window.openPaths({inside});
         assert(waitFor([&] {
@@ -1256,7 +1460,7 @@ int main(int argc,char**argv) {
     {
         MainWindow window;
         auto* explorer=window.findChild<ProjectExplorer*>();
-        assert(explorer && explorer->topLevelItemCount()>0 && explorer->topLevelItem(0)->isExpanded());
+        assert(explorer && explorer->roots().isEmpty() && explorer->topLevelItemCount() == 0);
         window.show(); closeDiscard(window);
     }
     {
@@ -1722,8 +1926,15 @@ int main(int argc,char**argv) {
         QTest::keyClick(switchList,Qt::Key_Escape);
         QTest::keyRelease(editor,Qt::Key_Control);
         saveBackground(imageFile,35); checkImage(35);
-        // Reload uses persisted settings; cancelling a removal changes nothing.
-        ThemeManager::instance().initialize(); checkImage(35);
+        const auto wallpaperStyle = qApp->styleSheet();
+        const auto startBackgroundLoad = [] {
+            ThemeManager::instance().initialize(ThemeManager::BackgroundLoad::Asynchronous);
+            assert(!WorkspaceBackground::instance().enabled());
+        };
+        startBackgroundLoad();
+        assert(qApp->styleSheet() == wallpaperStyle);
+        assert(waitFor([] { return WorkspaceBackground::instance().enabled(); }));
+        checkImage(35);
         QTimer::singleShot(0,[&]{
             auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()); assert(dialog);
             assert(dialog->findChild<QSpinBox*>("backgroundOpacity")->value()==35);
@@ -1732,9 +1943,23 @@ int main(int argc,char**argv) {
         saveBackground(imageFile,0); checkImage(0);
         saveBackground(QString(),35); checkImage(0);
         assert(!WorkspaceBackground::instance().enabled());
+        const auto plainStyle = qApp->styleSheet();
+        // A successful load must not undo removal while its result is pending.
+        QSettings().setValue("appearance/backgroundImage",imageFile);
+        startBackgroundLoad();
+        QSettings().remove("appearance/backgroundImage");
+        ThemeManager::instance().refreshAppearance();
+        assert(QThreadPool::globalInstance()->waitForDone(5000));
+        QApplication::processEvents();
+        assert(!WorkspaceBackground::instance().enabled());
+        assert(qApp->styleSheet() == plainStyle);
+        checkImage(0);
         // A disappeared image safely falls back to the theme on restart.
         QSettings().setValue("appearance/backgroundImage",directory.filePath("missing.png"));
-        ThemeManager::instance().refreshAppearance(); checkImage(0);
+        startBackgroundLoad();
+        assert(qApp->styleSheet() == wallpaperStyle);
+        assert(waitFor([&] { return qApp->styleSheet() == plainStyle; }));
+        checkImage(0);
         QSettings().remove("appearance/backgroundImage");
         QSettings().remove("appearance/backgroundOpacity");
     }

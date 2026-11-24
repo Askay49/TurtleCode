@@ -186,10 +186,15 @@ static void gitWindowTests(QTemporaryDir& directory) {
     write(path, "int main() {\n    return 0;\n}\n");
     command({"add", "."}); command({"commit", "-m", "base"}); command({"branch", "side"});
     write(path, "int main() {\n    return 42;\n}\n");
-    MainWindow window; window.resize(1250, 780); window.show(); window.openPaths({root});
+    MainWindow window; window.resize(1250, 780); window.openPaths({root});
     auto* panel = window.findChild<GitPanel*>(); assert(panel);
     assert(waitFor([&] { return !panel->service()->busy() && panel->service()->repository() == root; }));
+    auto* badge = window.findChild<QLabel*>("gitCount");
+    assert(badge && badge->text() == "1" && !badge->isHidden());
+    assert(!panel->isUiInitialized());
+    window.show();
     auto* button = window.findChild<QToolButton*>("gitActivity"); assert(button); button->click();
+    assert(panel->isUiInitialized());
     assert(waitFor([&] { return !panel->service()->busy(); })); assert(panel->isVisible());
     auto* tree = panel->findChild<QTreeWidget*>("gitFiles"); assert(tree->topLevelItem(1)->childCount() == 1);
     bool firstBindingChecked=false;

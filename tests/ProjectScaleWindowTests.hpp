@@ -31,6 +31,7 @@ static void projectScaleWindowTests(QTemporaryDir& temporary) {
     QTest::keyClick(tree, Qt::Key_Return);
     assert(waitFor([&]{return pager(0)!=nullptr && tree->topLevelItem(0)->childCount()==151;}));
     assert(gap<1000);window.grab().save("/tmp/turtle-large-project.png");
+    window.findChild<QToolButton*>("searchActivity")->click();
     auto* panel=window.findChild<SearchPanel*>();assert(panel);
     auto* input=panel->findChild<QLineEdit*>("projectSearchInput");
     auto* results=panel->findChild<QTreeWidget*>("projectSearchResults");
@@ -165,6 +166,7 @@ static void explorerFolderSearchTests(QTemporaryDir& temporary) {
     assert(waitFor([&] { return window.isActiveWindow(); }));
     window.openPaths({root.path()});
     auto* tree = window.findChild<ProjectExplorer*>();
+    assert(waitFor([&] { return window.findChild<SearchPanel*>(); }));
     auto* panel = window.findChild<SearchPanel*>();
     auto* query = panel->findChild<QLineEdit*>("projectSearchInput");
     auto* results = panel->findChild<QTreeWidget*>("projectSearchResults");
@@ -535,11 +537,13 @@ static void explorerFileTransferTests(QTemporaryDir& temporary) {
     assert(QFile::setPermissions(source + "/nested", privateReadOnly));
 
     MainWindow window;
+    window.resize(1100, 720);
     window.show();
     window.activateWindow();
     window.openPaths({root.path()});
     auto* tree = window.findChild<ProjectExplorer*>();
     auto* tabs = window.findChild<QTabWidget*>("editorTabs");
+    assert(waitFor([&] { return window.findChild<DebugPanel*>(); }));
     auto* debug = window.findChild<DebugPanel*>();
     auto* clipboard = QApplication::clipboard();
     assert(tree && tabs && debug);

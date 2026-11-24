@@ -26,6 +26,7 @@ private:
     bool moveProject(const QString& path, const QString& group);
     bool moveGroup(const QString& group, const QString& parent);
     void openSelected();
+    void replaceProjectPath(const QString& path);
 
     QTreeWidget* projects_;
     QPushButton* back_;

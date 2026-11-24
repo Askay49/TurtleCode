@@ -5,13 +5,15 @@
 #include "app/Codicons.hpp"
 #include <QHBoxLayout>
 #include <QTabBar>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QTimer>
-#include <QTabWidget>
+#include <QSignalBlocker>
 #include <QJsonArray>
 #include <QDir>
 #include <QLabel>
 #include <QFileInfo>
+#include <algorithm>
 #include <utility>
 
 TerminalPanel::TerminalPanel(QWidget* parent) : QDockWidget(I18n::text("Terminal"), parent) {
@@ -45,20 +47,25 @@ TerminalPanel::TerminalPanel(QWidget* parent) : QDockWidget(I18n::text("Terminal
     restart_ = addButton("terminalRestart", "refresh", "Restart terminal");
     closeSession_ = addButton("terminalCloseSession", "trash", "Close terminal session");
     auto* hidePanel = addButton("terminalClose", "close", "Hide terminal");
-    tabs_=new QTabWidget(this); tabs_->setObjectName("terminalTabs");
-    auto tabFont = tabs_->tabBar()->font();
+    tabs_ = new QTabWidget(this);
+    tabs_->setObjectName("terminalTabs");
+    auto* tabBar = tabs_->tabBar();
+    tabBar->setAccessibleName(I18n::text("Terminal"));
+    auto tabFont = tabBar->font();
     tabFont.setPointSizeF(10);
-    tabs_->tabBar()->setFont(tabFont);
-    tabs_->tabBar()->setDrawBase(false);
-    tabs_->tabBar()->setExpanding(false);
-    tabs_->tabBar()->setElideMode(Qt::ElideRight);
-    tabs_->tabBar()->setUsesScrollButtons(true);
+    tabBar->setFont(tabFont);
+    tabBar->setDrawBase(false);
+    tabBar->setExpanding(false);
+    tabBar->setElideMode(Qt::ElideRight);
+    tabBar->setUsesScrollButtons(true);
     tabs_->setCornerWidget(header, Qt::TopRightCorner);
+
+    debugTerminal_ = new TerminalWidget(tabs_);
+    debugTerminal_->setObjectName("debugProgramTerminal");
+    debugSession_ = new TerminalSession(this);
+    const int outputIndex = tabs_->addTab(debugTerminal_, I18n::text("OUTPUT"));
+    tabs_->setTabToolTip(outputIndex, I18n::text("Program input/output"));
     terminal_ = addShell(I18n::text("TERMINAL"), {});
-    debugTerminal_=new TerminalWidget(this); debugTerminal_->setObjectName("debugProgramTerminal"); debugSession_=new TerminalSession(this);
-    tabs_->insertTab(0,debugTerminal_,I18n::text("OUTPUT"));
-    tabs_->setTabToolTip(0, I18n::text("Program input/output"));
-    tabs_->setCurrentWidget(terminal_);
     connect(debugTerminal_,&TerminalWidget::input,debugSession_,&TerminalSession::write);
     connect(debugTerminal_,&TerminalWidget::terminalSizeChanged,debugSession_,&TerminalSession::resize);
     connect(debugSession_,&TerminalSession::output,debugTerminal_,&TerminalWidget::feedOutput);
@@ -71,19 +78,22 @@ TerminalPanel::TerminalPanel(QWidget* parent) : QDockWidget(I18n::text("Terminal
         if(!pendingRequest_.isEmpty()) {const auto request=pendingRequest_; pendingRequest_={}; emit debugTerminalReply(request,false,{},message);}
         debugTerminal_->feedOutput(("\r\n"+message+"\r\n").toUtf8());
     });
-    // The tab strip is the single panel header; keep dock ownership and shortcuts.
+    // The tab strip is the dock header.
     auto* titleSpacer = new QWidget(this);
     titleSpacer->setFixedHeight(0);
-    setTitleBarWidget(titleSpacer); setWidget(tabs_); setFocusProxy(terminal_);
+    setTitleBarWidget(titleSpacer);
+    setWidget(tabs_);
     connect(hidePanel, &QToolButton::clicked, this, &QWidget::hide);
     connect(restart_, &QToolButton::clicked, this, &TerminalPanel::restartSession);
-    connect(closeSession_, &QToolButton::clicked, this, &TerminalPanel::closeCurrentSession);
-    connect(tabs_, &QTabWidget::currentChanged, this, [this] {
-        setFocusProxy(tabs_->currentWidget());
-        updateShellActions();
-        if (tabs_->currentWidget() == terminal_ && isVisible()) startSession(terminal_);
+    connect(closeSession_, &QToolButton::clicked, this, [this] {
+        closeShell(qobject_cast<TerminalWidget*>(tabs_->currentWidget()));
     });
-    updateShellActions();
+    connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
+        auto* page = tabs_->widget(index);
+        selectPage(page);
+        if (page && page == terminal_ && isVisible()) startSession(terminal_);
+    });
+    selectPage(terminal_);
     hide();
 }
 
@@ -114,6 +124,8 @@ TerminalWidget* TerminalPanel::addShell(const QString& title, const QString& dir
         if (shell->restartPending) {
             // Starting again must wait until QProcess has delivered finished().
             QTimer::singleShot(0, terminal, [this, terminal] { startSession(terminal); });
+        } else if (code == 0) {
+            closeShell(terminal);
         } else {
             terminal->feedOutput(("\r\n" + I18n::text("Process exited (%1). Use Restart terminal to start a new session.").arg(code) + "\r\n").toUtf8());
         }
@@ -122,23 +134,35 @@ TerminalWidget* TerminalPanel::addShell(const QString& title, const QString& dir
 }
 
 TerminalSession* TerminalPanel::session() const {
-    return shells_.constFind(terminal_)->session;
+    const auto shell = shells_.constFind(terminal_);
+    return shell == shells_.cend() ? nullptr : shell->session;
+}
+
+void TerminalPanel::selectPage(QWidget* page) {
+    if (!page) return;
+    const QSignalBlocker block(tabs_);
+    tabs_->setCurrentWidget(page);
+    setFocusProxy(page);
+    updateShellActions();
 }
 
 void TerminalPanel::updateShellActions() {
     const auto shell = shells_.constFind(tabs_->currentWidget());
     const bool hasShell = shell != shells_.cend();
     restart_->setEnabled(hasShell);
-    closeSession_->setVisible(hasShell && tabs_->currentWidget() != terminal_);
+    closeSession_->setEnabled(hasShell);
     shellIcon_->setVisible(hasShell);
     shellName_->setVisible(hasShell);
     if (hasShell) shellName_->setText(QFileInfo(shell->session->program()).fileName());
 }
 
 void TerminalPanel::open(const QString& directory) {
-    shells_[terminal_].directory = directory;
+    if (shells_.isEmpty()) terminal_ = addShell(I18n::text("TERMINAL"), directory);
+    if (terminal_) shells_[terminal_].directory = directory;
     auto* selected = tabs_->currentWidget();
-    auto* terminal = shells_.contains(selected) ? static_cast<TerminalWidget*>(selected) : terminal_;
+    if (!shells_.contains(selected))
+        selected = terminal_ ? terminal_ : tabs_->widget(tabs_->count() - shells_.size());
+    auto* terminal = static_cast<TerminalWidget*>(selected);
     showShell(terminal);
     if (terminal == terminal_) startSession(terminal);
 }
@@ -155,7 +179,7 @@ void TerminalPanel::openNewSession(const QString& directory) {
 }
 
 void TerminalPanel::showShell(TerminalWidget* terminal) {
-    tabs_->setCurrentWidget(terminal);
+    selectPage(terminal);
     show();
     raise();
     terminal->applyFontSettings();
@@ -167,6 +191,7 @@ void TerminalPanel::focusCurrentTab() {
 }
 
 void TerminalPanel::setDirectory(const QString& directory) {
+    if (!terminal_) return;
     const auto normalized = directory.isEmpty() ? QDir::homePath() : QDir(directory).absolutePath();
     auto& shell = shells_[terminal_];
     if (shell.directory == normalized) return;
@@ -201,19 +226,33 @@ void TerminalPanel::restartSession() {
     }
 }
 
-void TerminalPanel::closeCurrentSession() {
-    auto* terminal = tabs_->currentWidget();
-    if (terminal == terminal_) return;
+void TerminalPanel::closeShell(TerminalWidget* terminal) {
     auto shell = shells_.find(terminal);
     if (shell == shells_.end()) return;
 
     auto* session = shell->session;
+    const bool selected = tabs_->currentWidget() == terminal;
+    const int row = tabs_->indexOf(terminal);
+    if (terminal == terminal_) terminal_ = nullptr;
     shells_.erase(shell);
-    tabs_->removeTab(tabs_->currentIndex());
+    {
+        const QSignalBlocker block(tabs_);
+        tabs_->removeTab(row);
+    }
     session->stop();
     session->deleteLater();
     terminal->deleteLater();
-    if (auto* current = tabs_->currentWidget()) current->setFocus(Qt::OtherFocusReason);
+    if (selected && shells_.isEmpty()) hide();
+    auto* next = tabs_->currentWidget();
+    if (selected && !shells_.isEmpty()) {
+        const int firstShell = tabs_->count() - shells_.size();
+        next = tabs_->widget(std::clamp(row - 1, firstShell, tabs_->count() - 1));
+    }
+    selectPage(next);
+    if (selected && isVisible()) {
+        if (next == terminal_) startSession(terminal_);
+        focusCurrentTab();
+    }
 }
 
 void TerminalPanel::shutdown() {
@@ -223,11 +262,14 @@ void TerminalPanel::shutdown() {
 }
 
 void TerminalPanel::setDebugConsole(QWidget* console) {
-    debugConsole_=console; tabs_->insertTab(1,console,I18n::text("DEBUG CONSOLE")); console->show();
+    if (debugConsole_ == console) return;
+    debugConsole_ = console;
+    tabs_->insertTab(1, console, I18n::text("DEBUG CONSOLE"));
 }
 void TerminalPanel::showDebugConsole() {
     if(!debugConsole_) return;
-    show(); raise(); tabs_->setCurrentWidget(debugConsole_);
+    selectPage(debugConsole_);
+    show(); raise();
 }
 void TerminalPanel::runDebugProgram(const QJsonObject& request) {
     const auto args=request.value("arguments").toObject();
@@ -240,7 +282,8 @@ void TerminalPanel::runDebugProgram(const QJsonObject& request) {
     const auto program=arguments.takeFirst();
     if(program.isEmpty()) {emit debugTerminalReply(request,false,{},"Empty terminal command"); return;}
     debugTerminal_->reset(); debugTerminal_->applyFontSettings();
-    show(); raise(); tabs_->setCurrentWidget(debugTerminal_); debugTerminal_->setFocus();
+    selectPage(debugTerminal_);
+    show(); raise(); debugTerminal_->setFocus();
     debugSession_->resize(debugTerminal_->rows(),debugTerminal_->columns()); pendingRequest_=request;
     debugSession_->start(args.value("cwd").toString(),program,arguments,args.value("env").toObject());
 }

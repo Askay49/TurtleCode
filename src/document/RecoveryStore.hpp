@@ -16,6 +16,7 @@ public:
     QString writeDocument(const QString& id, const PieceTreeBuffer& snapshot, QJsonObject metadata);
     void forgetDocument(const QString& id);
     QString writeSession(QJsonObject session);
+    bool discard();
     static QString rootDirectory();
     static QJsonObject readObject(const QString& path);
     static bool restoreDocument(const QString& directory, const QString& id,

@@ -53,6 +53,17 @@ QString RecoveryStore::writeSession(QJsonObject session) {
     session["format"]=1;
     return commitObject(directory_+"/session.json",session);
 }
+
+bool RecoveryStore::discard() {
+    std::lock_guard guard(mutex_);
+    const QFileInfo directory(directory_);
+    const auto hidden = directory.dir().filePath("." + directory.fileName());
+    // Unpublish the checkpoint while this window still owns its lock.
+    if (!QDir().rename(directory_, hidden)) return false;
+    QDir(hidden).removeRecursively();
+    return true;
+}
+
 QString RecoveryStore::writeDocument(const QString& id,const PieceTreeBuffer& snapshot,QJsonObject metadata) {
     std::lock_guard guard(mutex_);
     if(!validId(id))return "Invalid recovery identifier";

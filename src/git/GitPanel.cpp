@@ -124,34 +124,15 @@ private:
     FileTree* tree_;
 };
 }
-GitPanel::GitPanel(QWidget* parent) : QWidget(parent), service_(this) {
+GitPanel::GitPanel(QWidget* parent, UiInitialization initialization) : QWidget(parent), service_(this) {
     setObjectName("gitPanel");
-    auto* layout=new QVBoxLayout(this); layout->setContentsMargins(0,0,0,0); layout->setSpacing(0);
-    auto* heading=new QWidget(this); heading->setObjectName("gitHeading");
-    auto* header=new QHBoxLayout(heading); header->setContentsMargins(12,5,6,5); header->setSpacing(2);
-    auto* title=new QLabel(I18n::text("SOURCE CONTROL"),heading); title->setObjectName("gitHeadingTitle");
-    title->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred); header->addWidget(title,1);
-    auto* collapse=tool(heading,"collapse-all",I18n::text("Collapse all")); header->addWidget(collapse);
-    refresh_=tool(heading,"refresh",I18n::text("Refresh Git")); refresh_->setObjectName("gitRefresh"); header->addWidget(refresh_);
-    auto* more=tool(heading,"ellipsis",I18n::text("More actions")); header->addWidget(more); layout->addWidget(heading);
-    auto* scroll=new QScrollArea(this); scroll->setObjectName("gitRepositoriesScroll"); scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame); scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    auto* content=new QWidget(scroll); repositoriesLayout_=new QVBoxLayout(content);
-    repositoriesLayout_->setContentsMargins(0,0,0,0); repositoriesLayout_->setSpacing(0);
-    empty_=new QLabel(I18n::text("No Git repository in workspace."),content); empty_->setWordWrap(true);
-    empty_->setContentsMargins(12,8,12,8); repositoriesLayout_->addWidget(empty_); repositoriesLayout_->addStretch();
-    scroll->setWidget(content); layout->addWidget(scroll,1);
-    connect(collapse,&QToolButton::clicked,this,[this] {
-        for(auto* section:sections_) { section->heading->setChecked(false); section->body->hide(); section->heading->setIcon(Codicons::icon("chevron-right")); }
+    connect(&service_, &GitService::changed, this, [this] {
+        int total = 0;
+        for (const auto& repository : service_.repositories())
+            total += service_.status(repository).entries.size();
+        rebuild();
+        emit countChanged(total);
     });
-    connect(refresh_,&QToolButton::clicked,&service_,&GitService::rescan);
-    connect(more,&QToolButton::clicked,this,[this,more] {
-        auto* menu=new QMenu(more); menu->setAttribute(Qt::WA_DeleteOnClose);
-        auto* refresh=menu->addAction(Codicons::icon("refresh"),I18n::text("Refresh Git"));
-        connect(refresh,&QAction::triggered,&service_,&GitService::rescan);
-        menu->popup(more->mapToGlobal(QPoint(0,more->height())));
-    });
-    connect(&service_,&GitService::changed,this,&GitPanel::rebuild);
     connect(&service_,&GitService::busyChanged,this,[this](bool busy) {
         updateActions();
         if(busy) return;
@@ -219,7 +200,38 @@ GitPanel::GitPanel(QWidget* parent) : QWidget(parent), service_(this) {
     connect(&service_,&GitService::changed,this,[this]{pollChanged_=true;pollDelay_=2500;});
     poll_->start(pollDelay_);
     connect(qApp,&QGuiApplication::applicationStateChanged,this,[this](Qt::ApplicationState state) { if(state==Qt::ApplicationActive) refresh(); });
-    applyFontSettings(); rebuild();
+    if (initialization == UiInitialization::Immediate) initializeUi();
+}
+
+void GitPanel::initializeUi() {
+    if (isUiInitialized()) return;
+    auto* layout=new QVBoxLayout(this); layout->setContentsMargins(0,0,0,0); layout->setSpacing(0);
+    auto* heading=new QWidget(this); heading->setObjectName("gitHeading");
+    auto* header=new QHBoxLayout(heading); header->setContentsMargins(12,5,6,5); header->setSpacing(2);
+    auto* title=new QLabel(I18n::text("SOURCE CONTROL"),heading); title->setObjectName("gitHeadingTitle");
+    title->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred); header->addWidget(title,1);
+    auto* collapse=tool(heading,"collapse-all",I18n::text("Collapse all")); header->addWidget(collapse);
+    refresh_=tool(heading,"refresh",I18n::text("Refresh Git")); refresh_->setObjectName("gitRefresh"); header->addWidget(refresh_);
+    auto* more=tool(heading,"ellipsis",I18n::text("More actions")); header->addWidget(more); layout->addWidget(heading);
+    auto* scroll=new QScrollArea(this); scroll->setObjectName("gitRepositoriesScroll"); scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame); scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto* content=new QWidget(scroll); repositoriesLayout_=new QVBoxLayout(content);
+    repositoriesLayout_->setContentsMargins(0,0,0,0); repositoriesLayout_->setSpacing(0);
+    empty_=new QLabel(I18n::text("No Git repository in workspace."),content); empty_->setWordWrap(true);
+    empty_->setContentsMargins(12,8,12,8); repositoriesLayout_->addWidget(empty_); repositoriesLayout_->addStretch();
+    scroll->setWidget(content); layout->addWidget(scroll,1);
+    connect(collapse,&QToolButton::clicked,this,[this] {
+        for(auto* section:sections_) { section->heading->setChecked(false); section->body->hide(); section->heading->setIcon(Codicons::icon("chevron-right")); }
+    });
+    connect(refresh_,&QToolButton::clicked,&service_,&GitService::rescan);
+    connect(more,&QToolButton::clicked,this,[this,more] {
+        auto* menu=new QMenu(more); menu->setAttribute(Qt::WA_DeleteOnClose);
+        auto* refresh=menu->addAction(Codicons::icon("refresh"),I18n::text("Refresh Git"));
+        connect(refresh,&QAction::triggered,&service_,&GitService::rescan);
+        menu->popup(more->mapToGlobal(QPoint(0,more->height())));
+    });
+    applyFontSettings();
+    rebuild();
 }
 GitPanel::~GitPanel() { qDeleteAll(sections_); }
 void GitPanel::pullRepository(const QString& repository) {
@@ -300,6 +312,7 @@ bool GitPanel::select(Section* section) {
     return section && !preparing_ && !service_.writing() && service_.selectRepository(section->repository);
 }
 void GitPanel::applyFontSettings() {
+    if (!isUiInitialized()) return;
     const auto size=FontSettings::font(FontSettings::Area::Tree).pointSizeF();
     auto widgets=findChildren<QWidget*>(); widgets.prepend(this);
     for(auto* widget:widgets) { auto font=widget->font(); font.setPointSizeF(size); widget->setFont(font); }
@@ -345,6 +358,7 @@ void GitPanel::requestCommit(Section* section,bool stageAll) {
     if(staged) { section->error->hide(); service_.commit(section->message->toPlainText()); }
 }
 void GitPanel::updateActions() {
+    if (!isUiInitialized()) return;
     const bool busy=service_.busy() || preparing_;
     refresh_->setEnabled(!busy);
     for(auto* section:sections_) {
@@ -361,15 +375,15 @@ void GitPanel::updateActions() {
     }
 }
 void GitPanel::rebuild() {
+    if (!isUiInitialized()) return;
     const auto repositories=service_.repositories();
     for(auto it=sections_.begin();it!=sections_.end();) {
         if(!repositories.contains(it.key())) { auto* section=it.value(); delete section->root; delete section; it=sections_.erase(it); }
         else ++it;
     }
-    int total=0;
     for(const auto& repository:repositories) {
         auto* section=sections_.value(repository); if(!section) { section=addRepository(repository); applyFontSettings(); }
-        const auto& status=service_.status(repository); total+=status.entries.size();
+        const auto& status=service_.status(repository);
         if(section->initialized && section->rendered==status) continue;
         const QSignalBlocker blocker(section->branches); section->branches->clear();
         for(const auto& branch:status.branches) section->branches->addItem(Codicons::icon("git-branch"),branch,branch);
@@ -379,7 +393,7 @@ void GitPanel::rebuild() {
         section->firstEntry=std::min<qsizetype>(section->firstEntry,std::max<qsizetype>(0,status.entries.size()-1));
         rebuildFiles(section); section->rendered=status; section->initialized=true;
     }
-    empty_->setVisible(repositories.isEmpty()); emit countChanged(total); updateActions();
+    empty_->setVisible(repositories.isEmpty()); updateActions();
 }
 void GitPanel::rebuildFiles(Section* section) {
     auto* files=section->files; const int scroll=files->verticalScrollBar()->value();

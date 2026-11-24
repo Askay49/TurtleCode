@@ -1,26 +1,64 @@
 #include "WorkspaceBackground.hpp"
+#include <QApplication>
+#include <QFutureWatcher>
 #include <QImageReader>
 #include <QPainter>
 #include <QSettings>
 #include <QWidget>
+#include <QtConcurrent/QtConcurrentRun>
 #include <algorithm>
+#include <utility>
+
+namespace {
+QImage readBackground(const QString& path) {
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    return reader.read();
+}
+}
 
 WorkspaceBackground& WorkspaceBackground::instance() {
     static WorkspaceBackground background;
     return background;
 }
-void WorkspaceBackground::reload() {
+QString WorkspaceBackground::resetForReload() {
+    ++generation_;
+    loading_ = false;
     QSettings settings;
-    const auto path = settings.value("appearance/backgroundImage").toString();
     image_ = QPixmap();
-    if (!path.isEmpty()) {
-        QImageReader reader(path);
-        reader.setAutoTransform(true);
-        image_ = QPixmap::fromImage(reader.read());
-    }
     opacity_ = std::clamp(settings.value("appearance/backgroundOpacity", 15).toInt(), 0, 100) / 100.0;
     scaled_ = QPixmap();
     cachedSize_ = QSize();
+    return opacity_ > 0 ? settings.value("appearance/backgroundImage").toString() : QString{};
+}
+void WorkspaceBackground::reload() {
+    const auto path = resetForReload();
+    if (!path.isEmpty()) image_ = QPixmap::fromImage(readBackground(path));
+}
+void WorkspaceBackground::reloadAsync(std::function<void()> onLoadError) {
+    const auto path = resetForReload();
+    if (path.isEmpty()) return;
+
+    loading_ = true;
+    auto* watcher = new QFutureWatcher<QImage>(qApp);
+    QObject::connect(watcher, &QFutureWatcher<QImage>::finished, qApp,
+                     [this, watcher, generation = generation_, onLoadError = std::move(onLoadError)] {
+        watcher->deleteLater();
+        if (generation != generation_) return;
+
+        loading_ = false;
+        image_ = QPixmap::fromImage(watcher->result());
+        if (image_.isNull()) {
+            onLoadError();
+            return;
+        }
+        for (auto* window : QApplication::topLevelWidgets()) {
+            if (window->objectName() != QStringLiteral("workspaceBackground")) continue;
+            window->update();
+            for (auto* child : window->findChildren<QWidget*>()) child->update();
+        }
+    });
+    watcher->setFuture(QtConcurrent::run(readBackground, path));
 }
 void WorkspaceBackground::paint(QWidget* surface, QPainter& painter, const QRect& rect, const QColor& base) {
     painter.fillRect(rect, base);

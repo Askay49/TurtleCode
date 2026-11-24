@@ -229,6 +229,34 @@ void MainWindow::paintEvent(QPaintEvent* event) {
     QMainWindow::paintEvent(event);
     QPainter painter(this);
     WorkspaceBackground::instance().paint(this, painter, rect(), ThemeManager::instance().color("sidebar.background"));
+    if (!startupPanelsPending()) return;
+    if (!startupPanelsTimer_) {
+        // Let the first frame and any initial input reach the event loop before constructing the panels.
+        startupPanelsTimer_ = new QTimer(this);
+        startupPanelsTimer_->setSingleShot(true);
+        startupPanelsTimer_->setInterval(100);
+        connect(startupPanelsTimer_, &QTimer::timeout, this, &MainWindow::initializeNextStartupPanel);
+        qApp->installEventFilter(this);
+    }
+    if (!startupPanelsTimer_->isActive()) startupPanelsTimer_->start();
+}
+
+bool MainWindow::startupPanelsPending() const {
+    return !searchPanel_ || !debugPanel_ || !gitPanel_->isUiInitialized();
+}
+
+void MainWindow::initializeNextStartupPanel() {
+    if (!isVisible() || isMinimized() || allowWindowClose_) return;
+    const auto* editor = activeEditor();
+    if (!closing_ && !QApplication::activeModalWidget() && !QApplication::activePopupWidget()
+        && tabSwitcher_->isHidden() && QApplication::mouseButtons() == Qt::NoButton
+        && (!editor || !editor->isBusy())) {
+        if (!searchPanel_) ensureSearchPanel();
+        else if (!debugPanel_) ensureDebugPanel();
+        else gitPanel_->initializeUi();
+    }
+    if (startupPanelsPending()) startupPanelsTimer_->start();
+    else if (tabSwitcher_->isHidden()) qApp->removeEventFilter(this);
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
@@ -358,10 +386,9 @@ void MainWindow::createUi() {
         statusBar()->showMessage(I18n::text("The active file is unavailable in the project tree."), 5000);
     });
     explorerLayout->addWidget(explorer_, 1);
-    searchPanel_ = new SearchPanel(sidebarStack_);
     sidebarStack_->addWidget(explorerPage_);
-    sidebarStack_->addWidget(searchPanel_);
-    gitPanel_ = new GitPanel(sidebarStack_); sidebarStack_->addWidget(gitPanel_);
+    gitPanel_ = new GitPanel(sidebarStack_, GitPanel::UiInitialization::Deferred);
+    sidebarStack_->addWidget(gitPanel_);
     connect(gitPanel_, &GitPanel::discardRequested, this, [this](const QString& repository,const GitEntry& entry) {
         if(closing_ || renameInProgress_ || !replaceLockedEditors_.isEmpty() || !branchLockedEditors_.isEmpty() || gitPanel_->service()->busy()) return;
         QVector<QPointer<EditorWidget>> affected;
@@ -379,7 +406,8 @@ void MainWindow::createUi() {
         // A background refresh may have started while the question was open.
         if(gitPanel_->service()->busy() || gitPanel_->service()->repository()!=repository) return;
         gitDiscardInProgress_=true; branchRepository_=repository; branchLockedEditors_=affected;
-        explorerPage_->setEnabled(false); searchPanel_->setEnabled(false);
+        explorerPage_->setEnabled(false);
+        if (searchPanel_) searchPanel_->setEnabled(false);
         for(const auto& editor:affected) if(editor) editor->setBusy(true);
         if(gitDiff_) gitDiff_->hide();
         gitPanel_->service()->discard(entry);
@@ -400,7 +428,9 @@ void MainWindow::createUi() {
             if(!success) {
                 for(const auto& editor:branchLockedEditors_) if(editor) editor->setBusy(false);
                 branchLockedEditors_.clear(); branchRepository_.clear();
-                explorerPage_->setEnabled(true); searchPanel_->setEnabled(true); return;
+                explorerPage_->setEnabled(true);
+                if (searchPanel_) searchPanel_->setEnabled(true);
+                return;
             }
         }
         finishGitBranchSwitch(repository);
@@ -541,54 +571,32 @@ void MainWindow::createUi() {
         gitDiff_->displayVersions(snapshot,std::move(live),diffEditorHost());
         if(revertFile) gitDiff_->revertFile();
     });
-    debugPanel_ = new DebugPanel(sidebarStack_); sidebarStack_->addWidget(debugPanel_);
-    debugPanel_->setConfigurationWriteCheck([this](const QStringList& paths) {
-        for (auto* editor : findChildren<EditorWidget*>()) {
-            const auto path = editor->filePath().isEmpty() ? editor->property("openingPath").toString() : editor->filePath();
-            if (paths.contains(path) && (editor->isModified() || editor->isBusy())) return false;
-        }
-        return true;
-    });
-    connect(debugPanel_, &DebugPanel::startRequested, this, [this] {
-        for (int i=0;i<tabs_->count();++i) if(auto* e=qobject_cast<EditorWidget*>(tabs_->widget(i)); e && (e->isModified() || e->isBusy())) {
-            statusBar()->showMessage(I18n::text("Save all files and wait for file operations before debugging"),6000); return;
-        }
-        debugPanel_->start();
-    });
-    connect(debugPanel_, &DebugPanel::configurationRequested, this, [this](const QString& path){openFile(path);});
-    connect(debugPanel_, &DebugPanel::currentFileRequested, this, [this] {
-        if(auto* e=activeEditor()) debugPanel_->useFile(e->filePath());
-    });
-    connect(debugPanel_, &DebugPanel::breakpointRequested, this, [this] {
-        if(auto* e=activeEditor()) debugPanel_->toggleBreakpoint(e->filePath(),e->navigationPosition().x());
-    });
-    connect(debugPanel_, &DebugPanel::breakpointsChanged, this, [this](const QString& path) {
-        for(auto* e:findChildren<EditorWidget*>()) if(e->filePath()==path) e->setDebugBreakpoints(debugPanel_->breakpoints(path),debugPanel_->disabledBreakpoints(path));
-    });
-    connect(debugPanel_, &DebugPanel::sourceActivated, this, [this](const QString& path,int line) { if(QFileInfo(path).isFile()) openFile(path,line); });
-    connect(debugPanel_, &DebugPanel::locationChanged, this, [this](const QString& path,int line) {
-        if (!debugHoverTip_.isEmpty() && QToolTip::text() == debugHoverTip_) QToolTip::hideText();
-        debugHoverTip_.clear();
-        debugPath_=path.isEmpty()?QString{}:QDir::cleanPath(QFileInfo(path).absoluteFilePath()); debugLine_=line;
-        if(!path.isEmpty() && line>0 && QFileInfo(path).isFile()) openFile(path,line);
-        for(auto* e:findChildren<EditorWidget*>()) e->setDebugLine(e->filePath()==debugPath_?line:0);
-    });
     sidebarLayout->addWidget(sidebarStack_, 1);
 
-    const auto showSidebarPage = [this](int index) {
-        if (!sidebar_->isHidden() && sidebarStack_->currentIndex()==index) {
+    const auto showSidebarPage = [this](QWidget* page) {
+        if (!sidebar_->isHidden() && sidebarStack_->currentWidget() == page) {
             setSidebarVisible(false);
-            return;
+            return false;
         }
-        sidebarStack_->setCurrentIndex(index);
+        sidebarStack_->setCurrentWidget(page);
         setSidebarVisible(true);
-        if (index == 2) gitPanel_->refresh();
-        if (index == 1) searchPanel_->focusSearch();
+        return true;
     };
-    connect(explorerActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(0); });
-    connect(searchActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(1); });
-    connect(gitActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(2); });
-    connect(debugActivity_, &QToolButton::clicked, this, [showSidebarPage] { showSidebarPage(3); });
+    connect(explorerActivity_, &QToolButton::clicked, this, [this, showSidebarPage] {
+        showSidebarPage(explorerPage_);
+    });
+    connect(searchActivity_, &QToolButton::clicked, this, [this, showSidebarPage] {
+        ensureSearchPanel();
+        if (showSidebarPage(searchPanel_)) searchPanel_->focusSearch();
+    });
+    connect(gitActivity_, &QToolButton::clicked, this, [this, showSidebarPage] {
+        gitPanel_->initializeUi();
+        if (showSidebarPage(gitPanel_)) gitPanel_->refresh();
+    });
+    connect(debugActivity_, &QToolButton::clicked, this, [this, showSidebarPage] {
+        ensureDebugPanel();
+        showSidebarPage(debugPanel_);
+    });
     connect(sidebarStack_, &QStackedWidget::currentChanged, this, [this] {
         updateSidebarActivities();
         syncExplorerToActiveFile();
@@ -613,18 +621,10 @@ void MainWindow::createUi() {
         ensureTerminal();
         terminalPanel_->openNewSession(directory);
     }, Qt::QueuedConnection);
-    connect(searchPanel_, &SearchPanel::fileActivated, this,
-            [this](const QString& path, int line, int column, int length) {
-        openFile(path, line, column, length);
-    });
-    connect(searchPanel_, &SearchPanel::replaceRequested, this,
-            [this](const ProjectReplaceRequest& request) { startProjectReplace(request); });
-    connect(searchPanel_, &SearchPanel::replaceFinished, this, &MainWindow::finishProjectReplace);
     connect(explorer_, &ProjectExplorer::rootsChanged, this, [this](const QStringList& roots) {
         projectRoots_ = roots;
-        if (roots.isEmpty()) explicitProject_ = false;
-        debugPanel_->setWorkspace(roots.value(0));
-        searchPanel_->setRoots(roots);
+        setDebugWorkspace(roots.value(0));
+        if (searchPanel_) searchPanel_->setRoots(roots);
         if (lsp_) lsp_->setRoot(roots.isEmpty() ? QDir::homePath() : roots.front());
         if (terminalPanel_) terminalPanel_->setDirectory(roots.value(0));
         gitPanel_->setRoots(roots);
@@ -644,7 +644,7 @@ void MainWindow::createUi() {
     });
     connect(explorer_, &ProjectExplorer::pathRenamed, this,
             [this](const QString& oldPath, const QString& newPath) {
-        debugPanel_->renameSource(oldPath,newPath);
+        renameDebugSource(oldPath, newPath);
         const QString oldPrefix = oldPath + QDir::separator();
         for (int i = 0; i < tabs_->count(); ++i) {
             auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
@@ -655,7 +655,7 @@ void MainWindow::createUi() {
                 const QString updatedPath = newPath + suffix;
                 if (lsp_) lsp_->close(currentPath);
                 editor->updateFilePathAfterRename(updatedPath);
-                editor->setDebugBreakpoints(debugPanel_->breakpoints(updatedPath),debugPanel_->disabledBreakpoints(updatedPath));
+                applyEditorBreakpoints(editor, updatedPath);
                 if (lsp_ && lsp_->available() && editor->lspAutomaticEligible() && lsp_->supports(updatedPath)) {
                     lsp_->open(updatedPath, editor->lspText());
                     requestSemanticHighlighting(editor);
@@ -692,10 +692,6 @@ void MainWindow::createUi() {
     });
     // Keep editor docks inside the right-hand workspace, beside the full-height sidebar.
     editorArea_ = new QMainWindow(splitter);
-    debugPanel_->setTerminalAvailable(true);
-    connect(debugPanel_,&DebugPanel::consoleRequested,this,[this]{ ensureTerminal(); terminalPanel_->showDebugConsole(); });
-    connect(debugPanel_,&DebugPanel::terminalRequested,this,[this](const QJsonObject& request){ ensureTerminal(); terminalPanel_->runDebugProgram(request); });
-    connect(debugPanel_,&DebugPanel::terminalStopRequested,this,[this]{ if(terminalPanel_) terminalPanel_->stopDebugProgram(); });
     editorArea_->setWindowFlags(Qt::Widget);
     editorArea_->setObjectName("editorArea");
     documentPages_ = new QStackedWidget(editorArea_);
@@ -789,15 +785,144 @@ void MainWindow::createUi() {
     workspaceLayout->addWidget(activityBar);
     workspaceLayout->addWidget(splitter,1);
     setCentralWidget(workspace);
-    setProjectRoots({QDir::homePath()}, false);
+}
+
+void MainWindow::ensureSearchPanel() {
+    if (searchPanel_) return;
+    searchPanel_ = new SearchPanel(sidebarStack_);
+    const QSettings settings;
+    searchPanel_->setShowHidden(settings.value("view/showHidden", false).toBool());
+    searchPanel_->setIncludeIgnored(settings.value("project/includeIgnored", false).toBool());
+    searchPanel_->setRoots(projectRoots_);
+    searchPanel_->setEnabled(branchRepository_.isEmpty());
+    sidebarStack_->insertWidget(1, searchPanel_);
+    connect(searchPanel_, &SearchPanel::fileActivated, this,
+            [this](const QString& path, int line, int column, int length) {
+        openFile(path, line, column, length);
+    });
+    connect(searchPanel_, &SearchPanel::replaceRequested, this,
+            [this](const ProjectReplaceRequest& request) { startProjectReplace(request); });
+    connect(searchPanel_, &SearchPanel::replaceFinished, this, &MainWindow::finishProjectReplace);
+}
+
+void MainWindow::ensureDebugPanel() {
+    if (debugPanel_) return;
+    debugPanel_ = new DebugPanel(sidebarStack_, projectRoots_.value(0));
+    sidebarStack_->addWidget(debugPanel_);
+    debugPanel_->setConfigurationWriteCheck([this](const QStringList& paths) {
+        for (auto* editor : findChildren<EditorWidget*>()) {
+            const auto path = editor->filePath().isEmpty() ? editor->property("openingPath").toString() : editor->filePath();
+            if (paths.contains(path) && (editor->isModified() || editor->isBusy())) return false;
+        }
+        return true;
+    });
+    connect(debugPanel_, &DebugPanel::startRequested, this, [this] {
+        for (int i=0;i<tabs_->count();++i) if(auto* e=qobject_cast<EditorWidget*>(tabs_->widget(i)); e && (e->isModified() || e->isBusy())) {
+            statusBar()->showMessage(I18n::text("Save all files and wait for file operations before debugging"),6000); return;
+        }
+        debugPanel_->start();
+    });
+    connect(debugPanel_, &DebugPanel::configurationRequested, this, [this](const QString& path){openFile(path);});
+    connect(debugPanel_, &DebugPanel::currentFileRequested, this, [this] {
+        if(auto* e=activeEditor()) debugPanel_->useFile(e->filePath());
+    });
+    connect(debugPanel_, &DebugPanel::breakpointRequested, this, [this] {
+        if(auto* e=activeEditor()) debugPanel_->toggleBreakpoint(e->filePath(),e->navigationPosition().x());
+    });
+    connect(debugPanel_, &DebugPanel::breakpointsChanged, this, &MainWindow::refreshEditorBreakpoints);
+    connect(debugPanel_, &DebugPanel::sourceActivated, this, [this](const QString& path,int line) { if(QFileInfo(path).isFile()) openFile(path,line); });
+    connect(debugPanel_, &DebugPanel::locationChanged, this, [this](const QString& path,int line) {
+        if (!debugHoverTip_.isEmpty() && QToolTip::text() == debugHoverTip_) QToolTip::hideText();
+        debugHoverTip_.clear();
+        debugPath_=path.isEmpty()?QString{}:QDir::cleanPath(QFileInfo(path).absoluteFilePath()); debugLine_=line;
+        if(!path.isEmpty() && line>0 && QFileInfo(path).isFile()) openFile(path,line);
+        for(auto* e:findChildren<EditorWidget*>()) e->setDebugLine(e->filePath()==debugPath_?line:0);
+    });
+    debugPanel_->setTerminalAvailable(true);
+    connect(debugPanel_,&DebugPanel::consoleRequested,this,[this]{ ensureTerminal(); terminalPanel_->showDebugConsole(); });
+    connect(debugPanel_,&DebugPanel::terminalRequested,this,[this](const QJsonObject& request){ ensureTerminal(); terminalPanel_->runDebugProgram(request); });
+    connect(debugPanel_,&DebugPanel::terminalStopRequested,this,[this]{ if(terminalPanel_) terminalPanel_->stopDebugProgram(); });
+    connectDebugConsole();
+    startupDebugState_.reset();
+    for (auto* editor : findChildren<EditorWidget*>())
+        applyEditorBreakpoints(editor, editor->filePath());
+}
+
+bool MainWindow::debugCommandAvailable(const QString& command) const {
+    if (debugPanel_) return debugPanel_->commandAvailable(command);
+    return command != "stop" && command != "next" && command != "stepIn" && command != "stepOut";
+}
+
+DebugState& MainWindow::startupDebugState() {
+    if (!startupDebugState_) {
+        startupDebugState_ = std::make_unique<DebugState>();
+        startupDebugState_->load(projectRoots_.value(0));
+    }
+    return *startupDebugState_;
+}
+
+void MainWindow::setDebugWorkspace(const QString& root) {
+    if (debugPanel_) {
+        debugPanel_->setWorkspace(root);
+    } else {
+        startupDebugState_.reset();
+        for (auto* editor : findChildren<EditorWidget*>()) applyEditorBreakpoints(editor, editor->filePath());
+    }
+}
+
+void MainWindow::applyEditorBreakpoints(EditorWidget* editor, const QString& path) {
+    if (path.isEmpty()) {
+        editor->setDebugBreakpoints({});
+    } else if (debugPanel_) {
+        editor->setDebugBreakpoints(debugPanel_->breakpoints(path), debugPanel_->disabledBreakpoints(path));
+    } else {
+        const auto& state = startupDebugState();
+        editor->setDebugBreakpoints(state.points.value(path), state.disabled.value(path));
+    }
+}
+
+void MainWindow::refreshEditorBreakpoints(const QString& path) {
+    for (auto* editor : findChildren<EditorWidget*>())
+        if (editor->filePath() == path) applyEditorBreakpoints(editor, path);
+}
+
+void MainWindow::renameDebugSource(const QString& oldPath, const QString& newPath) {
+    if (debugPanel_) {
+        debugPanel_->renameSource(oldPath, newPath);
+        return;
+    }
+    auto& state = startupDebugState();
+    const QString prefix = oldPath + QDir::separator();
+    bool changed = false;
+    for (const auto& path : state.points.keys()) {
+        if (path != oldPath && !path.startsWith(prefix)) continue;
+        const auto updated = newPath + path.mid(oldPath.size());
+        state.renameFile(path, updated);
+        refreshEditorBreakpoints(path);
+        refreshEditorBreakpoints(updated);
+        changed = true;
+    }
+    if (changed) state.save(projectRoots_.value(0));
+}
+
+void MainWindow::toggleDebugBreakpoint(const QString& path, int line) {
+    if (path.isEmpty() || line < 1) return;
+    if (debugPanel_) {
+        debugPanel_->toggleBreakpoint(path, line);
+    } else {
+        auto& state = startupDebugState();
+        state.toggleLine(path, line);
+        state.save(projectRoots_.value(0));
+        refreshEditorBreakpoints(path);
+    }
 }
 
 void MainWindow::updateSidebarActivities() {
-    int index=0;
-    for (auto* button : {explorerActivity_,searchActivity_,gitActivity_,debugActivity_}) {
-        button->setChecked(!sidebar_->isHidden() && sidebarStack_->currentIndex()==index);
-        ++index;
-    }
+    QWidget* page = sidebar_->isHidden() ? nullptr : sidebarStack_->currentWidget();
+    explorerActivity_->setChecked(page && page == explorerPage_);
+    searchActivity_->setChecked(page && page == searchPanel_);
+    gitActivity_->setChecked(page && page == gitPanel_);
+    debugActivity_->setChecked(page && page == debugPanel_);
 }
 
 void MainWindow::setSidebarVisible(bool visible) {
@@ -1073,9 +1198,6 @@ void MainWindow::createMenus() {
     ShortcutManager::instance().bind("view.outline", outlineAction);
     const bool showOutline=QSettings().value("view/outline",true).toBool();
     outline_->setVisible(showOutline);
-    QTimer::singleShot(0,this,[this] {
-        if(outline_->isVisible()) editorArea_->resizeDocks({outline_},{280},Qt::Horizontal);
-    });
     connect(outlineAction,&QAction::triggered,this,[](bool visible) { QSettings().setValue("view/outline",visible); });
     outline_->onClosed=[] { QSettings().setValue("view/outline",false); };
     connect(outline_,&QDockWidget::visibilityChanged,this,[this](bool) { scheduleOutline(); });
@@ -1115,8 +1237,6 @@ void MainWindow::createMenus() {
     addFileFilterAction("view.ignored", "Include ignored files", "filter", "project/includeIgnored");
     explorer_->setShowHidden(QSettings().value("view/showHidden", false).toBool());
     explorer_->setIncludeIgnored(QSettings().value("project/includeIgnored", false).toBool());
-    searchPanel_->setShowHidden(QSettings().value("view/showHidden", false).toBool());
-    searchPanel_->setIncludeIgnored(QSettings().value("project/includeIgnored", false).toBool());
     auto* explorerAction = viewMenu->addAction(Codicons::icon("files"), I18n::text("Toggle Side Bar"));
     explorerAction->setObjectName("view.explorer");
     ShortcutManager::instance().bind("view.explorer", explorerAction);
@@ -1138,23 +1258,35 @@ void MainWindow::createMenus() {
     });
     auto* debugAction = viewMenu->addAction(Codicons::icon("debug-alt"), I18n::text("Run and Debug"));
     ShortcutManager::instance().bind("view.debug",debugAction);
-    connect(debugAction,&QAction::triggered,this,[this]{setSidebarVisible(true);sidebarStack_->setCurrentWidget(debugPanel_);});
+    connect(debugAction, &QAction::triggered, this, [this] {
+        ensureDebugPanel();
+        setSidebarVisible(true);
+        sidebarStack_->setCurrentWidget(debugPanel_);
+    });
     for(const auto& command:QStringList{"start","stop","next","stepIn","stepOut"}) {
         auto* action=new QAction(this); addAction(action);
         ShortcutManager::instance().bind("debug."+command,action);
         connect(action,&QAction::triggered,this,[this,command]{
-            if(command=="start") { setSidebarVisible(true); sidebarStack_->setCurrentWidget(debugPanel_); }
-            debugPanel_->perform(command);
+            if (command == "start") {
+                ensureDebugPanel();
+                setSidebarVisible(true);
+                sidebarStack_->setCurrentWidget(debugPanel_);
+            }
+            if (debugPanel_) debugPanel_->perform(command);
         });
     }
     auto* breakpointAction=new QAction(this); addAction(breakpointAction);
     ShortcutManager::instance().bind("debug.breakpoint",breakpointAction);
-    connect(breakpointAction,&QAction::triggered,debugPanel_,&DebugPanel::breakpointRequested);
+    connect(breakpointAction, &QAction::triggered, this, [this] {
+        if (auto* editor = activeEditor())
+            toggleDebugBreakpoint(editor->filePath(), editor->navigationPosition().x());
+    });
     auto* gitAction = viewMenu->addAction(Codicons::icon("source-control"), I18n::text("Git"));
     ShortcutManager::instance().bind("view.git", gitAction);
     connect(gitAction, &QAction::triggered, this, [this] {
-        setSidebarVisible(true); sidebarStack_->setCurrentWidget(gitPanel_);
-        explorerActivity_->setChecked(false); searchActivity_->setChecked(false); gitActivity_->setChecked(true);
+        gitPanel_->initializeUi();
+        sidebarStack_->setCurrentWidget(gitPanel_);
+        setSidebarVisible(true);
         gitPanel_->refresh();
     });
 }
@@ -1164,7 +1296,7 @@ void MainWindow::openFolder() {
     if (!path.isEmpty()) openPaths({path});
 }
 
-bool MainWindow::setProjectRoots(const QStringList& roots, bool explicitProject) {
+bool MainWindow::setProjectRoots(const QStringList& roots) {
     if (!branchRepository_.isEmpty()) {
         statusBar()->showMessage(I18n::text("Wait for the branch switch to finish."), 5000);
         return false;
@@ -1175,28 +1307,26 @@ bool MainWindow::setProjectRoots(const QStringList& roots, bool explicitProject)
         if (info.exists() && info.isDir()) {
             const QString normalized = QDir::cleanPath(info.absoluteFilePath());
             valid.push_back(normalized);
-            break; // Exactly one project, including legacy sessions and CLI/IPC input.
+            break; // Exactly one project, including CLI/IPC input.
         }
     }
-    if (explicitProject && valid.isEmpty()) return false;
+    if (valid.isEmpty()) return false;
     projectRoots_ = valid;
-    workspaceIndex_->configure(explicitProject?valid:QStringList{}, {QSettings().value("view/showHidden",false).toBool(), QSettings().value("project/includeIgnored",false).toBool(), {}});
-    debugPanel_->setWorkspace(valid.value(0));
-    explicitProject_ = explicitProject && !valid.isEmpty();
-    if (lsp_) lsp_->setRoot(projectRoots_.isEmpty() ? QDir::homePath() : projectRoots_.front());
+    workspaceIndex_->configure(valid, {QSettings().value("view/showHidden",false).toBool(), QSettings().value("project/includeIgnored",false).toBool(), {}});
+    setDebugWorkspace(valid.front());
+    if (lsp_) lsp_->setRoot(valid.front());
     if (terminalPanel_) terminalPanel_->setDirectory(projectRoots_.value(0));
     explorer_->setRoots(projectRoots_);
     syncExplorerToActiveFile();
-    searchPanel_->setRoots(projectRoots_);
+    if (searchPanel_) searchPanel_->setRoots(projectRoots_);
     gitPanel_->setRoots(projectRoots_);
     if (gitDiff_) gitDiff_->hide();
-    if (explicitProject_) documentPages_->setCurrentIndex(0);
+    documentPages_->setCurrentIndex(0);
     updateWindowTitle();
     return true;
 }
 
 void MainWindow::openStartupPaths(const QStringList& paths) {
-    setProjectRoots({}, false);
     setSidebarVisible(false);
     if (paths.isEmpty()) showProjects(false);
     else openPaths(paths);
@@ -1233,7 +1363,7 @@ void MainWindow::openPaths(const QStringList& paths) {
         if (info.isDir()) roots.push_back(path);
         else if (info.isFile()) files.push_back(path);
     }
-    const bool showProjectTree = !explicitProject_;
+    const bool showProjectTree = projectRoots_.isEmpty();
     if (!roots.isEmpty() && setProjectRoots(roots) && showProjectTree) {
         sidebarStack_->setCurrentWidget(explorerPage_);
         setSidebarVisible(true);
@@ -1288,13 +1418,13 @@ void MainWindow::commandPalette() {
         else if (command.id.startsWith("code.") && editor && !editor->isBusy() && !lsp_->supports(editor->filePath())) {
             entry.enabled = false; entry.reason = I18n::text("Language server not configured");
         }
-        if (command.id.startsWith("debug.") && !debugPanel_->commandAvailable(command.id.mid(6))) {
+        if (command.id.startsWith("debug.") && !debugCommandAvailable(command.id.mid(6))) {
             entry.enabled = false; entry.reason = I18n::text("Debug command is unavailable in the current state");
         }
         if (!entry.enabled && entry.reason.isEmpty()) entry.reason = I18n::text("Command is unavailable");
         entry.execute = [this, target, editor, needsEditor, id=command.id] {
             if (needsEditor && id != "code.problems" && (!editor || editor->isBusy() || activeEditor() != editor)) return;
-            if (id.startsWith("debug.") && !debugPanel_->commandAvailable(id.mid(6))) return;
+            if (id.startsWith("debug.") && !debugCommandAvailable(id.mid(6))) return;
             if (needsEditor && editor) editor->setFocus(Qt::OtherFocusReason);
             if (auto* action = qobject_cast<QAction*>(target)) { if (action->isEnabled()) action->trigger(); }
             else if (auto* shortcut = qobject_cast<QShortcut*>(target); shortcut && shortcut->isEnabled())
@@ -1485,22 +1615,18 @@ void MainWindow::finishClose(bool accepted) {
     }
     finishTabSwitch(false);
     if(closingWindow_) {
-        // Modified documents explicitly discarded by the user are reopened from disk.
-        // Unsaved untitled documents are absent from the clean session.
-        if(recovery_) {
-            const auto error=recovery_->writeSession(sessionState(true));
-            if(!error.isEmpty()) {
-                IconDialogs::MessageBox::warning(this,I18n::text("Recovery failed"),error);
-                closing_=false;return;
-            }
-        }
         for(const auto& editor:closingEditors_)if(editor) {
             const auto source=editor->property("recoveryOrigin").toString();
             if(!source.isEmpty()) {
                 const auto error=RecoveryStore::retireDocument(source,editor->property("recoveryOriginId").toString());
                 if(!error.isEmpty()){IconDialogs::MessageBox::warning(this,I18n::text("Recovery failed"),error);closing_=false;return;}
             }
-            if(recovery_)recovery_->forgetDocument(editor->property("recoveryId").toString());
+        }
+        if (recovery_ && !recovery_->discard()) {
+            IconDialogs::MessageBox::warning(this, I18n::text("Recovery failed"),
+                                            I18n::text("Cannot remove discarded recovery data"));
+            closing_ = false;
+            return;
         }
         recoveryStopped_=true;allowWindowClose_=true;closing_=false;QTimer::singleShot(0,this,[this]{close();});return;
     }
@@ -1591,7 +1717,7 @@ void MainWindow::finishTabSwitch(bool accept) {
     if (tabSwitcher_->isHidden()) return;
     const int row=tabSwitchList_->currentRow();
     QPointer<QWidget> target=accept && row>=0 && row<tabSwitchOrder_.size()?tabSwitchOrder_.at(row):QPointer<QWidget>{};
-    qApp->removeEventFilter(this);
+    if (!startupPanelsTimer_ || !startupPanelsPending()) qApp->removeEventFilter(this);
     tabSwitcher_->hide();
     tabSwitchOrder_.clear();
     if(target && tabs_->indexOf(target)>=0) {
@@ -1659,6 +1785,12 @@ bool MainWindow::filterFocusNavigationEvent(QEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched,QEvent* event) {
+    if (startupPanelsTimer_ && startupPanelsTimer_->isActive()
+        && (event->type() == QEvent::KeyPress || event->type() == QEvent::MouseButtonPress
+            || event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::Wheel)) {
+        const auto* widget = qobject_cast<QWidget*>(watched);
+        if (widget && widget->window() == this) startupPanelsTimer_->start();
+    }
     if (watched == focusNavigationTarget_ && filterFocusNavigationEvent(event)) return true;
     if (!tabSwitcher_ || tabSwitcher_->isHidden()) return QMainWindow::eventFilter(watched, event);
     if ((watched == tabs_ || watched == paneWorkspace_)
@@ -1824,10 +1956,7 @@ void MainWindow::openFile(const QString& inputPath, int line, int column, int le
         }
         if (line > 0 && viewGuard) viewGuard->revealMatch(line, column, length, centerTarget);
         tabs_->setTabText(tabIndex, QFileInfo(path).fileName());
-        if(editorGuard->property("restoreVertical").isValid())editorGuard->verticalScrollBar()->setValue(editorGuard->property("restoreVertical").toInt());
-        if(editorGuard->property("restoreHorizontal").isValid())editorGuard->horizontalScrollBar()->setValue(editorGuard->property("restoreHorizontal").toInt());
         queueVimBufferAutocmd(editorGuard, "BufReadPost");
-        if(editorGuard->property("restoreActive").toBool())activateEditor(editorGuard);
         updateVimAutocmdBuffer();
         updateWindowTitle();
     });
@@ -1906,7 +2035,8 @@ void MainWindow::switchGitBranch(const QString& repository, const QString& branc
         affected.append(editor);
     }
     branchRepository_ = repository; branchLockedEditors_ = affected;
-    explorerPage_->setEnabled(false); searchPanel_->setEnabled(false);
+    explorerPage_->setEnabled(false);
+    if (searchPanel_) searchPanel_->setEnabled(false);
     for (const auto& editor : affected) if (editor) editor->setBusy(true);
     if (gitDiff_) gitDiff_->hide();
     if(branch.isEmpty()) gitPanel_->pullRepository(repository);
@@ -1916,7 +2046,8 @@ void MainWindow::switchGitBranch(const QString& repository, const QString& branc
 void MainWindow::finishGitBranchSwitch(const QString& repository) {
     if (repository != branchRepository_) return;
     const auto editors = branchLockedEditors_; branchLockedEditors_.clear(); branchRepository_.clear();
-    explorerPage_->setEnabled(true); searchPanel_->setEnabled(true);
+    explorerPage_->setEnabled(true);
+    if (searchPanel_) searchPanel_->setEnabled(true);
     QVector<QPointer<EditorWidget>> removed;
     for (const auto& editor : editors) {
         if (!editor) continue;
@@ -2184,13 +2315,13 @@ void MainWindow::writeEditor(EditorWidget* editor,const QString& path,const QByt
             return;
         }
         if(lsp_ && previousPath!=path)lsp_->close(previousPath);
-        if(previousPath!=path) debugPanel_->renameSource(previousPath,path);
+        if (previousPath != path) renameDebugSource(previousPath, path);
         guard->completeAsyncSave(path);
         if(QFileInfo(path).fileName()==".editorconfig")
             for(auto* window:QApplication::topLevelWidgets())
                 if(auto* main=qobject_cast<MainWindow*>(window))
                     for(auto* open:main->findChildren<EditorWidget*>())open->refreshEditorConfig();
-        guard->setDebugBreakpoints(debugPanel_->breakpoints(path),debugPanel_->disabledBreakpoints(path));guard->document()->diskState=result.diskState;
+        applyEditorBreakpoints(guard, path);guard->document()->diskState=result.diskState;
         if(lsp_ && lsp_->available() && lsp_->supports(path) && guard->lspEligible() &&
            (guard->lspAutomaticEligible() || lsp_->documentVersion(path)>0)) {
             if(previousPath!=path)lsp_->open(path,guard->lspText());
@@ -2263,6 +2394,8 @@ void MainWindow::updateWindowTitle() {
 }
 
 void MainWindow::showProjectSearch(const QString& directory) {
+    if (closing_) return;
+    ensureSearchPanel();
     searchPanel_->setSearchDirectory(directory);
     sidebarStack_->setCurrentWidget(searchPanel_);
     setSidebarVisible(true);
@@ -2665,7 +2798,7 @@ void MainWindow::requestEditorHover(EditorWidget* editor, int line, int column, 
 
     if (!path.isEmpty() && path == debugPath_ && isCurrent()) {
         const auto target = editor->debugHoverExpression(editor->viewport()->mapFromGlobal(global));
-        if (target && debugPanel_->evaluateHover(target->text, [this, guard, target=*target, isCurrent, showLanguageHover](const QString& value) {
+        if (target && debugPanel_ && debugPanel_->evaluateHover(target->text, [this, guard, target=*target, isCurrent, showLanguageHover](const QString& value) {
             if (!isCurrent()) return;
             auto* viewport = guard->viewport();
             const auto cursor = QCursor::pos();
@@ -2775,7 +2908,7 @@ void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool p
         [](const QString& id) { return ShortcutManager::instance().hasCommand(id); },
         [this, editor](const QString& id) {
             if (closing_ || activeEditor() != editor || editor->isBusy()) return false;
-            if (id.startsWith("debug.") && !debugPanel_->commandAvailable(id.mid(6))) return false;
+            if (id.startsWith("debug.") && !debugCommandAvailable(id.mid(6))) return false;
             QObject* target = ShortcutManager::instance().target(id, this, editor);
             if (auto* action = qobject_cast<QAction*>(target); action && action->isEnabled()) {
                 action->trigger();
@@ -2808,18 +2941,38 @@ void MainWindow::connectEditor(EditorWidget* editor, const QString& path, bool p
         if(auto* target=activeEditor()){target->resetVimMode();target->setFocus();editor->transferVimReplay(target);}
     });
     connect(editor,&EditorWidget::vimModeChanged,this,&MainWindow::updateVimIndicator);
-    editor->setDebugBreakpoints(debugPanel_->breakpoints(path),debugPanel_->disabledBreakpoints(path));
+    applyEditorBreakpoints(editor, path);
     connect(editor, &EditorWidget::contentChanged, this, [this, editor, observedPath = path]() mutable {
         if (observedPath == editor->filePath()) return;
         observedPath = editor->filePath();
-        editor->setDebugBreakpoints(debugPanel_->breakpoints(observedPath), debugPanel_->disabledBreakpoints(observedPath));
+        applyEditorBreakpoints(editor, observedPath);
         editor->setDebugLine(observedPath == debugPath_ ? debugLine_ : 0);
     });
-    connect(editor,&EditorWidget::debugAnchorsMoved,this,[this,editor](const QMap<int,int>& anchors){debugPanel_->remapBreakpoints(editor->filePath(),anchors);});
-    connect(editor,&EditorWidget::debugLinesEdited,this,[this,editor](int row,int column,int removed,int inserted){debugPanel_->moveBreakpoints(editor->filePath(),row,column,removed,inserted);});
+    connect(editor, &EditorWidget::debugAnchorsMoved, this, [this, editor](const QMap<int, int>& anchors) {
+        const auto path = editor->filePath();
+        if (path.isEmpty()) return;
+        if (debugPanel_) {
+            debugPanel_->remapBreakpoints(path, anchors);
+        } else if (auto& state = startupDebugState(); state.remapLines(path, anchors)) {
+            state.save(projectRoots_.value(0));
+            refreshEditorBreakpoints(path);
+        }
+    });
+    connect(editor, &EditorWidget::debugLinesEdited, this,
+            [this, editor](int row, int column, int removed, int inserted) {
+        const auto path = editor->filePath();
+        if (path.isEmpty() || (removed == 0 && inserted == 0)) return;
+        if (debugPanel_) {
+            debugPanel_->moveBreakpoints(path, row, column, removed, inserted);
+        } else if (auto& state = startupDebugState(); state.points.contains(path)) {
+            state.moveLines(path, row, column, removed, inserted);
+            state.save(projectRoots_.value(0));
+            refreshEditorBreakpoints(path);
+        }
+    });
     editor->setDebugLine(path==debugPath_?debugLine_:0);
     connect(editor,&EditorWidget::breakpointToggled,this,[this,editor](int line) {
-        debugPanel_->toggleBreakpoint(editor->filePath(),line);
+        toggleDebugBreakpoint(editor->filePath(), line);
     });
     connect(editor,&EditorWidget::vimCompletionRequested,this,[this,editor]{requestCompletion(editor,false);});
     connect(editor, &EditorWidget::codeContextMenuRequested, this, [this, editor](const QPoint& global) {
@@ -3140,11 +3293,6 @@ void MainWindow::updateVimIndicator() {
 }
 
 void MainWindow::initializeRecovery() {
-    try { recovery_=std::make_shared<RecoveryStore>(); }
-    catch(const std::exception& error) {
-        auto* warning=new QLabel(I18n::text("Recovery is unavailable"),this);
-        warning->setToolTip(QString::fromUtf8(error.what()));statusBar()->addPermanentWidget(warning);return;
-    }
     recoveryTimer_=new QTimer(this);recoveryTimer_->setObjectName("recoveryDebounce");recoveryTimer_->setSingleShot(true);recoveryTimer_->setInterval(2000);
     recoveryDeadline_=new QTimer(this);recoveryDeadline_->setObjectName("recoveryDeadline");recoveryDeadline_->setSingleShot(true);recoveryDeadline_->setInterval(15000);
     connect(recoveryTimer_,&QTimer::timeout,this,&MainWindow::checkpointRecovery);
@@ -3161,33 +3309,29 @@ void MainWindow::applyRecoverySettings() {
     } else if(recoveryTimer_)recoveryTimer_->start();
 }
 
-QJsonObject MainWindow::sessionState(bool clean) const {
+QJsonObject MainWindow::recoveryState() const {
     QJsonArray documents;
-    const bool backupsEnabled=QSettings().value("editor/recoveryEnabled",true).toBool();
-    QString active;
+    const auto* active = activeEditor();
+    QString activeId;
     for(int i=0;i<tabs_->count();++i)if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i))) {
-        if (editor->isBusy()) continue;
-        const auto path=editor->filePath();
-        if(clean && path.isEmpty())continue;
+        if (editor->isBusy() || !editor->isModified()) continue;
         const auto id=editor->property("recoveryId").toString();
-        const bool hasCopy=recovery_ && QFileInfo::exists(recovery_->directory()+"/"+id+".json");
-        if (filePreviews_.contains(editor) && (clean || !editor->isModified() || (!backupsEnabled && !hasCopy))) continue;
-        if(!clean && !backupsEnabled && path.isEmpty() && !hasCopy)continue;
-        const auto* view = activeEditor();
-        if (!view || view->document() != editor->document()) view = editor;
+        // An edit may have arrived during the write. Keep the last published copy
+        // for that document, and wait for a checkpoint for any newly modified buffer.
+        if (!QFileInfo::exists(recovery_->directory() + "/" + id + ".json")) continue;
+        const auto* view = active && active->document() == editor->document() ? active : editor;
         const auto position=view->navigationPosition();
-        QJsonObject entry{{"id",id},{"path",path},{"line",position.x()},{"column",position.y()},
+        QJsonObject entry{{"id",id},{"path",editor->filePath()},{"line",position.x()},{"column",position.y()},
             {"vertical",view->verticalScrollBar()->value()},{"horizontal",view->horizontalScrollBar()->value()},
-            {"modified",!clean && editor->isModified() && (backupsEnabled || hasCopy)}};
+            {"modified",true}};
         documents.append(entry);
-        if(view==activeEditor())active=id;
+        if (view == active) activeId = id;
     }
-    return {{"documents",documents},{"roots",QJsonArray::fromStringList(explicitProject_?projectRoots_:QStringList{})},
-            {"active",active},{"clean",clean},{"time",QString::number(QDateTime::currentMSecsSinceEpoch())}};
+    return {{"documents",documents},{"active",activeId},{"time",QString::number(QDateTime::currentMSecsSinceEpoch())}};
 }
 
 void MainWindow::checkpointRecovery() {
-    if(!recovery_ || recoveryStopped_ || closing_)return;
+    if(recoveryStopped_ || closing_)return;
     if(recoveryWriting_) { if(recoveryDeadline_ && !recoveryDeadline_->isActive())recoveryDeadline_->start();return; }
     // Never publish a session omitting documents which are temporarily busy.
     for(int i=0;i<tabs_->count();++i)
@@ -3206,35 +3350,42 @@ void MainWindow::checkpointRecovery() {
             {{"path",editor->filePath()},{"diskState",QString::fromLatin1(editor->document()->diskState)},
              {"line",position.x()},{"column",position.y()}}});
     }
+    if (!recovery_ && jobs->empty() && recoveredSourceDirectories_.isEmpty()) return;
+
+    struct Checkpoint {
+        std::shared_ptr<RecoveryStore> store;
+        QString error;
+    };
     recoveryWriting_=true;
     const auto store=recovery_;
-    auto* watcher=new QFutureWatcher<QString>(this);
-    connect(watcher,&QFutureWatcher<QString>::finished,this,[this,watcher,jobs] {
-        auto error=watcher->result();watcher->deleteLater();recoveryWriting_=false;
+    auto* watcher=new QFutureWatcher<Checkpoint>(this);
+    connect(watcher,&QFutureWatcher<Checkpoint>::finished,this,[this,watcher,jobs] {
+        auto checkpoint=watcher->result();watcher->deleteLater();recoveryWriting_=false;
+        auto error = checkpoint.error;
+        recovery_ = std::move(checkpoint.store);
         if(recoveryStopped_)return;
         scheduleFilePreviewCleanup();
         if(error.isEmpty()) {
             for(const auto& job:*jobs)if(job.editor)recoveredRevisions_[job.editor]=job.revision;
-            auto state=sessionState();
-            // If an edit arrived while writing, keep the document in the session:
-            // its manifest still points to the last successfully recorded text.
-            // A brand-new dirty document without a checkpoint must wait for the next pass.
-            QJsonArray entries;
-            for(const auto value:state["documents"].toArray()) {
-                const auto entry=value.toObject();
-                if(entry["modified"].toBool() && !QFileInfo::exists(recovery_->directory()+"/"+entry["id"].toString()+".json"))continue;
-                entries.append(entry);
-            }
-            state["documents"]=entries;
             bool busy=false;
             for(int i=0;i<tabs_->count();++i)if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i));editor && editor->isBusy())busy=true;
-            if(!closing_ && !busy) {
-                error=recovery_->writeSession(state);
-                if(error.isEmpty())for(int i=0;i<tabs_->count();++i)
-                    if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i));editor && !editor->isModified()) {
-                        recovery_->forgetDocument(editor->property("recoveryId").toString());
-                        recoveredRevisions_.remove(editor);
+            if(recovery_ && !closing_ && !busy) {
+                const auto state = recoveryState();
+                if (state["documents"].toArray().isEmpty()) {
+                    if (recovery_->discard()) {
+                        recovery_.reset();
+                        recoveredRevisions_.clear();
+                    } else {
+                        error = I18n::text("Cannot remove discarded recovery data");
                     }
+                } else {
+                    error = recovery_->writeSession(state);
+                    if(error.isEmpty())for(int i=0;i<tabs_->count();++i)
+                        if(auto* editor=qobject_cast<EditorWidget*>(tabs_->widget(i));editor && !editor->isModified()) {
+                            recovery_->forgetDocument(editor->property("recoveryId").toString());
+                            recoveredRevisions_.remove(editor);
+                        }
+                }
             }
         }
         auto* warning=findChild<QLabel*>("recoveryWarning");
@@ -3257,27 +3408,41 @@ void MainWindow::checkpointRecovery() {
         }
     });
     watcher->setFuture(QtConcurrent::run([store,jobs] {
+        Checkpoint checkpoint{store, {}};
         try {
+            if (!checkpoint.store && !jobs->empty()) checkpoint.store = std::make_shared<RecoveryStore>();
             for(const auto& job:*jobs) {
-                const auto error=store->writeDocument(job.id,*job.snapshot,job.metadata);
-                if(!error.isEmpty())return error;
+                checkpoint.error=checkpoint.store->writeDocument(job.id,*job.snapshot,job.metadata);
+                if(!checkpoint.error.isEmpty()) break;
             }
-        } catch(const std::exception& error){return QString::fromUtf8(error.what());}
-        return QString();
+        } catch(const std::exception& error){checkpoint.error=QString::fromUtf8(error.what());}
+        return checkpoint;
     }));
 }
 
-void MainWindow::restorePreviousSession(bool restoreClean) {
-    if(!recovery_)return;
+void MainWindow::restoreUnsavedDocuments() {
     struct Candidate {QString directory;QJsonObject state;std::shared_ptr<QLockFile> lock;};
     std::vector<Candidate> candidates;
+    const auto validSession = [](const QJsonObject& state) {
+        return state["format"].toInt() == 1 && state["documents"].isArray();
+    };
+    const auto hasUnsavedDocuments = [](const QJsonObject& state) {
+        if (state["clean"].toBool()) return false;
+        const auto documents = state["documents"].toArray();
+        return std::any_of(documents.begin(), documents.end(), [](const auto& entry) {
+            return entry.toObject()["modified"].toBool();
+        });
+    };
     for(const auto& name:QDir(RecoveryStore::rootDirectory()).entryList(QDir::Dirs|QDir::NoDotAndDotDot)) {
         const auto directory=RecoveryStore::rootDirectory()+"/"+name;
-        if(directory==recovery_->directory())continue;
+        if(recovery_ && directory==recovery_->directory())continue;
+        const auto manifest = directory + "/session.json";
+        auto state = RecoveryStore::readObject(manifest);
+        if (validSession(state) && !hasUnsavedDocuments(state)) continue;
         auto lock=std::make_shared<QLockFile>(directory+"/lock");lock->setStaleLockTime(0);
         if(!lock->tryLock())continue;
-        auto state=RecoveryStore::readObject(directory+"/session.json");
-        if(state["format"].toInt()!=1 || !state["documents"].isArray()) {
+        state = RecoveryStore::readObject(manifest);
+        if (!validSession(state)) {
             // A crash may happen after the first document commit but before the
             // session manifest is published. Recover these complete checkpoints too.
             QJsonArray documents;
@@ -3289,42 +3454,23 @@ void MainWindow::restorePreviousSession(bool restoreClean) {
                 documents.append(QJsonObject{{"id",id},{"path",metadata["path"]},{"modified",true},
                     {"line",metadata["line"]},{"column",metadata["column"]}});
             }
-            if(!documents.isEmpty())state={{"format",1},{"clean",false},{"documents",documents}};
+            if(!documents.isEmpty())state={{"format",1},{"documents",documents}};
         }
-        if(state["format"].toInt()==1)candidates.push_back({directory,state,lock});
+        if (validSession(state) && hasUnsavedDocuments(state)) candidates.push_back({directory,state,lock});
     }
     std::sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b){return a.state["time"].toString().toLongLong()>b.state["time"].toString().toLongLong();});
-    bool restoredClean=false;
     for(const auto& candidate:candidates) {
-        const auto documents=candidate.state["documents"].toArray();
-        bool dirty=false;for(const auto entry:documents)dirty|=entry.toObject()["modified"].toBool();
-        const bool clean=candidate.state["clean"].toBool();
-        if(!restoreClean && (clean || !dirty))continue;
-        if(clean && restoredClean)continue;
-        if(dirty) {
-            IconDialogs::MessageBox prompt(QMessageBox::Warning,I18n::text("Recover unsaved documents"),
-                I18n::text("Unsaved changes from a previous session were found. Restore them now?"),QMessageBox::NoButton,this);
-            auto* restore=prompt.addButton(I18n::text("Restore"),QMessageBox::AcceptRole); restore->setIcon(Codicons::icon("history"));
-            prompt.addButton(I18n::text("Later"),QMessageBox::RejectRole)->setIcon(Codicons::icon("clock"));prompt.setDefaultButton(restore);prompt.exec();
-            if(prompt.clickedButton()!=restore)continue;
-        }
-        if(clean)restoredClean=true;
-        if(explicitProject_==false) {
-            QStringList roots;for(const auto root:candidate.state["roots"].toArray())if(QFileInfo(root.toString()).isDir())roots.append(root.toString());
-            if(!roots.isEmpty())setProjectRoots(roots);
-        }
+        IconDialogs::MessageBox prompt(QMessageBox::Warning,I18n::text("Recover unsaved documents"),
+            I18n::text("Unsaved changes from a previous session were found. Restore them now?"),QMessageBox::NoButton,this);
+        auto* restore=prompt.addButton(I18n::text("Restore"),QMessageBox::AcceptRole); restore->setIcon(Codicons::icon("history"));
+        prompt.addButton(I18n::text("Later"),QMessageBox::RejectRole)->setIcon(Codicons::icon("clock"));prompt.setDefaultButton(restore);prompt.exec();
+        if(prompt.clickedButton()!=restore)continue;
+
         recoveredSourceDirectories_.insert(candidate.directory);restorationLocks_.push_back(candidate.lock);
-        for(const auto value:documents) {
+        for(const auto value:candidate.state["documents"].toArray()) {
             const auto entry=value.toObject();const auto path=entry["path"].toString();
             const auto id=entry["id"].toString();
-            if(!entry["modified"].toBool()) {
-                if(!QFileInfo::exists(path)){recoveryMigrationFailed_=true;continue;}
-                openFile(path,entry["line"].toInt(1),entry["column"].toInt(1));
-                auto* editor=activeEditor();
-                if(editor){editor->setProperty("recoveryOrigin",candidate.directory);editor->setProperty("recoveryOriginId",id);editor->setProperty("restoreVertical",entry["vertical"].toInt());editor->setProperty("restoreHorizontal",entry["horizontal"].toInt());}
-                if(id==candidate.state["active"].toString() && editor)editor->setProperty("restoreActive",true);
-                continue;
-            }
+            if(!entry["modified"].toBool())continue;
             // Recover to an independent buffer. If another tab already owns the path,
             // detach this one to avoid having two conflicting writable documents.
             QString targetPath=path;
@@ -3360,7 +3506,6 @@ void MainWindow::restorePreviousSession(bool restoreClean) {
             }));
         }
     }
-    recoveryTimer_->start();
 }
 
 void MainWindow::focusEditor() {
@@ -3383,7 +3528,7 @@ void MainWindow::showTerminal() {
     const bool firstOpen = !terminalPanel_;
     ensureTerminal();
     QString directory = projectRoots_.value(0);
-    if (!explicitProject_) {
+    if (directory.isEmpty()) {
         if (auto* editor = activeEditor(); editor && !editor->filePath().isEmpty())
             directory = QFileInfo(editor->filePath()).absolutePath();
     }
@@ -3396,8 +3541,7 @@ void MainWindow::ensureTerminal() {
     terminalPanel_=new TerminalPanel(editorArea_);
     terminalPanel_->setDirectory(projectRoots_.value(0));
     editorArea_->addDockWidget(Qt::BottomDockWidgetArea,terminalPanel_);
-    terminalPanel_->setDebugConsole(debugPanel_->console());
-    connect(terminalPanel_,&TerminalPanel::debugTerminalReply,debugPanel_,&DebugPanel::terminalReply);
+    connectDebugConsole();
     connect(terminalPanel_,&QDockWidget::visibilityChanged,this,[this](bool visible){
         if(!visible) {
             if(terminalPreviousFocus_ && terminalPreviousFocus_->isVisible()) terminalPreviousFocus_->setFocus();
@@ -3405,6 +3549,12 @@ void MainWindow::ensureTerminal() {
         }
     });
     editorArea_->resizeDocks({terminalPanel_},{qMax(180,editorArea_->height()/3)},Qt::Vertical);
+}
+
+void MainWindow::connectDebugConsole() {
+    if (!terminalPanel_ || !debugPanel_) return;
+    terminalPanel_->setDebugConsole(debugPanel_->console());
+    connect(terminalPanel_, &TerminalPanel::debugTerminalReply, debugPanel_, &DebugPanel::terminalReply);
 }
 
 void MainWindow::scheduleOutline() {

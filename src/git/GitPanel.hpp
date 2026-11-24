@@ -14,8 +14,11 @@ class QVBoxLayout;
 class GitPanel final : public QWidget {
     Q_OBJECT
 public:
-    explicit GitPanel(QWidget* parent = nullptr);
+    enum class UiInitialization { Immediate, Deferred };
+    explicit GitPanel(QWidget* parent = nullptr, UiInitialization initialization = UiInitialization::Immediate);
     ~GitPanel() override;
+    void initializeUi();
+    bool isUiInitialized() const { return repositoriesLayout_ != nullptr; }
     void pullRepository(const QString& repository);
     void setRoots(const QStringList& roots);
     void refresh();

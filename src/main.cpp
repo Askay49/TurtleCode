@@ -1,6 +1,7 @@
 #include <QTimer>
 #include "app/I18n.hpp"
 #include "app/AppIdentity.hpp"
+#include "app/FileOpenApplication.hpp"
 #include "app/Version.hpp"
 #include <QApplication>
 #include <QCommandLineOption>
@@ -18,10 +19,37 @@
 #include <QDebug>
 #include <unistd.h>
 
+#ifdef TURTLE_CODE_WITH_FONTCONFIG
+#include <fontconfig/fontconfig.h>
+#include <memory>
+#endif
+
 #include "app/MainWindow.hpp"
 #include "app/ThemeManager.hpp"
 
 namespace {
+QFont interfaceFont() {
+    QFont font(QStringLiteral("monospace"));
+    font.setStyleHint(QFont::Monospace);
+    font.setPointSize(11);
+#ifdef TURTLE_CODE_WITH_FONTCONFIG
+    // Reuse the configured family so Qt can match it directly on first layout.
+    using Pattern = std::unique_ptr<FcPattern, decltype(&FcPatternDestroy)>;
+    const Pattern query(FcPatternCreate(), &FcPatternDestroy);
+    if (!query || !FcPatternAddString(query.get(), FC_FAMILY, reinterpret_cast<const FcChar8*>("monospace"))
+        || !FcPatternAddDouble(query.get(), FC_SIZE, font.pointSizeF())
+        || !FcConfigSubstitute(nullptr, query.get(), FcMatchPattern))
+        return font;
+    FcDefaultSubstitute(query.get());
+    FcResult result{};
+    const Pattern match(FcFontMatch(nullptr, query.get(), &result), &FcPatternDestroy);
+    FcChar8* family = nullptr;
+    if (match && FcPatternGetString(match.get(), FC_FAMILY, 0, &family) == FcResultMatch && family && *family)
+        font.setFamily(QString::fromUtf8(reinterpret_cast<const char*>(family)));
+#endif
+    return font;
+}
+
 QString primaryServerName() {
     return QStringLiteral("turtle-code-%1").arg(static_cast<qulonglong>(::getuid()));
 }
@@ -51,7 +79,7 @@ bool forwardToRunningInstance(const QString& serverName, const QStringList& path
 }
 
 int main(int argc, char* argv[]) {
-    QApplication app(argc, argv);
+    FileOpenApplication app(argc, argv);
     AppIdentity::setCurrent();
     // Do not move recovery journals while a previous-version process is writing them.
     QLocalSocket previousInstance;
@@ -70,7 +98,6 @@ int main(int argc, char* argv[]) {
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/app/turtle-code.png")));
     QCoreApplication::setApplicationVersion(QString::fromLatin1(AppVersion::Display));
     I18n::initialize();
-    ThemeManager::instance().initialize();
 
     QCommandLineParser parser;
     parser.setApplicationDescription(I18n::text("Turtle Code — native Linux code editor"));
@@ -87,17 +114,15 @@ int main(int argc, char* argv[]) {
         QStringLiteral("[path...]") );
     parser.process(app);
 
-    QFont font("monospace");
-    font.setStyleHint(QFont::Monospace);
-    font.setPointSize(11);
-    app.setFont(font);
-
-    const QStringList paths = normalizedArguments(parser.positionalArguments());
+    const QStringList paths = normalizedArguments(parser.positionalArguments() + app.takeFileOpenRequests());
     const bool newWindow = parser.isSet(newWindowOption);
     const QString primaryName = primaryServerName();
 
     if (!newWindow && forwardToRunningInstance(primaryName, paths))
         return 0;
+
+    ThemeManager::instance().initialize(ThemeManager::BackgroundLoad::Asynchronous);
+    app.setFont(interfaceFont());
 
     QString serverName = primaryName;
     if (newWindow) {
@@ -116,14 +141,20 @@ int main(int argc, char* argv[]) {
     }
 
     MainWindow window;
+    const auto openFiles = [&window](const QStringList& paths) {
+        window.openPaths(paths);
+        window.raise();
+        window.activateWindow();
+    };
     window.resize(1280, 800);
-    window.openStartupPaths(paths);
+    window.openStartupPaths(paths + app.takeFileOpenRequests());
     window.showMaximized();
-    if (!newWindow) QTimer::singleShot(0, &window, [&window] { window.restorePreviousSession(false); });
+    app.setFileOpenHandler(&window, openFiles);
+    if (!newWindow) QTimer::singleShot(0, &window, &MainWindow::restoreUnsavedDocuments);
 
-    QObject::connect(&server, &QLocalServer::newConnection, &window, [&server, &window] {
+    QObject::connect(&server, &QLocalServer::newConnection, &window, [&server, &window, openFiles] {
         while (QLocalSocket* socket = server.nextPendingConnection()) {
-            QObject::connect(socket, &QLocalSocket::readyRead, &window, [socket, &window] {
+            QObject::connect(socket, &QLocalSocket::readyRead, &window, [socket, openFiles] {
                 QByteArray payload = socket->property("pendingPayload").toByteArray();
                 payload += socket->readAll();
                 socket->setProperty("pendingPayload", payload);
@@ -134,9 +165,7 @@ int main(int argc, char* argv[]) {
                 QStringList paths;
                 for (const QJsonValue& value : array)
                     if (value.isString()) paths.push_back(value.toString());
-                window.openPaths(paths);
-                window.raise();
-                window.activateWindow();
+                openFiles(paths);
             });
             QObject::connect(socket, &QLocalSocket::disconnected, socket, &QObject::deleteLater);
         }

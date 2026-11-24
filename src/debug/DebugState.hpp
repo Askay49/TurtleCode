@@ -4,12 +4,54 @@
 #include <QSet>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QCryptographicHash>
+#include <QJsonDocument>
+#include <QSettings>
+#include <utility>
 
 // Persistent workspace data, independent of adapter IDs and widgets.
 struct DebugState {
     QMap<QString,QSet<int>> points, disabled;
     QJsonObject configuration;
     QStringList watches;
+    static QString settingsKey(const QString& workspace) {
+        if (workspace.isEmpty()) return "debug/standalone";
+        return "debug/workspaces/" + QString::fromLatin1(
+            QCryptographicHash::hash(workspace.toUtf8(), QCryptographicHash::Sha256).toHex());
+    }
+    void load(const QString& workspace) {
+        restore(QJsonDocument::fromJson(QSettings().value(settingsKey(workspace)).toByteArray()).object());
+    }
+    void save(const QString& workspace) const {
+        auto data = json();
+        if (configuration.isEmpty()) data.remove("configuration");
+        QSettings().setValue(settingsKey(workspace), QJsonDocument(data).toJson(QJsonDocument::Compact));
+    }
+    void renameFile(const QString& path, const QString& updated) {
+        const auto lines = points.take(path);
+        const auto disabledLines = disabled.take(path);
+        points[updated].unite(lines);
+        disabled[updated].unite(disabledLines);
+    }
+    void toggleLine(const QString& path, int line) {
+        auto& lines = points[path];
+        if (!lines.remove(line)) lines.insert(line);
+        disabled[path].remove(line);
+    }
+    bool remapLines(const QString& path, const QMap<int, int>& anchors) {
+        QSet<int> mappedPoints, mappedDisabled;
+        const auto lines = points.value(path);
+        const auto disabledLines = disabled.value(path);
+        for (int line : lines) {
+            const int mapped = anchors.value(line, line);
+            mappedPoints.insert(mapped);
+            if (disabledLines.contains(line)) mappedDisabled.insert(mapped);
+        }
+        if (mappedPoints == lines && mappedDisabled == disabledLines) return false;
+        points[path] = std::move(mappedPoints);
+        disabled[path] = std::move(mappedDisabled);
+        return true;
+    }
     void moveLines(const QString& path,int row,int column,int removed,int inserted) {
         auto project=[=](const QSet<int>& source) {
             QSet<int> result;

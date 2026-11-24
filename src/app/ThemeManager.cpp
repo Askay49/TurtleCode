@@ -205,8 +205,12 @@ void ThemeManager::refreshAppearance() {
     WorkspaceBackground::instance().reload();
     apply(current_);
 }
-void ThemeManager::initialize() {
-    WorkspaceBackground::instance().reload();
+void ThemeManager::initialize(BackgroundLoad backgroundLoad) {
+    auto& background = WorkspaceBackground::instance();
+    if (backgroundLoad == BackgroundLoad::Asynchronous)
+        background.reloadAsync([this] { apply(current_); });
+    else
+        background.reload();
     while (!themes_.isEmpty() && themes_.last().id.startsWith("custom-")) themes_.removeLast();
     const EditorTheme base = themes_.front();
     const QDir directory(themeDirectory());
@@ -268,7 +272,8 @@ void ThemeManager::apply(const EditorTheme& theme) {
         "QFrame#fileFindBar { background:%2; border:1px solid %3; }")
         .arg(c("text.primary").name(), c("window.background").name(), c("border").name(),
              c("sidebar.background").name(), c("accent").name(), c("editor.selection").name(), c("editor.background").name(), c("text.muted").name());
-    if (WorkspaceBackground::instance().enabled()) {
+    const bool wallpaperStyle = WorkspaceBackground::instance().usesWallpaperStyle();
+    if (wallpaperStyle) {
         stylesheet += QStringLiteral(
             "QWidget#workspaceBackground, QWidget#workspaceBackground QWidget { background:transparent; }"
             "QWidget#workspaceBackground QTabBar::tab { background:transparent; }"
@@ -388,7 +393,7 @@ void ThemeManager::apply(const EditorTheme& theme) {
             "QWidget#workspaceBackground QSplitter#editorPaneSplitter::handle:hover { background:%2; }")
             .arg(c("editor.separator").name(), accent.name());
     }
-    if (!WorkspaceBackground::instance().enabled()) {
+    if (!wallpaperStyle) {
         if (current_.colors.contains("editor.headerBackground"))
             stylesheet += QStringLiteral("QWidget#workspaceBackground QFrame#editorPaneHeader, QFrame#gitDiffHeader { background:%1; }")
                 .arg(c("editor.headerBackground").name());

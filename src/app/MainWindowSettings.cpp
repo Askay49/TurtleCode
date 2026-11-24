@@ -315,10 +315,11 @@ void MainWindow::applyFileVisibilitySettings() {
         window->findChild<QAction*>("view.ignored")->setChecked(includeIgnored);
         window->explorer_->setShowHidden(showHidden);
         window->explorer_->setIncludeIgnored(includeIgnored);
-        window->searchPanel_->setShowHidden(showHidden);
-        window->searchPanel_->setIncludeIgnored(includeIgnored);
-        window->workspaceIndex_->configure(window->explicitProject_ ? window->projectRoots_ : QStringList{},
-                                           {showHidden, includeIgnored, {}});
+        if (window->searchPanel_) {
+            window->searchPanel_->setShowHidden(showHidden);
+            window->searchPanel_->setIncludeIgnored(includeIgnored);
+        }
+        window->workspaceIndex_->configure(window->projectRoots_, {showHidden, includeIgnored, {}});
     }
 }
 
@@ -733,7 +734,7 @@ void MainWindow::showSettings(SettingsPage initialPage) {
                 if (recoveryChanged) window->applyRecoverySettings();
                 if (lspChanged) window->applyLspSettings(lsp->serverChanged);
                 if (fontsChanged) {
-                    window->searchPanel_->applyFontSettings();
+                    if (window->searchPanel_) window->searchPanel_->applyFontSettings();
                     window->outline_->applyFontSettings();
                     window->gitPanel_->applyFontSettings();
                 }

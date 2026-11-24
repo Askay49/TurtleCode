@@ -34,10 +34,11 @@ private:
         bool restartPending{false};
     };
     TerminalWidget* addShell(const QString& title, const QString& directory);
+    void selectPage(QWidget* page);
     void showShell(TerminalWidget* terminal);
     void startSession(TerminalWidget* terminal);
     void restartSession();
-    void closeCurrentSession();
+    void closeShell(TerminalWidget* terminal);
     void updateShellActions();
 
     QTabWidget* tabs_;

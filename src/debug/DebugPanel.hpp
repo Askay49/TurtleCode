@@ -24,7 +24,7 @@ class QFileSystemWatcher;
 class DebugPanel final : public QWidget {
     Q_OBJECT
 public:
-    explicit DebugPanel(QWidget* parent=nullptr);
+    explicit DebugPanel(QWidget* parent=nullptr, const QString& root={});
     ~DebugPanel() override;
     QString configurationPath() const { return DebugConfiguration::filePath(workspace_); }
     void editConfiguration();

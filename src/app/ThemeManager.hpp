@@ -12,9 +12,10 @@ struct HighlightStyle { QColor color; int fontStyles{0}; }; // 1 bold, 2 italic,
 class ThemeManager : public QObject {
     Q_OBJECT
 public:
+    enum class BackgroundLoad { Immediate, Asynchronous };
     static ThemeManager& instance();
     QColor color(const QString& role) const;
-    void initialize();
+    void initialize(BackgroundLoad backgroundLoad = BackgroundLoad::Immediate);
     void refreshAppearance();
     HighlightStyle highlightStyle(const QString& role) const;
     HighlightStyle captureStyle(const QString& capture,const QString& fallbackRole,const QString& language={}) const;

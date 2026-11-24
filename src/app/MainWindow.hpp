@@ -35,6 +35,7 @@ class LspManager;
 class SearchPanel;
 class GitPanel;
 class DebugPanel;
+struct DebugState;
 class GitDiffView;
 class TerminalPanel;
 class QStackedWidget;
@@ -57,7 +58,7 @@ public:
     ~MainWindow() override;
     void openStartupPaths(const QStringList& paths);
     void openPaths(const QStringList& paths);
-    void restorePreviousSession(bool restoreClean = true);
+    void restoreUnsavedDocuments();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -67,13 +68,27 @@ protected:
 
 private:
     void createUi();
+    bool startupPanelsPending() const;
+    void initializeNextStartupPanel();
+    void ensureSearchPanel();
+    void ensureDebugPanel();
+    bool debugCommandAvailable(const QString& command) const;
+    DebugState& startupDebugState();
+    void setDebugWorkspace(const QString& root);
+    void applyEditorBreakpoints(EditorWidget* editor, const QString& path);
+    void refreshEditorBreakpoints(const QString& path);
+    void renameDebugSource(const QString& oldPath, const QString& newPath);
+    void toggleDebugBreakpoint(const QString& path, int line);
+    void connectDebugConsole();
+    QTimer* startupPanelsTimer_{nullptr};
+    std::unique_ptr<DebugState> startupDebugState_;
     void requestClose(QVector<QPointer<EditorWidget>> editors, bool window, bool discard = false,
                       bool inactivePreview = false);
     void advanceClose();
     void finishClose(bool accepted);
     void removeClosedEditor(EditorWidget* editor);
     void checkpointRecovery();
-    QJsonObject sessionState(bool clean = false) const;
+    QJsonObject recoveryState() const;
     void initializeRecovery();
     void applyRecoverySettings();
     std::shared_ptr<RecoveryStore> recovery_;
@@ -146,7 +161,7 @@ private:
     void showProjectSearch(const QString& directory = {});
     void startProjectReplace(ProjectReplaceRequest request);
     void finishProjectReplace(const ProjectReplaceResult& result);
-    bool setProjectRoots(const QStringList& roots, bool explicitProject = true);
+    bool setProjectRoots(const QStringList& roots);
     enum class FileOpenMode { Regular, Preview };
     void openFile(const QString& path, int line = 0, int column = 0, int length = 0,
                   bool centerTarget = true, FileOpenMode mode = FileOpenMode::Regular);
@@ -263,7 +278,6 @@ private:
     QToolButton* explorerActivity_{nullptr};
     QToolButton* searchActivity_{nullptr};
     QStringList projectRoots_;
-    bool explicitProject_{false};
     QTabWidget* tabs_{nullptr};
     QSet<EditorWidget*> filePreviews_;
     bool filePreviewCleanupScheduled_{false};

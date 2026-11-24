@@ -7,6 +7,8 @@
 
 Для поддержки EditorConfig установите EditorConfig Core C с заголовками
 (`libeditorconfig-dev` в Ubuntu); общие зависимости перечислены в README.
+В Linux сборка с заголовками Fontconfig (`libfontconfig-dev` в Ubuntu)
+ускоряет выбор системного моноширинного шрифта при запуске.
 
 ```sh
 cmake -S . -B build

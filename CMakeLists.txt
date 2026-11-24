@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(TurtleCode VERSION 0.10.10 LANGUAGES C CXX)
+project(TurtleCode VERSION 0.11.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -69,7 +69,7 @@ if(TURTLE_CODE_BUILD_APP)
         src/app/ShortcutManager.cpp src/app/ShortcutManager.hpp
         src/language/SemanticHighlighting.cpp src/language/SemanticHighlighting.hpp)
     target_include_directories(turtle-code-themes PUBLIC src)
-    target_link_libraries(turtle-code-themes PUBLIC Qt6::Widgets turtle-code-workspace)
+    target_link_libraries(turtle-code-themes PUBLIC Qt6::Widgets turtle-code-workspace PRIVATE Qt6::Concurrent)
     add_library(turtle-code-icons STATIC src/app/Codicons.cpp src/app/Codicons.hpp
         src/app/FontIcon.cpp src/app/FontIcon.hpp
         src/app/FileIcons.cpp src/app/FileIcons.hpp)
@@ -265,6 +265,13 @@ if(TURTLE_CODE_BUILD_APP)
         Qt6::Network
         Qt6::Concurrent
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(Fontconfig QUIET)
+        if(Fontconfig_FOUND)
+            target_link_libraries(turtle-code PRIVATE Fontconfig::Fontconfig)
+            target_compile_definitions(turtle-code PRIVATE TURTLE_CODE_WITH_FONTCONFIG)
+        endif()
+    endif()
     target_compile_options(turtle-code PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>
     )
@@ -533,7 +540,9 @@ if(TURTLE_CODE_BUILD_APP)
         set_source_files_properties(${TURTLE_CODE_MACOS_ICON} PROPERTIES
             MACOSX_PACKAGE_LOCATION Resources)
         target_sources(turtle-code PRIVATE ${TURTLE_CODE_MACOS_ICON})
-        set_target_properties(turtle-code PROPERTIES MACOSX_BUNDLE_ICON_FILE "turtle-code.icns")
+        set_target_properties(turtle-code PROPERTIES
+            MACOSX_BUNDLE_ICON_FILE "turtle-code.icns"
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/Info.plist.in")
     endif()
 
     install(TARGETS turtle-code RUNTIME BUNDLE DESTINATION "${CMAKE_INSTALL_BINDIR}")

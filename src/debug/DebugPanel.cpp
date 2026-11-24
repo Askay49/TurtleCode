@@ -30,7 +30,6 @@
 #include <QDir>
 #include <QTimer>
 #include <QSignalBlocker>
-#include <QCryptographicHash>
 #include <QPushButton>
 #include <QFileSystemWatcher>
 #include <QFile>
@@ -43,7 +42,9 @@
 
 namespace { QString t(const char* s) { return I18n::text(s); } }
 using namespace DebugViews;
-DebugPanel::DebugPanel(QWidget* parent):QWidget(parent),client_(new DapClient(this)) {
+DebugPanel::DebugPanel(QWidget* parent, const QString& root)
+    : QWidget(parent), client_(new DapClient(this)),
+      workspace_(root.isEmpty() ? QString{} : QDir(root).absolutePath()) {
     setObjectName("debugPanel");
     auto* layout=new QVBoxLayout(this); layout->setContentsMargins(0,0,0,0); layout->setSpacing(0);
     auto* headingWidget=new QWidget(this); headingWidget->setObjectName("debugHeading");
@@ -421,8 +422,8 @@ void DebugPanel::sendBreakpoints(const QString& path,std::function<void()> done)
 }
 void DebugPanel::toggleBreakpoint(const QString& path,int line) {
     if(path.isEmpty() || line<1) return;
-    if(state_.points[path].contains(line)) state_.points[path].remove(line); else state_.points[path].insert(line);
-    state_.disabled[path].remove(line); session_.verified[path].remove(line); saveState(); rebuildBreakpoints(); emit breakpointsChanged(path);
+    state_.toggleLine(path, line);
+    session_.verified[path].remove(line); saveState(); rebuildBreakpoints(); emit breakpointsChanged(path);
     if(active() && !session_.configuring && !session_.ending) sendBreakpoints(path);
 }
 void DebugPanel::applyBreakpoint(const QString& path,int requested,const QJsonObject& bp) {
@@ -518,16 +519,13 @@ DebugPanel::~DebugPanel() {
     saveState();
 }
 QString DebugPanel::settingsKey() const {
-    if(workspace_.isEmpty()) return "debug/standalone";
-    return "debug/workspaces/"+QString::fromLatin1(QCryptographicHash::hash(workspace_.toUtf8(),QCryptographicHash::Sha256).toHex());
+    return DebugState::settingsKey(workspace_);
 }
 void DebugPanel::saveState() {
-    auto json=state_.json();
-    if(state_.configuration.isEmpty()) json.remove("configuration");
-    QSettings().setValue(settingsKey(),QJsonDocument(json).toJson(QJsonDocument::Compact));
+    state_.save(workspace_);
 }
 void DebugPanel::loadState() {
-    state_.restore(QJsonDocument::fromJson(QSettings().value(settingsKey()).toByteArray()).object());
+    state_.load(workspace_);
     if(QFileInfo(configurationPath()).isFile() && !state_.configuration.isEmpty()) {state_.configuration={}; saveState();}
     rebuildBreakpoints(); refreshWatches(); refreshConfiguration();
 }
@@ -593,7 +591,7 @@ void DebugPanel::renameSource(const QString& oldPath,const QString& newPath) {
     const auto files=state_.points.keys();
     for(const auto& path:files) if(path==oldPath || path.startsWith(oldPath+QDir::separator())) {
         const auto updated=newPath+path.mid(oldPath.size());
-        state_.points[updated].unite(state_.points.take(path)); state_.disabled[updated].unite(state_.disabled.take(path));
+        state_.renameFile(path, updated);
         ++session_.pointVersions[path]; session_.verified.remove(path); session_.pointMessages.remove(path);
         emit breakpointsChanged(path); emit breakpointsChanged(updated);
     }
@@ -601,13 +599,7 @@ void DebugPanel::renameSource(const QString& oldPath,const QString& newPath) {
 }
 
 void DebugPanel::remapBreakpoints(const QString& path,const QMap<int,int>& anchors) {
-    QSet<int> points,disabled;
-    for(int line:state_.points.value(path)) {
-        const int mapped=anchors.value(line,line); points.insert(mapped);
-        if(state_.disabled.value(path).contains(line)) disabled.insert(mapped);
-    }
-    if(points==state_.points.value(path) && disabled==state_.disabled.value(path)) return;
-    state_.points[path]=points; state_.disabled[path]=disabled;
+    if (!state_.remapLines(path, anchors)) return;
     if(active()) {session_.editedSources.insert(path); setStatus(t("Source changed; breakpoints will apply on the next launch"));}
     ++session_.pointVersions[path]; session_.verified[path].clear(); session_.pointMessages[path].clear();
     saveState(); rebuildBreakpoints(); emit breakpointsChanged(path);

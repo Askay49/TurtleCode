@@ -41,7 +41,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             gcc-12 g++-12 ninja-build pkg-config python3-venv dpkg-dev \
             qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-wayland libqt6svg6 \
-            libgl1-mesa-dev \
+            libgl1-mesa-dev libfontconfig-dev \
             libpcre2-dev libsqlite3-dev libgit2-dev libtree-sitter-dev libeditorconfig-dev libssl-dev \
             curl ca-certificates file desktop-file-utils patchelf
           python3 -m venv "$RUNNER_TEMP/cmake-venv"
@@ -113,7 +113,7 @@ jobs:
           apt-get update
           apt-get install --no-install-recommends -y \
             ca-certificates git g++ cmake ninja-build pkg-config dpkg-dev file \
-            qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev libgl-dev \
+            qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev libgl-dev libfontconfig-dev \
             libpcre2-dev libsqlite3-dev libgit2-dev libtree-sitter-dev libeditorconfig-dev
 
       - uses: actions/checkout@v7
@@ -146,7 +146,7 @@ jobs:
       - name: Install build and packaging dependencies
         run: |
           dnf -y install git gcc-c++ cmake ninja-build pkgconf-pkg-config rpm-build \
-            qt6-qtbase-devel pcre2-devel sqlite-devel libgit2-devel libtree-sitter-devel editorconfig-devel
+            qt6-qtbase-devel fontconfig-devel pcre2-devel sqlite-devel libgit2-devel libtree-sitter-devel editorconfig-devel
 
       - uses: actions/checkout@v7
         with:
@@ -177,7 +177,7 @@ jobs:
       - name: Install build and packaging dependencies
         run: |
           pacman -Syu --noconfirm --needed \
-            git cmake ninja pkgconf qt6-base pcre2 sqlite libgit2 tree-sitter editorconfig-core-c
+            git cmake ninja pkgconf qt6-base fontconfig pcre2 sqlite libgit2 tree-sitter editorconfig-core-c
 
       - uses: actions/checkout@v7
         with:

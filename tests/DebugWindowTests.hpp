@@ -18,8 +18,9 @@ static void debugWindowTests(QTemporaryDir& directory) {
     const auto path=directory.filePath("demo.py"); QFile output(path); assert(output.open(QIODevice::WriteOnly)); output.write(input.readAll()); output.close();
     MainWindow window; window.resize(1280,900); window.show(); window.openPaths({directory.path(),path});
     auto* editor=window.findChild<EditorWidget*>(); assert(editor && waitFor([&]{return !editor->isBusy();}));
-    auto* activity=window.findChild<QToolButton*>("debugActivity"); auto* panel=window.findChild<DebugPanel*>(); assert(activity && panel);
-    activity->click(); assert(activity->isChecked() && panel->isVisible());
+    auto* activity=window.findChild<QToolButton*>("debugActivity"); assert(activity);
+    activity->click();
+    auto* panel=window.findChild<DebugPanel*>(); assert(panel && activity->isChecked() && panel->isVisible());
     auto* setup=panel->findChild<QPushButton*>("debugConfigure"); assert(setup && setup->isVisible());
     if(qEnvironmentVariableIsSet("TURTLE_DEBUG_SETUP_SCREENSHOT")) {QTest::qWait(50); assert(window.grab().save(qEnvironmentVariable("TURTLE_DEBUG_SETUP_SCREENSHOT")));}
     const auto python=qEnvironmentVariable("TURTLE_TEST_DEBUG_PYTHON");
@@ -111,8 +112,9 @@ static void debugNativeWindowTests() {
     const auto project=qEnvironmentVariable("TURTLE_TEST_C_PROJECT"); assert(!project.isEmpty());
     const auto source=QDir(project).filePath("main.c"); assert(QFileInfo(source).isFile());
     MainWindow window; window.resize(1280,900); window.show(); window.openPaths({project,source});
-    auto* panel=window.findChild<DebugPanel*>(); auto* editor=window.findChild<EditorWidget*>(); assert(panel && editor);
+    auto* editor=window.findChild<EditorWidget*>(); assert(editor);
     assert(waitFor([&]{return !editor->isBusy();})); window.findChild<QToolButton*>("debugActivity")->click();
+    auto* panel=window.findChild<DebugPanel*>(); assert(panel);
     panel->toggleBreakpoint(source,9); // Match the source breakpoint in the reported screenshot.
     int highlightedLine=0;
     QObject::connect(panel,&DebugPanel::locationChanged,&window,[&](const QString& path,int line){if(path==source) highlightedLine=line;});
@@ -153,6 +155,7 @@ static void debugValueHoverTests() {
     window.show();
     window.openPaths({project.path(), path});
     auto* editor = window.findChild<EditorWidget*>();
+    window.findChild<QToolButton*>("debugActivity")->click();
     auto* panel = window.findChild<DebugPanel*>();
     assert(editor && panel && waitFor([&]{ return !editor->isBusy(); }));
     QSignalSpy events(panel->findChild<DapClient*>(), &DapClient::eventReceived);

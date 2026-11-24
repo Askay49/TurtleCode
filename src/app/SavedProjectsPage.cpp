@@ -97,6 +97,15 @@ QString pathOf(const QTreeWidgetItem* item) {
     return item ? item->data(0, pathRole).toString() : QString{};
 }
 
+QString chooseProjectFolder(QWidget* parent, const QString& title, const QString& startDirectory) {
+    const auto path = IconDialogs::FileDialog::getExistingDirectory(parent, title, startDirectory);
+    if (path.isEmpty()) return {};
+    const auto folder = QFileInfo(path).canonicalFilePath();
+    if (!folder.isEmpty() && QFileInfo(folder).isDir()) return folder;
+    IconDialogs::MessageBox::warning(parent, I18n::text("Projects"), I18n::text("Project folder is unavailable."));
+    return {};
+}
+
 class ProjectDragData final : public QMimeData {
 public:
     ProjectDragData(const QTreeWidget* source, const QTreeWidgetItem* item)
@@ -290,17 +299,15 @@ void SavedProjectsPage::reload(const QString& selectedGroup, const QString& sele
     }
     auto* selected = sections.value(selectedGroup, sections.value(QString{}));
     for (auto it = data.folders.cbegin(); it != data.folders.cend(); ++it) {
-        const QFileInfo folder(it.key());
+        const auto name = it.key().section(u'/', -1);
         auto* section = sections.value(it.value().toString(), sections.value(QString{}));
-        auto* project = new QTreeWidgetItem(section, {folder.fileName().isEmpty() ? it.key() : folder.fileName(),
+        auto* project = new QTreeWidgetItem(section, {name.isEmpty() ? it.key() : name,
                                                       QDir::toNativeSeparators(it.key())});
         project->setData(0, pathRole, it.key());
         project->setData(0, groupRole, groupOf(section));
         project->setFlags(project->flags() & ~Qt::ItemIsDropEnabled);
         project->setToolTip(1, project->text(1));
-        const bool available = folder.isDir();
-        project->setIcon(0, Codicons::icon(available ? "folder" : "warning"));
-        if (!available) project->setToolTip(0, I18n::text("Project folder is unavailable."));
+        project->setIcon(0, Codicons::icon("folder"));
         if (it.key() == selectedPath) selected = project;
     }
     for (auto* section : sections) {
@@ -324,13 +331,8 @@ void SavedProjectsPage::updateActions() {
 
 void SavedProjectsPage::addFolder() {
     const auto selectedGroup = groupOf(projects_->currentItem());
-    const auto path = IconDialogs::FileDialog::getExistingDirectory(this, I18n::text("Add Folder…"), QDir::homePath());
-    if (path.isEmpty()) return;
-    const auto folder = QFileInfo(path).canonicalFilePath();
-    if (folder.isEmpty() || !QFileInfo(folder).isDir()) {
-        IconDialogs::MessageBox::warning(this, I18n::text("Projects"), I18n::text("Project folder is unavailable."));
-        return;
-    }
+    const auto folder = chooseProjectFolder(this, I18n::text("Add Folder…"), QDir::homePath());
+    if (folder.isEmpty()) return;
 
     const auto data = readCatalog(QSettings{});
     QString group;
@@ -422,10 +424,56 @@ bool SavedProjectsPage::moveGroup(const QString& group, const QString& parent) {
 void SavedProjectsPage::openSelected() {
     const auto path = pathOf(projects_->currentItem());
     if (path.isEmpty()) return;
-    if (!QFileInfo(path).isDir()) {
-        IconDialogs::MessageBox::warning(this, I18n::text("Projects"), I18n::text("Project folder is unavailable."));
-        reload({}, path);
+    if (QFileInfo(path).isDir()) {
+        emit projectRequested(path);
         return;
     }
-    emit projectRequested(path);
+
+    IconDialogs::MessageBox dialog(QMessageBox::Warning, I18n::text("Projects"), {}, QMessageBox::Cancel, this);
+    dialog.setTextFormat(Qt::PlainText);
+    dialog.setText(I18n::text("Project folder is unavailable.") + "\n\n" + QDir::toNativeSeparators(path));
+    auto* choose = dialog.addButton(I18n::text("Choose Folder…"), QMessageBox::ActionRole);
+    choose->setIcon(Codicons::icon("folder-opened"));
+    auto* remove = dialog.addButton(I18n::text("Remove from List"), QMessageBox::DestructiveRole);
+    remove->setIcon(Codicons::icon("trash"));
+    dialog.setDefaultButton(choose);
+    dialog.setEscapeButton(QMessageBox::Cancel);
+    dialog.exec();
+
+    if (dialog.clickedButton() == remove) removeSelected();
+    if (dialog.clickedButton() == choose) replaceProjectPath(path);
+}
+
+void SavedProjectsPage::replaceProjectPath(const QString& path) {
+    const auto parentFolder = QFileInfo(path).absolutePath();
+    const auto startDirectory = QFileInfo(parentFolder).isDir() ? parentFolder : QDir::homePath();
+    const auto folder = chooseProjectFolder(this, I18n::text("Choose Folder…"), startDirectory);
+    if (folder.isEmpty()) return;
+
+    bool replaced = false;
+    bool duplicate = false;
+    if (!changeCatalog(this, [&](Catalog& data) {
+        auto project = data.folders.find(path);
+        if (project == data.folders.end()) return false;
+        if (path == folder) {
+            replaced = true;
+            return false;
+        }
+        if (data.folders.contains(folder)) {
+            duplicate = true;
+            return false;
+        }
+        const auto group = project.value();
+        data.folders.erase(project);
+        data.folders.insert(folder, group);
+        replaced = true;
+        return true;
+    })) return;
+    if (duplicate) {
+        IconDialogs::MessageBox::warning(this, I18n::text("Projects"),
+                                         I18n::text("This folder is already in the project list."));
+        return;
+    }
+    reload({}, folder);
+    if (replaced) emit projectRequested(folder);
 }
