@@ -164,6 +164,8 @@ if(TURTLE_CODE_BUILD_APP)
         src/app/MainWindowSymbols.cpp
         src/app/MainWindowVim.cpp
         src/app/MainWindowWorkspace.cpp
+        src/app/SavedProjectsPage.cpp
+        src/app/SavedProjectsPage.hpp
         src/editor/EditorPaneWorkspace.cpp
         src/editor/VimDiffSession.cpp
         src/app/MainWindow.hpp
@@ -339,6 +341,8 @@ if(TURTLE_CODE_BUILD_APP)
         set_tests_properties(document-safety PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME file-preview COMMAND turtle-code-window-tests --file-preview)
         set_tests_properties(file-preview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+        add_test(NAME startup-projects COMMAND turtle-code-window-tests --startup-projects)
+        set_tests_properties(startup-projects PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
         add_test(NAME recovery COMMAND turtle-code-recovery-tests)
         set_tests_properties(recovery PROPERTIES TIMEOUT 45)
         add_test(NAME window-shutdown COMMAND turtle-code-window-tests)

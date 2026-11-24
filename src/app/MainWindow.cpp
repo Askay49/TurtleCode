@@ -13,6 +13,7 @@
 #include "terminal/TerminalPanel.hpp"
 #include "terminal/TerminalWidget.hpp"
 #include "ShortcutManager.hpp"
+#include "SavedProjectsPage.hpp"
 #include "ThemeManager.hpp"
 #include "WorkspaceBackground.hpp"
 #include <QPainter>
@@ -420,7 +421,7 @@ void MainWindow::createUi() {
     });
     const auto ensureGitDiff = [this] {
         if (!gitDiff_) {
-            gitDiff_ = new GitDiffView(editorArea_->centralWidget());
+            gitDiff_ = new GitDiffView(documentPages_->widget(0));
             connect(gitDiff_, &GitDiffView::visibilityChanged, this, [this, restoreOutline=false](bool visible) mutable {
                 if(visible) {
                     restoreOutline=outline_ && outline_->isVisible();
@@ -697,7 +698,8 @@ void MainWindow::createUi() {
     connect(debugPanel_,&DebugPanel::terminalStopRequested,this,[this]{ if(terminalPanel_) terminalPanel_->stopDebugProgram(); });
     editorArea_->setWindowFlags(Qt::Widget);
     editorArea_->setObjectName("editorArea");
-    auto* documentArea = new QWidget(editorArea_);
+    documentPages_ = new QStackedWidget(editorArea_);
+    auto* documentArea = new QWidget(documentPages_);
     auto* documentLayout = new QVBoxLayout(documentArea);
     documentLayout->setContentsMargins(0, 0, 0, 0);
     documentLayout->setSpacing(0);
@@ -745,7 +747,8 @@ void MainWindow::createUi() {
     connect(tabSwitchList_, &QListWidget::itemClicked, this, [this] { finishTabSwitch(true); });
     documentLayout->addWidget(tabs_, 1);
     documentLayout->addWidget(paneWorkspace_, 1);
-    editorArea_->setCentralWidget(documentArea);
+    documentPages_->addWidget(documentArea);
+    editorArea_->setCentralWidget(documentPages_);
     connect(tabs_, &QTabWidget::tabCloseRequested, this, [this](int index) { closeTab(index); });
     connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
         updateVimIndicator();
@@ -832,6 +835,10 @@ void MainWindow::createMenus() {
     auto* openFolderAction = fileMenu->addAction(Codicons::icon("folder-opened"), I18n::text("Open &Folder..."));
     ShortcutManager::instance().bind("file.openFolder", openFolderAction);
     connect(openFolderAction, &QAction::triggered, this, &MainWindow::openFolder);
+
+    auto* projectsAction = fileMenu->addAction(Codicons::icon("folder-library"), I18n::text("Projects"));
+    connect(projectsAction, &QAction::triggered, this, [this] { showProjects(true); });
+    fileMenu->addSeparator();
 
     auto* saveAction = fileMenu->addAction(Codicons::icon("save"), I18n::text("&Save"));
     ShortcutManager::instance().bind("file.save", saveAction);
@@ -1154,12 +1161,13 @@ void MainWindow::createMenus() {
 
 void MainWindow::openFolder() {
     const QString path = IconDialogs::FileDialog::getExistingDirectory(this, I18n::text("Open Folder"), projectRoots_.isEmpty() ? QDir::homePath() : projectRoots_.front());
-    if (!path.isEmpty()) setProjectRoots({path});
+    if (!path.isEmpty()) openPaths({path});
 }
 
-void MainWindow::setProjectRoots(const QStringList& roots, bool explicitProject) {
+bool MainWindow::setProjectRoots(const QStringList& roots, bool explicitProject) {
     if (!branchRepository_.isEmpty()) {
-        statusBar()->showMessage(I18n::text("Wait for the branch switch to finish."), 5000); return;
+        statusBar()->showMessage(I18n::text("Wait for the branch switch to finish."), 5000);
+        return false;
     }
     QStringList valid;
     for (const QString& path : roots) {
@@ -1170,6 +1178,7 @@ void MainWindow::setProjectRoots(const QStringList& roots, bool explicitProject)
             break; // Exactly one project, including legacy sessions and CLI/IPC input.
         }
     }
+    if (explicitProject && valid.isEmpty()) return false;
     projectRoots_ = valid;
     workspaceIndex_->configure(explicitProject?valid:QStringList{}, {QSettings().value("view/showHidden",false).toBool(), QSettings().value("project/includeIgnored",false).toBool(), {}});
     debugPanel_->setWorkspace(valid.value(0));
@@ -1181,7 +1190,37 @@ void MainWindow::setProjectRoots(const QStringList& roots, bool explicitProject)
     searchPanel_->setRoots(projectRoots_);
     gitPanel_->setRoots(projectRoots_);
     if (gitDiff_) gitDiff_->hide();
+    if (explicitProject_) documentPages_->setCurrentIndex(0);
     updateWindowTitle();
+    return true;
+}
+
+void MainWindow::openStartupPaths(const QStringList& paths) {
+    setProjectRoots({}, false);
+    setSidebarVisible(false);
+    if (paths.isEmpty()) showProjects(false);
+    else openPaths(paths);
+}
+
+void MainWindow::showProjects(bool canReturnToEditor) {
+    if (closing_) return;
+    if (!projectsPage_) {
+        projectsPage_ = new SavedProjectsPage(documentPages_);
+        connect(projectsPage_, &SavedProjectsPage::projectRequested, this, [this](const QString& path) {
+            openPaths({path});
+        });
+        connect(projectsPage_, &SavedProjectsPage::fileRequested, this, [this] { openFile(); });
+        connect(projectsPage_, &SavedProjectsPage::editorRequested, this, [this] {
+            documentPages_->setCurrentIndex(0);
+            focusEditor();
+        });
+        documentPages_->addWidget(projectsPage_);
+    }
+    if (documentPages_->currentWidget() != projectsPage_) {
+        projectsPage_->refresh(canReturnToEditor);
+        documentPages_->setCurrentWidget(projectsPage_);
+    }
+    projectsPage_->setFocus();
 }
 
 void MainWindow::openPaths(const QStringList& paths) {
@@ -1194,7 +1233,11 @@ void MainWindow::openPaths(const QStringList& paths) {
         if (info.isDir()) roots.push_back(path);
         else if (info.isFile()) files.push_back(path);
     }
-    if (!roots.isEmpty()) setProjectRoots(roots);
+    const bool showProjectTree = !explicitProject_;
+    if (!roots.isEmpty() && setProjectRoots(roots) && showProjectTree) {
+        sidebarStack_->setCurrentWidget(explorerPage_);
+        setSidebarVisible(true);
+    }
     for (const QString& file : files) openFile(file);
     if (paths.isEmpty()) {
         raise();
@@ -1733,6 +1776,7 @@ void MainWindow::openFile(const QString& inputPath, int line, int column, int le
         auto* editor = qobject_cast<EditorWidget*>(tabs_->widget(i));
         if (editor && (editor->filePath()==path ||
             (editor->isBusy() && editor->filePath().isEmpty() && editor->property("openingPath").toString()==path))) {
+            documentPages_->setCurrentIndex(0);
             if (mode == FileOpenMode::Regular) pinFilePreview(editor);
             auto* view = activateEditor(editor);
             if (!filePreviews_.contains(editor)) rememberRecentFile(path);
@@ -2694,6 +2738,7 @@ void MainWindow::showLspProblems() {
 }
 
 EditorWidget* MainWindow::createEditor(const QString& path, FileOpenMode mode) {
+    documentPages_->setCurrentIndex(0);
     auto* editor = new EditorWidget(this, std::make_shared<Document>());
     auto id = vimNextBufferId_++;
     if (!path.isEmpty()) {
@@ -3254,7 +3299,8 @@ void MainWindow::restorePreviousSession(bool restoreClean) {
         const auto documents=candidate.state["documents"].toArray();
         bool dirty=false;for(const auto entry:documents)dirty|=entry.toObject()["modified"].toBool();
         const bool clean=candidate.state["clean"].toBool();
-        if(clean && (!restoreClean || restoredClean))continue;
+        if(!restoreClean && (clean || !dirty))continue;
+        if(clean && restoredClean)continue;
         if(dirty) {
             IconDialogs::MessageBox prompt(QMessageBox::Warning,I18n::text("Recover unsaved documents"),
                 I18n::text("Unsaved changes from a previous session were found. Restore them now?"),QMessageBox::NoButton,this);

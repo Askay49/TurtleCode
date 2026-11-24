@@ -14,11 +14,13 @@
 #include "app/I18n.hpp"
 #include <QMenuBar>
 #include <QComboBox>
+#include <QFileDialog>
 #include <QFontComboBox>
 #include <QFontDatabase>
 #include <QFontInfo>
 #include <algorithm>
 #include <QDialogButtonBox>
+#include <QInputDialog>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTabWidget>
@@ -40,6 +42,8 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QTreeWidget>
+#include <QDragEnterEvent>
+#include <QMimeData>
 #include <QContextMenuEvent>
 #include <QDesktopServices>
 #include <QTextBrowser>
@@ -72,6 +76,201 @@ static void closeDiscard(MainWindow& window) {
             if(auto* button=message->button(QMessageBox::Discard))button->click();
     });responder.start();window.close();
     assert(waitFor([&]{const auto editors=window.findChildren<EditorWidget*>();return !window.isVisible() || std::any_of(editors.begin(),editors.end(),[](auto* e){return e->isBusy();});}));
+}
+
+static void startupProjectTests(const QTemporaryDir& directory) {
+    const auto folder = directory.filePath("sample-project");
+    const auto filePath = QDir(folder).filePath("sample.txt");
+    assert(QDir().mkpath(folder));
+    const auto savedFolder = QFileInfo(folder).canonicalFilePath();
+    {
+        QFile file(filePath);
+        assert(file.open(QIODevice::WriteOnly));
+        file.write("sample\n");
+    }
+    const auto page = [](MainWindow& window) { return window.findChild<QWidget*>("savedProjectsPage"); };
+    const auto tree = [](MainWindow& window) { return window.findChild<QTreeWidget*>("savedProjectsList"); };
+    const auto sidebar = [](MainWindow& window) { return window.findChild<QWidget*>("sidebarStack"); };
+    const auto click = [](MainWindow& window, const char* name) {
+        auto* button = window.findChild<QPushButton*>(name);
+        assert(button && button->isEnabled());
+        button->click();
+    };
+    const auto createGroup = [&](MainWindow& window, const QString& name) {
+        QTimer::singleShot(0, [name] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            assert(dialog);
+            dialog->setTextValue(name);
+            dialog->accept();
+        });
+        click(window, "savedProjectsCreateGroup");
+        assert(tree(window)->currentItem()->text(0) == name);
+    };
+    const auto findItem = [](QTreeWidget* list, const QString& name) {
+        const auto items = list->findItems(name, Qt::MatchExactly | Qt::MatchRecursive);
+        assert(items.size() == 1);
+        return items.front();
+    };
+    const auto dragItem = [](QTreeWidget* list, QTreeWidgetItem* source, QTreeWidgetItem* target, bool valid = true) {
+        list->setCurrentItem(source);
+        list->scrollToItem(target);
+        const auto position = list->visualItemRect(target).center();
+        assert(list->itemAt(position) == target);
+        const std::unique_ptr<QMimeData> mime(list->model()->mimeData({list->currentIndex()}));
+        assert(mime);
+        QDragEnterEvent enter(position, Qt::MoveAction, mime.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(list->viewport(), &enter);
+        assert(enter.isAccepted());
+        QDragMoveEvent move(position, Qt::MoveAction, mime.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(list->viewport(), &move);
+        assert(move.isAccepted() == valid);
+        if (!valid) {
+            QDragLeaveEvent leave;
+            QApplication::sendEvent(list->viewport(), &leave);
+            return;
+        }
+        QDropEvent drop(position, Qt::MoveAction, mime.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(list->viewport(), &drop);
+        assert(drop.isAccepted() && drop.dropAction() == Qt::MoveAction);
+    };
+    {
+        MainWindow window;
+        window.openStartupPaths({});
+        window.show();
+        assert(page(window)->isVisible() && !sidebar(window)->isVisible());
+        assert(tree(window)->topLevelItemCount() == 1);
+
+        createGroup(window, "Work");
+
+        QTimer::singleShot(0, [&] {
+            auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+            assert(dialog);
+            dialog->selectFile(folder);
+            static_cast<QDialog*>(dialog)->accept();
+            QTimer::singleShot(0, [] {
+                auto* group = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+                assert(group && group->textValue() == "Work");
+                group->accept();
+            });
+        });
+        click(window, "savedProjectsAddFolder");
+        assert(tree(window)->currentItem()->text(1) == QDir::toNativeSeparators(savedFolder));
+        assert(tree(window)->currentItem()->parent()->text(0) == "Work");
+
+        auto* list = tree(window);
+        assert(list->accessibleName() == "Projects");
+        dragItem(list, list->currentItem(), list->topLevelItem(0), false);
+        dragItem(list, list->currentItem(), list->topLevelItem(1));
+        assert(list->currentItem()->parent() == list->topLevelItem(1));
+        assert(list->topLevelItem(0)->childCount() == 0 && QFile::exists(filePath));
+    }
+    {
+        MainWindow window;
+        window.openStartupPaths({});
+        window.show();
+        auto* list = tree(window);
+        assert(list->topLevelItemCount() == 2);
+        assert(list->topLevelItem(0)->childCount() == 0 && list->topLevelItem(1)->childCount() == 1);
+        dragItem(list, list->topLevelItem(1)->child(0), list->topLevelItem(0));
+        createGroup(window, "Area");
+        createGroup(window, "Team");
+        dragItem(list, findItem(list, "Team"), findItem(list, "Work"));
+        dragItem(list, findItem(list, "Work"), findItem(list, "Area"));
+        assert(list->currentItem()->parent() == findItem(list, "Area"));
+        dragItem(list, findItem(list, "Area"), findItem(list, "Area"), false);
+        dragItem(list, findItem(list, "Area"), findItem(list, "Team"), false);
+        dragItem(list, findItem(list, "Team"), findItem(list, "sample-project"), false);
+    }
+    {
+        MainWindow window;
+        window.openStartupPaths({});
+        window.show();
+        auto* list = tree(window);
+        assert(list->topLevelItemCount() == 2);
+        assert(findItem(list, "Work")->parent() == findItem(list, "Area"));
+        assert(findItem(list, "Team")->parent() == findItem(list, "Work"));
+        assert(findItem(list, "sample-project")->parent() == findItem(list, "Work"));
+        dragItem(list, findItem(list, "sample-project"), findItem(list, "Team"));
+        assert(list->currentItem()->parent() == findItem(list, "Team"));
+        dragItem(list, findItem(list, "sample-project"), findItem(list, "Work"));
+        dragItem(list, findItem(list, "Work"), findItem(list, "Ungrouped"));
+        assert(!list->currentItem()->parent() && list->currentItem()->childCount() == 2);
+        dragItem(list, findItem(list, "Work"), findItem(list, "Area"));
+        assert(window.findChild<QPushButton*>("savedProjectsRemove")->text() == "Delete Group");
+        assert(!window.findChild<QPushButton*>("savedProjectsOpen")->isEnabled());
+        click(window, "savedProjectsRemove");
+        auto* area = findItem(list, "Area");
+        assert(list->currentItem() == area);
+        assert(findItem(list, "Team")->parent() == area && findItem(list, "sample-project")->parent() == area);
+        click(window, "savedProjectsRemove");
+        auto* team = findItem(list, "Team");
+        assert(!team->parent());
+        assert(findItem(list, "sample-project")->parent() == findItem(list, "Ungrouped"));
+        list->setCurrentItem(team);
+        click(window, "savedProjectsRemove");
+        auto* ungrouped = list->topLevelItem(0);
+        assert(list->topLevelItemCount() == 1 && ungrouped->childCount() == 1);
+        assert(QFile::exists(filePath));
+
+        list->setCurrentItem(ungrouped->child(0));
+        click(window, "savedProjectsOpen");
+        assert(!page(window)->isVisible() && sidebar(window)->isVisible());
+        window.openPaths({filePath});
+        assert(sidebar(window)->isVisible());
+        assert(waitFor([&] {
+            auto* editor = window.findChild<EditorWidget*>();
+            return editor && !editor->isBusy() && editor->filePath() == filePath;
+        }));
+    }
+    {
+        MainWindow window;
+        window.openStartupPaths({});
+        window.show();
+        auto* ungrouped = tree(window)->topLevelItem(0);
+        assert(ungrouped->childCount() == 1);
+        tree(window)->setCurrentItem(ungrouped->child(0));
+        click(window, "savedProjectsRemove");
+        assert(tree(window)->topLevelItem(0)->childCount() == 0 && QFile::exists(filePath));
+        QTimer::singleShot(0, [&] {
+            auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+            assert(dialog);
+            dialog->selectFile(filePath);
+            static_cast<QDialog*>(dialog)->accept();
+        });
+        click(window, "savedProjectsOpenFile");
+        assert(!page(window)->isVisible() && !sidebar(window)->isVisible());
+    }
+    {
+        MainWindow window;
+        window.openStartupPaths({filePath});
+        window.show();
+        assert(!sidebar(window)->isVisible() && !page(window));
+        assert(waitFor([&] {
+            auto* editor = window.findChild<EditorWidget*>();
+            return editor && !editor->isBusy() && editor->filePath() == filePath;
+        }));
+        auto* editor = window.findChild<EditorWidget*>();
+        const auto actions = window.menuBar()->actions().front()->menu()->actions();
+        const auto projectsAction = std::find_if(actions.begin(), actions.end(), [](const QAction* action) {
+            return action->text() == "Projects";
+        });
+        assert(projectsAction != actions.end());
+        (*projectsAction)->trigger();
+        assert(page(window)->isVisible() && !editor->isVisible());
+        assert(tree(window)->hasFocus());
+        click(window, "savedProjectsBack");
+        assert(!page(window)->isVisible() && editor->isVisible() && editor->hasFocus());
+        (*projectsAction)->trigger();
+        assert(window.findChildren<QWidget*>("savedProjectsPage").size() == 1);
+        window.openPaths({filePath});
+        assert(!page(window)->isVisible() && editor->isVisible() && !sidebar(window)->isVisible());
+    }
+    {
+        MainWindow window;
+        window.openStartupPaths({folder});
+        window.show();
+        assert(sidebar(window)->isVisible() && !page(window));
+    }
 }
 
 static void filePreviewTests(QTemporaryDir& directory) {
@@ -466,10 +665,10 @@ static void safetyTests(QTemporaryDir& directory) {
     }
     write(first,"changed while editor was closed\n");
     {
-        MainWindow window;window.show();
+        MainWindow window;window.openStartupPaths({});window.show();
         QTimer restore;restore.setInterval(1);
         QObject::connect(&restore,&QTimer::timeout,[]{if(auto* m=qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))for(auto* b:m->buttons())if(m->buttonRole(b)==QMessageBox::AcceptRole)b->click();});
-        restore.start();window.restorePreviousSession();restore.stop();
+        restore.start();window.restorePreviousSession(false);restore.stop();
         assert(waitFor([&]{auto* e=window.findChild<EditorWidget*>();return e && !e->isBusy();}));
         auto* editor=window.findChild<EditorWidget*>();assert(editor->isModified());
         assert(editor->document()->buffer().text()=="\xef\xbb\xbfнесохранённый текст\r\nsecond line\r\n");
@@ -487,6 +686,14 @@ static void safetyTests(QTemporaryDir& directory) {
         auto* tabs=window.findChild<QTabWidget*>();tabs->setCurrentIndex(0);
         auto* editor=qobject_cast<EditorWidget*>(tabs->widget(0));editor->setNavigationPosition(1,4);
         closeDiscard(window);
+    }
+    {
+        MainWindow window;
+        window.openStartupPaths({});
+        window.show();
+        window.restorePreviousSession(false);
+        assert(window.findChild<QWidget*>("savedProjectsPage")->isVisible());
+        assert(!window.findChild<EditorWidget*>());
     }
     {
         MainWindow window;window.show();window.restorePreviousSession();
@@ -844,6 +1051,7 @@ int main(int argc,char**argv) {
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--external-files"){externalFileTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--safety"){safetyTests(directory);return 0;}
     if(argc>1 && QString::fromLocal8Bit(argv[1])=="--file-preview"){filePreviewTests(directory);return 0;}
+    if(argc>1 && QString::fromLocal8Bit(argv[1])=="--startup-projects"){startupProjectTests(directory);return 0;}
     if (argc>1 && QString::fromLocal8Bit(argv[1])=="--russian-ui") {
         assert(I18n::saveLanguage("ru")); assert(I18n::initialize());
         QSettings().setValue("appearance/theme","tokyo-night");

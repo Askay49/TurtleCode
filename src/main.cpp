@@ -117,9 +117,9 @@ int main(int argc, char* argv[]) {
 
     MainWindow window;
     window.resize(1280, 800);
-    if (!paths.isEmpty()) window.openPaths(paths);
+    window.openStartupPaths(paths);
     window.showMaximized();
-    if(!newWindow) QTimer::singleShot(0,&window,[&window,paths]{window.restorePreviousSession(paths.isEmpty());});
+    if (!newWindow) QTimer::singleShot(0, &window, [&window] { window.restorePreviousSession(false); });
 
     QObject::connect(&server, &QLocalServer::newConnection, &window, [&server, &window] {
         while (QLocalSocket* socket = server.nextPendingConnection()) {

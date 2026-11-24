@@ -38,6 +38,7 @@ class DebugPanel;
 class GitDiffView;
 class TerminalPanel;
 class QStackedWidget;
+class SavedProjectsPage;
 class QWidget;
 class QToolButton;
 class QTimer;
@@ -54,6 +55,7 @@ class MainWindow final : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
+    void openStartupPaths(const QStringList& paths);
     void openPaths(const QStringList& paths);
     void restorePreviousSession(bool restoreClean = true);
 
@@ -140,10 +142,11 @@ private:
     void updateTabMru(QWidget* current);
     void restoreNavigationLocation(const QString& path, int line, int column);
     void openFolder();
+    void showProjects(bool canReturnToEditor);
     void showProjectSearch(const QString& directory = {});
     void startProjectReplace(ProjectReplaceRequest request);
     void finishProjectReplace(const ProjectReplaceResult& result);
-    void setProjectRoots(const QStringList& roots, bool explicitProject = true);
+    bool setProjectRoots(const QStringList& roots, bool explicitProject = true);
     enum class FileOpenMode { Regular, Preview };
     void openFile(const QString& path, int line = 0, int column = 0, int length = 0,
                   bool centerTarget = true, FileOpenMode mode = FileOpenMode::Regular);
@@ -250,6 +253,8 @@ private:
     QToolButton* gitActivity_{nullptr};
     QStackedWidget* sidebarStack_{nullptr};
     QWidget* sidebar_{nullptr};
+    QStackedWidget* documentPages_{nullptr};
+    SavedProjectsPage* projectsPage_{nullptr};
     void setSidebarVisible(bool visible);
     void updateSidebarActivities();
     [[nodiscard]] QString activeExplorerPath() const;
